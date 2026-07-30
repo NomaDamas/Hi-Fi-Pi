@@ -36,7 +36,7 @@ import { parseJsonWithRepair, parseStreamingJson } from "../utils/json-parse.ts"
 import { getProviderEnvValue } from "../utils/provider-env.ts";
 import { retryProviderRequest } from "../utils/provider-retry.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
-
+import { resolvePdfAttachments, UnsupportedInputError } from "./attachment-lowering.ts";
 import { resolveJsonSchemaStrictSampling } from "./constrained-sampling.ts";
 import { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "./github-copilot-headers.ts";
 import { adjustMaxTokensForThinking, buildBaseOptions, clampMaxTokensToContext } from "./simple-options.ts";
@@ -967,6 +967,8 @@ function buildParams(
 			compat.allowEmptySignature,
 			deferredToolNames,
 			normalizeToolName,
+			context,
+			model,
 		),
 		max_tokens: options?.maxTokens ?? model.maxTokens,
 		stream: true,
@@ -1120,6 +1122,8 @@ function convertMessages(
 	allowEmptySignature = false,
 	deferredToolNames: ReadonlySet<string> = new Set(),
 	normalizeToolName: (name: string) => string = (name) => name,
+	context?: Context,
+	model?: Model<"anthropic-messages">,
 ): MessageParam[] {
 	const params: MessageParam[] = [];
 	const loadedToolNames = new Set<string>();
@@ -1128,31 +1132,71 @@ function convertMessages(
 		const msg = transformedMessages[i];
 
 		if (msg.role === "user") {
+			const attachmentModel = model;
+			const attachments =
+				context && attachmentModel ? resolvePdfAttachments(msg, context.attachmentRegistry, attachmentModel) : [];
+			const attachmentBlocks: ContentBlockParam[] = attachments.map((attachment) => {
+				switch (attachment.source.type) {
+					case "base64":
+						return {
+							type: "document",
+							source: {
+								type: "base64",
+								media_type: "application/pdf",
+								data: attachment.source.data,
+							},
+							title: attachment.filename,
+						};
+					case "url":
+						return {
+							type: "document",
+							source: { type: "url", url: attachment.source.url },
+							title: attachment.filename,
+						};
+					case "provider-file":
+						if (!attachmentModel) throw new Error("Attachment model is unavailable");
+						throw new UnsupportedInputError(
+							attachmentModel,
+							attachment.mediaType,
+							"Anthropic file IDs require a Files API beta transport",
+						);
+				}
+				throw new Error("Unknown attachment source");
+			});
 			if (typeof msg.content === "string") {
-				if (msg.content.trim().length > 0) {
+				const text = sanitizeSurrogates(msg.content);
+				if (text.trim().length > 0 || attachmentBlocks.length > 0) {
 					params.push({
 						role: "user",
-						content: sanitizeSurrogates(msg.content),
+						content:
+							attachmentBlocks.length > 0
+								? text.trim().length > 0
+									? [...attachmentBlocks, { type: "text", text }]
+									: attachmentBlocks
+								: text,
 					});
 				}
 			} else {
-				const blocks: ContentBlockParam[] = msg.content.map((item) => {
-					if (item.type === "text") {
-						return {
-							type: "text",
-							text: sanitizeSurrogates(item.text),
-						};
-					} else {
-						return {
-							type: "image",
-							source: {
-								type: "base64",
-								media_type: item.mimeType as "image/jpeg" | "image/png" | "image/gif" | "image/webp",
-								data: item.data,
-							},
-						};
-					}
-				});
+				const blocks: ContentBlockParam[] = [
+					...attachmentBlocks,
+					...msg.content.map((item): ContentBlockParam => {
+						if (item.type === "text") {
+							return {
+								type: "text",
+								text: sanitizeSurrogates(item.text),
+							};
+						} else {
+							return {
+								type: "image",
+								source: {
+									type: "base64",
+									media_type: item.mimeType as "image/jpeg" | "image/png" | "image/gif" | "image/webp",
+									data: item.data,
+								},
+							};
+						}
+					}),
+				];
 				const filteredBlocks = blocks.filter((b) => {
 					if (b.type === "text") {
 						return b.text.trim().length > 0;
