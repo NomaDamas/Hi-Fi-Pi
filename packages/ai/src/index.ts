@@ -7,6 +7,12 @@ export { Type } from "typebox";
 // "@earendil-works/pi-ai/api/*", the old global API under
 // "@earendil-works/pi-ai/compat".
 export type { AnthropicEffort, AnthropicOptions, AnthropicThinkingDisplay } from "./api/anthropic-messages.ts";
+export {
+	AttachmentRegistryUnavailableError,
+	AttachmentSourceUnavailableError,
+	sanitizeProviderPayloadForTrace,
+	UnsupportedInputError,
+} from "./api/attachment-lowering.ts";
 export type { AzureOpenAIResponsesOptions } from "./api/azure-openai-responses.ts";
 export type { BedrockOptions, BedrockThinkingDisplay } from "./api/bedrock-converse-stream.ts";
 export type { GoogleOptions } from "./api/google-generative-ai.ts";

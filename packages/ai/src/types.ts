@@ -374,6 +374,12 @@ export type AttachmentSource =
 	| {
 			type: "url";
 			url: string;
+	  }
+	| {
+			type: "provider-file";
+			provider: ProviderId;
+			fileId: string;
+			uri?: string;
 	  };
 
 export interface ProviderFileReference {
@@ -399,6 +405,7 @@ export interface AttachmentRecord {
 
 export interface AttachmentRegistry {
 	resolve(id: string): AttachmentRecord | undefined;
+	read?(attachment: AttachmentRecord): Uint8Array;
 	list?(): readonly AttachmentRecord[];
 }
 
