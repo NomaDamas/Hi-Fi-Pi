@@ -357,6 +357,51 @@ export interface ImageContent {
 	mimeType: string; // e.g., "image/jpeg", "image/png"
 }
 
+export interface AttachmentReference {
+	type: "attachment";
+	attachmentId: string;
+}
+
+export type AttachmentSource =
+	| {
+			type: "path";
+			path: string;
+	  }
+	| {
+			type: "base64";
+			data: string;
+	  }
+	| {
+			type: "url";
+			url: string;
+	  };
+
+export interface ProviderFileReference {
+	provider: ProviderId;
+	api: Api;
+	fileId: string;
+	uri?: string;
+	uploadedAt: number;
+	expiresAt?: number;
+	metadata?: Record<string, unknown>;
+}
+
+export interface AttachmentRecord {
+	id: string;
+	filename: string;
+	mediaType: string;
+	sizeBytes?: number;
+	sha256?: string;
+	source: AttachmentSource;
+	remotes?: Record<string, ProviderFileReference>;
+	metadata?: Record<string, unknown>;
+}
+
+export interface AttachmentRegistry {
+	resolve(id: string): AttachmentRecord | undefined;
+	list?(): readonly AttachmentRecord[];
+}
+
 export interface ToolCall {
 	type: "toolCall";
 	id: string;
@@ -393,6 +438,7 @@ export type StopReason = "pending" | "stop" | "length" | "toolUse" | "error" | "
 export interface UserMessage {
 	role: "user";
 	content: string | (TextContent | ImageContent)[];
+	attachments?: AttachmentReference[];
 	timestamp: number; // Unix timestamp in milliseconds
 }
 
@@ -417,6 +463,7 @@ export interface ToolResultMessage<TDetails = any> {
 	toolCallId: string;
 	toolName: string;
 	content: (TextContent | ImageContent)[]; // Supports text and images
+	attachments?: AttachmentReference[];
 	details?: TDetails;
 	/** Usage from the tool execution itself, if available. Not part of main LLM context accounting. */
 	usage?: Usage;
@@ -488,6 +535,7 @@ export interface Context {
 	systemPrompt?: string;
 	messages: Message[];
 	tools?: Tool[];
+	attachmentRegistry?: AttachmentRegistry;
 }
 
 /**
