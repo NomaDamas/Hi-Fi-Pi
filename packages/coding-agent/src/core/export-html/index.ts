@@ -137,6 +137,19 @@ interface SessionData {
 	renderedTools?: Record<string, RenderedToolHtml>;
 }
 
+function sanitizeEntriesForExport(entries: SessionEntry[]): SessionEntry[] {
+	return entries.map((entry) => {
+		if (entry.type !== "attachment" || entry.attachment.source.type !== "base64") return entry;
+		return {
+			...entry,
+			attachment: {
+				...entry.attachment,
+				source: { type: "base64", data: "[omitted from HTML export]" },
+			},
+		};
+	});
+}
+
 /**
  * Core HTML generation logic shared by both export functions.
  */
@@ -262,7 +275,7 @@ export async function exportSessionToHtml(
 
 	const sessionData: SessionData = {
 		header: sm.getHeader(),
-		entries,
+		entries: sanitizeEntriesForExport(entries),
 		leafId: sm.getLeafId(),
 		systemPrompt: state?.systemPrompt,
 		tools: state?.tools?.map((t) => ({ name: t.name, description: t.description, parameters: t.parameters })),
@@ -297,7 +310,7 @@ export async function exportFromFile(inputPath: string, options?: ExportOptions 
 
 	const sessionData: SessionData = {
 		header: sm.getHeader(),
-		entries: sm.getEntries(),
+		entries: sanitizeEntriesForExport(sm.getEntries()),
 		leafId: sm.getLeafId(),
 		systemPrompt: undefined,
 		tools: undefined,
