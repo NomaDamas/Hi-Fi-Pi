@@ -406,6 +406,12 @@ export class AgentSession {
 		this._excludedToolNames = config.excludedToolNames ? new Set(config.excludedToolNames) : undefined;
 		this._baseToolsOverride = config.baseToolsOverride;
 		this._sessionStartEvent = config.sessionStartEvent ?? { type: "session_start", reason: "startup" };
+		for (const attachment of this.sessionManager.getAttachments()) {
+			this._attachmentRecords.set(attachment.id, attachment);
+		}
+		if (this._attachmentRecords.size > 0) {
+			this.agent.attachmentRegistry = this._attachmentRegistry;
+		}
 
 		// Always subscribe to agent events for internal handling
 		// (session persistence, extensions, auto-compaction, retry logic)
@@ -1134,6 +1140,14 @@ export class AgentSession {
 		}
 	}
 
+	private _persistAttachmentReferences(attachments: AttachmentReference[] | undefined): void {
+		for (const reference of attachments ?? []) {
+			const attachment = this._attachmentRecords.get(reference.attachmentId);
+			if (!attachment) throw new Error(`Unknown attachment ID: ${reference.attachmentId}`);
+			this.sessionManager.appendAttachment(attachment);
+		}
+	}
+
 	private async _handlePostAgentRun(): Promise<boolean> {
 		const msg = this._lastAssistantMessage;
 		this._lastAssistantMessage = undefined;
@@ -1240,8 +1254,10 @@ export class AgentSession {
 					);
 				}
 				if (options.streamingBehavior === "followUp") {
+					this._persistAttachmentReferences(currentAttachments);
 					await this._queueFollowUp(expandedText, currentImages, currentAttachments);
 				} else {
+					this._persistAttachmentReferences(currentAttachments);
 					await this._queueSteer(expandedText, currentImages, currentAttachments);
 				}
 				preflightResult?.(true);
@@ -1280,6 +1296,7 @@ export class AgentSession {
 
 			// Build messages array (custom message if any, then user message)
 			messages = [];
+			this._persistAttachmentReferences(currentAttachments);
 
 			// Add user message
 			const userContent: (TextContent | ImageContent)[] = [{ type: "text", text: expandedText }];
@@ -1423,11 +1440,12 @@ export class AgentSession {
 		expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
 
 		this._registerAttachments(attachments);
-		await this._queueSteer(
-			expandedText,
-			images,
-			attachments?.map((record) => ({ type: "attachment", attachmentId: record.id })),
-		);
+		const attachmentReferences = attachments?.map((record) => ({
+			type: "attachment" as const,
+			attachmentId: record.id,
+		}));
+		this._persistAttachmentReferences(attachmentReferences);
+		await this._queueSteer(expandedText, images, attachmentReferences);
 	}
 
 	/**
@@ -1448,11 +1466,12 @@ export class AgentSession {
 		expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
 
 		this._registerAttachments(attachments);
-		await this._queueFollowUp(
-			expandedText,
-			images,
-			attachments?.map((record) => ({ type: "attachment", attachmentId: record.id })),
-		);
+		const attachmentReferences = attachments?.map((record) => ({
+			type: "attachment" as const,
+			attachmentId: record.id,
+		}));
+		this._persistAttachmentReferences(attachmentReferences);
+		await this._queueFollowUp(expandedText, images, attachmentReferences);
 	}
 
 	/**
