@@ -1,4 +1,4 @@
-import type { AssistantMessage, ImageContent } from "@earendil-works/pi-ai";
+import type { AssistantMessage, AttachmentRecord, ImageContent } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SessionShutdownEvent } from "../src/index.ts";
 import { runPrintMode } from "../src/modes/print-mode.ts";
@@ -121,6 +121,27 @@ describe("runPrintMode", () => {
 		expect(session.prompt).toHaveBeenCalledWith("hello");
 		expect(session.extensionRunner.emit).toHaveBeenCalledTimes(1);
 		expect(session.extensionRunner.emit).toHaveBeenCalledWith({ type: "session_shutdown", reason: "quit" });
+	});
+
+	it("passes initial native attachments into the first prompt", async () => {
+		const runtimeHost = createRuntimeHost(createAssistantMessage({ text: "done" }));
+		const attachment: AttachmentRecord = {
+			id: "att_print",
+			filename: "paper.pdf",
+			mediaType: "application/pdf",
+			source: { type: "path", path: "/tmp/paper.pdf" },
+		};
+
+		await runPrintMode(runtimeHost as unknown as Parameters<typeof runPrintMode>[0], {
+			mode: "text",
+			initialMessage: "Analyze",
+			initialAttachments: [attachment],
+		});
+
+		expect(runtimeHost.session.prompt).toHaveBeenCalledWith("Analyze", {
+			images: undefined,
+			attachments: [attachment],
+		});
 	});
 
 	it("emits session_shutdown and returns non-zero on assistant error", async () => {
