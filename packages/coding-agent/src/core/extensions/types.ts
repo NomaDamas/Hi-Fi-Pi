@@ -19,6 +19,8 @@ import type {
 	Api,
 	AssistantMessageEvent,
 	AssistantMessageEventStream,
+	AttachmentRecord,
+	AttachmentReference,
 	ConstrainedSamplingConfig,
 	Context,
 	ImageContent,
@@ -399,7 +401,7 @@ export interface ReplacedSessionContext extends ExtensionCommandContext {
 
 	sendUserMessage(
 		content: string | (TextContent | ImageContent)[],
-		options?: { deliverAs?: "steer" | "followUp" },
+		options?: { deliverAs?: "steer" | "followUp"; attachments?: AttachmentRecord[] },
 	): Promise<void>;
 }
 
@@ -702,6 +704,8 @@ export interface BeforeAgentStartEvent {
 	prompt: string;
 	/** Images attached to the user prompt, if any. */
 	images?: ImageContent[];
+	/** Provider-neutral attachment references included with this prompt. */
+	attachments?: AttachmentReference[];
 	/** The fully assembled system prompt string. */
 	systemPrompt: string;
 	/** Structured options used to build the system prompt. Extensions can inspect this to understand what Pi loaded without re-discovering resources. */
@@ -834,6 +838,8 @@ export interface InputEvent {
 	text: string;
 	/** Attached images, if any */
 	images?: ImageContent[];
+	/** Provider-neutral attachment references included with this input. */
+	attachments?: AttachmentReference[];
 	/** Where the input came from */
 	source: InputSource;
 	/** How the input will be delivered during streaming, or undefined when idle */
@@ -843,7 +849,7 @@ export interface InputEvent {
 /** Result from input event handler */
 export type InputEventResult =
 	| { action: "continue" }
-	| { action: "transform"; text: string; images?: ImageContent[] }
+	| { action: "transform"; text: string; images?: ImageContent[]; attachments?: AttachmentReference[] }
 	| { action: "handled" };
 
 // ============================================================================
@@ -1294,7 +1300,7 @@ export interface ExtensionAPI {
 	 */
 	sendUserMessage(
 		content: string | (TextContent | ImageContent)[],
-		options?: { deliverAs?: "steer" | "followUp" },
+		options?: { deliverAs?: "steer" | "followUp"; attachments?: AttachmentRecord[] },
 	): void;
 
 	/** Append a custom entry to the session for state persistence (not sent to LLM). */
@@ -1537,7 +1543,7 @@ export type SendMessageHandler = <T = unknown>(
 
 export type SendUserMessageHandler = (
 	content: string | (TextContent | ImageContent)[],
-	options?: { deliverAs?: "steer" | "followUp" },
+	options?: { deliverAs?: "steer" | "followUp"; attachments?: AttachmentRecord[] },
 ) => void;
 
 export type AppendEntryHandler = <T = unknown>(customType: string, data?: T) => void;
