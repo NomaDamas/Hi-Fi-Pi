@@ -1,5 +1,12 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { type ImageContent, type Message, type TextContent, type Usage, uuidv7 } from "@earendil-works/pi-ai";
+import {
+	type AttachmentRecord,
+	type ImageContent,
+	type Message,
+	type TextContent,
+	type Usage,
+	uuidv7,
+} from "@earendil-works/pi-ai";
 import { randomUUID } from "crypto";
 import {
 	appendFileSync,
@@ -53,6 +60,12 @@ export interface SessionEntryBase {
 export interface SessionMessageEntry extends SessionEntryBase {
 	type: "message";
 	message: AgentMessage;
+}
+
+/** Provider-neutral attachment metadata stored once and referenced by messages. */
+export interface AttachmentEntry extends SessionEntryBase {
+	type: "attachment";
+	attachment: AttachmentRecord;
 }
 
 export interface ThinkingLevelChangeEntry extends SessionEntryBase {
@@ -143,6 +156,7 @@ export interface CustomMessageEntry<T = unknown> extends SessionEntryBase {
 /** Session entry - has id/parentId for tree structure (returned by "read" methods in SessionManager) */
 export type SessionEntry =
 	| SessionMessageEntry
+	| AttachmentEntry
 	| ThinkingLevelChangeEntry
 	| ModelChangeEntry
 	| CompactionEntry
@@ -203,6 +217,9 @@ export type ReadonlySessionManager = Pick<
 	| "getEntries"
 	| "getTree"
 	| "getSessionName"
+	| "getAttachment"
+	| "getAttachments"
+	| "findDanglingAttachmentReferences"
 >;
 
 function createSessionId(): string {
@@ -863,6 +880,7 @@ export class SessionManager {
 	private byId: Map<string, SessionEntry> = new Map();
 	private labelsById: Map<string, string> = new Map();
 	private labelTimestampsById: Map<string, string> = new Map();
+	private attachmentEntriesByAttachmentId: Map<string, AttachmentEntry> = new Map();
 	private leafId: string | null = null;
 
 	private constructor(
@@ -945,6 +963,7 @@ export class SessionManager {
 		this.byId.clear();
 		this.labelsById.clear();
 		this.labelTimestampsById.clear();
+		this.attachmentEntriesByAttachmentId.clear();
 		this.leafId = null;
 		this.flushed = false;
 
@@ -959,6 +978,7 @@ export class SessionManager {
 		this.byId.clear();
 		this.labelsById.clear();
 		this.labelTimestampsById.clear();
+		this.attachmentEntriesByAttachmentId.clear();
 		this.leafId = null;
 		for (const entry of this.fileEntries) {
 			if (entry.type === "session") continue;
@@ -972,6 +992,9 @@ export class SessionManager {
 					this.labelsById.delete(entry.targetId);
 					this.labelTimestampsById.delete(entry.targetId);
 				}
+			}
+			if (entry.type === "attachment") {
+				this.attachmentEntriesByAttachmentId.set(entry.attachment.id, entry);
 			}
 		}
 	}
@@ -1064,6 +1087,49 @@ export class SessionManager {
 		};
 		this._appendEntry(entry);
 		return entry.id;
+	}
+
+	/** Store attachment metadata once and return its session entry ID. */
+	appendAttachment(attachment: AttachmentRecord): string {
+		const existing = this.attachmentEntriesByAttachmentId.get(attachment.id);
+		if (existing) {
+			if (JSON.stringify(existing.attachment) !== JSON.stringify(attachment)) {
+				throw new Error(`Attachment ID "${attachment.id}" is already stored with different metadata.`);
+			}
+			return existing.id;
+		}
+		const entry: AttachmentEntry = {
+			type: "attachment",
+			id: generateId(this.byId),
+			parentId: this.leafId,
+			timestamp: new Date().toISOString(),
+			attachment,
+		};
+		this.attachmentEntriesByAttachmentId.set(attachment.id, entry);
+		this._appendEntry(entry);
+		return entry.id;
+	}
+
+	getAttachment(id: string): AttachmentRecord | undefined {
+		return this.attachmentEntriesByAttachmentId.get(id)?.attachment;
+	}
+
+	getAttachments(): AttachmentRecord[] {
+		return Array.from(this.attachmentEntriesByAttachmentId.values(), (entry) => entry.attachment);
+	}
+
+	findDanglingAttachmentReferences(): Array<{ attachmentId: string; messageEntryId: string }> {
+		const dangling: Array<{ attachmentId: string; messageEntryId: string }> = [];
+		for (const entry of this.getEntries()) {
+			if (entry.type !== "message") continue;
+			if (entry.message.role !== "user" && entry.message.role !== "toolResult") continue;
+			for (const reference of entry.message.attachments ?? []) {
+				if (!this.attachmentEntriesByAttachmentId.has(reference.attachmentId)) {
+					dangling.push({ attachmentId: reference.attachmentId, messageEntryId: entry.id });
+				}
+			}
+		}
+		return dangling;
 	}
 
 	/** Append a thinking level change as child of current leaf, then advance leaf. Returns entry id. */
