@@ -1,7 +1,26 @@
 import { open } from "node:fs/promises";
+import { extname } from "node:path";
 
 const IMAGE_TYPE_SNIFF_BYTES = 4100;
 const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+
+const ATTACHMENT_MIME_TYPES = new Map<string, string>([
+	[".pdf", "application/pdf"],
+	[".doc", "application/msword"],
+	[".docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
+	[".ppt", "application/vnd.ms-powerpoint"],
+	[".pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation"],
+	[".xls", "application/vnd.ms-excel"],
+	[".xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"],
+	[".wav", "audio/wav"],
+	[".mp3", "audio/mpeg"],
+	[".m4a", "audio/mp4"],
+	[".flac", "audio/flac"],
+	[".ogg", "audio/ogg"],
+	[".mp4", "video/mp4"],
+	[".mov", "video/quicktime"],
+	[".webm", "video/webm"],
+]);
 
 export function detectSupportedImageMimeType(buffer: Uint8Array): string | null {
 	if (startsWith(buffer, [0xff, 0xd8, 0xff])) {
@@ -30,6 +49,45 @@ export async function detectSupportedImageMimeTypeFromFile(filePath: string): Pr
 		return detectSupportedImageMimeType(buffer.subarray(0, bytesRead));
 	} finally {
 		await fileHandle.close();
+	}
+}
+
+export async function detectAttachmentMimeTypeFromFile(filePath: string): Promise<string | null> {
+	const fileHandle = await open(filePath, "r");
+	try {
+		const buffer = Buffer.alloc(IMAGE_TYPE_SNIFF_BYTES);
+		const { bytesRead } = await fileHandle.read(buffer, 0, IMAGE_TYPE_SNIFF_BYTES, 0);
+		const bytes = buffer.subarray(0, bytesRead);
+		const sniffed = detectAttachmentMimeType(bytes);
+		if (sniffed) return sniffed;
+
+		const extensionMimeType = ATTACHMENT_MIME_TYPES.get(extname(filePath).toLowerCase());
+		if (extensionMimeType) return extensionMimeType;
+		return isProbablyText(bytes) ? null : "application/octet-stream";
+	} finally {
+		await fileHandle.close();
+	}
+}
+
+function detectAttachmentMimeType(buffer: Uint8Array): string | null {
+	if (startsWithAscii(buffer, 0, "%PDF-")) return "application/pdf";
+	if (startsWithAscii(buffer, 0, "RIFF") && startsWithAscii(buffer, 8, "WAVE")) return "audio/wav";
+	if (startsWithAscii(buffer, 0, "fLaC")) return "audio/flac";
+	if (startsWithAscii(buffer, 0, "OggS")) return "audio/ogg";
+	if (startsWithAscii(buffer, 4, "ftyp")) {
+		return startsWithAscii(buffer, 8, "qt  ") ? "video/quicktime" : "video/mp4";
+	}
+	if (startsWithAscii(buffer, 0, "\x1aE\xdf\xa3")) return "video/webm";
+	return null;
+}
+
+function isProbablyText(buffer: Uint8Array): boolean {
+	if (buffer.includes(0)) return false;
+	try {
+		new TextDecoder("utf-8", { fatal: true }).decode(buffer);
+		return true;
+	} catch {
+		return false;
 	}
 }
 
