@@ -27,12 +27,16 @@ import type {
 import { contentText } from "@earendil-works/pi-ai";
 import type {
 	AssistantMessage,
+	AttachmentRecord,
+	AttachmentReference,
+	AttachmentRegistry,
 	AuthResult,
 	ImageContent,
 	Model,
 	ProviderHeaders,
 	TextContent,
 	Usage,
+	UserMessage,
 } from "@earendil-works/pi-ai/compat";
 import {
 	clampThinkingLevel,
@@ -240,12 +244,21 @@ export interface PromptOptions {
 	expandPromptTemplates?: boolean;
 	/** Image attachments */
 	images?: ImageContent[];
+	/** Native file and media attachments to preserve for provider lowering. */
+	attachments?: AttachmentRecord[];
 	/** When streaming, how to queue the message: "steer" (interrupt) or "followUp" (wait). Required if streaming. */
 	streamingBehavior?: "steer" | "followUp";
 	/** Source of input for extension input event handlers. Defaults to "interactive". */
 	source?: InputSource;
 	/** Internal hook used by RPC mode to observe prompt preflight acceptance or rejection. */
 	preflightResult?: (success: boolean) => void;
+}
+
+/** Additive object-style prompt input for SDK consumers. */
+export interface PromptInput {
+	text: string;
+	images?: ImageContent[];
+	attachments?: AttachmentRecord[];
 }
 
 /** Result from cycleModel() */
@@ -318,6 +331,12 @@ export class AgentSession {
 	private _steeringMessages: string[] = [];
 	/** Tracks pending follow-up messages for UI display. Removed when delivered. */
 	private _followUpMessages: string[] = [];
+	/** Provider-neutral records referenced by attachment sidecars in this session. */
+	private readonly _attachmentRecords = new Map<string, AttachmentRecord>();
+	private readonly _attachmentRegistry: AttachmentRegistry = {
+		resolve: (id) => this._attachmentRecords.get(id),
+		list: () => Array.from(this._attachmentRecords.values()),
+	};
 	/** Messages queued to be included with the next user prompt as context ("asides"). */
 	private _pendingNextTurnMessages: CustomMessage[] = [];
 
@@ -1072,6 +1091,49 @@ export class AgentSession {
 		}
 	}
 
+	private _registerAttachments(attachments: AttachmentRecord[] | undefined): void {
+		if (!attachments || attachments.length === 0) return;
+		for (const attachment of attachments) {
+			this._validateAttachmentRecord(attachment);
+			const existing = this._attachmentRecords.get(attachment.id);
+			if (existing && JSON.stringify(existing) !== JSON.stringify(attachment)) {
+				throw new Error(`Attachment ID "${attachment.id}" is already registered with different metadata.`);
+			}
+			this._attachmentRecords.set(attachment.id, attachment);
+		}
+		this.agent.attachmentRegistry = this._attachmentRegistry;
+	}
+
+	private _validateAttachmentRecord(value: unknown): asserts value is AttachmentRecord {
+		if (!value || typeof value !== "object") throw new Error("Invalid attachment: expected an object.");
+		const record = value as Partial<AttachmentRecord>;
+		if (typeof record.id !== "string" || record.id.length === 0) {
+			throw new Error("Invalid attachment: id must be a non-empty string.");
+		}
+		if (typeof record.filename !== "string" || record.filename.length === 0) {
+			throw new Error(`Invalid attachment "${record.id}": filename must be a non-empty string.`);
+		}
+		if (typeof record.mediaType !== "string" || record.mediaType.length === 0) {
+			throw new Error(`Invalid attachment "${record.id}": mediaType must be a non-empty string.`);
+		}
+		if (!record.source || typeof record.source !== "object") {
+			throw new Error(`Invalid attachment "${record.id}": source is required.`);
+		}
+		const source = record.source as { type?: unknown; path?: unknown; data?: unknown; url?: unknown };
+		if (source.type === "path" && typeof source.path === "string" && source.path.length > 0) return;
+		if (source.type === "base64" && typeof source.data === "string" && source.data.length > 0) return;
+		if (source.type === "url" && typeof source.url === "string" && source.url.length > 0) return;
+		throw new Error(`Invalid attachment "${record.id}": unsupported or malformed source.`);
+	}
+
+	private _assertAttachmentReferencesResolvable(attachments: AttachmentReference[] | undefined): void {
+		for (const attachment of attachments ?? []) {
+			if (!this._attachmentRecords.has(attachment.attachmentId)) {
+				throw new Error(`Unknown attachment ID: ${attachment.attachmentId}`);
+			}
+		}
+	}
+
 	private async _handlePostAgentRun(): Promise<boolean> {
 		const msg = this._lastAssistantMessage;
 		this._lastAssistantMessage = undefined;
@@ -1111,7 +1173,15 @@ export class AgentSession {
 	 * @throws Error if streaming and no streamingBehavior specified
 	 * @throws Error if no model selected or no API key available (when not streaming)
 	 */
-	async prompt(text: string, options?: PromptOptions): Promise<void> {
+	async prompt(input: string | PromptInput, options?: PromptOptions): Promise<void> {
+		const text = typeof input === "string" ? input : input.text;
+		if (typeof input !== "string") {
+			options = {
+				...options,
+				images: input.images ?? options?.images,
+				attachments: input.attachments ?? options?.attachments,
+			};
+		}
 		const expandPromptTemplates = options?.expandPromptTemplates ?? true;
 		const preflightResult = options?.preflightResult;
 		let messages: AgentMessage[] | undefined;
@@ -1131,12 +1201,17 @@ export class AgentSession {
 			// Emit input event for extension interception (before skill/template expansion)
 			let currentText = text;
 			let currentImages = options?.images;
+			this._registerAttachments(options?.attachments);
+			let currentAttachments = options?.attachments?.map(
+				(record): AttachmentReference => ({ type: "attachment", attachmentId: record.id }),
+			);
 			if (this._extensionRunner.hasHandlers("input")) {
 				const inputResult = await this._extensionRunner.emitInput(
 					currentText,
 					currentImages,
 					options?.source ?? "interactive",
 					this.isStreaming ? options?.streamingBehavior : undefined,
+					currentAttachments,
 				);
 				if (inputResult.action === "handled") {
 					preflightResult?.(true);
@@ -1145,6 +1220,8 @@ export class AgentSession {
 				if (inputResult.action === "transform") {
 					currentText = inputResult.text;
 					currentImages = inputResult.images ?? currentImages;
+					currentAttachments = inputResult.attachments ?? currentAttachments;
+					this._assertAttachmentReferencesResolvable(currentAttachments);
 				}
 			}
 
@@ -1163,9 +1240,9 @@ export class AgentSession {
 					);
 				}
 				if (options.streamingBehavior === "followUp") {
-					await this._queueFollowUp(expandedText, currentImages);
+					await this._queueFollowUp(expandedText, currentImages, currentAttachments);
 				} else {
-					await this._queueSteer(expandedText, currentImages);
+					await this._queueSteer(expandedText, currentImages, currentAttachments);
 				}
 				preflightResult?.(true);
 				return;
@@ -1209,11 +1286,13 @@ export class AgentSession {
 			if (currentImages) {
 				userContent.push(...currentImages);
 			}
-			messages.push({
+			const userMessage: UserMessage = {
 				role: "user",
 				content: userContent,
+				...(currentAttachments?.length ? { attachments: currentAttachments } : {}),
 				timestamp: Date.now(),
-			});
+			};
+			messages.push(userMessage);
 
 			// Inject any pending "nextTurn" messages as context alongside the user message
 			for (const msg of this._pendingNextTurnMessages) {
@@ -1227,6 +1306,7 @@ export class AgentSession {
 				currentImages,
 				this._baseSystemPrompt,
 				this._baseSystemPromptOptions,
+				currentAttachments,
 			);
 			// Add all custom messages from extensions
 			if (result?.messages) {
@@ -1332,7 +1412,7 @@ export class AgentSession {
 	 * @param images Optional image attachments to include with the message
 	 * @throws Error if text is an extension command
 	 */
-	async steer(text: string, images?: ImageContent[]): Promise<void> {
+	async steer(text: string, images?: ImageContent[], attachments?: AttachmentRecord[]): Promise<void> {
 		// Check for extension commands (cannot be queued)
 		if (text.startsWith("/")) {
 			this._throwIfExtensionCommand(text);
@@ -1342,7 +1422,12 @@ export class AgentSession {
 		let expandedText = this._expandSkillCommand(text);
 		expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
 
-		await this._queueSteer(expandedText, images);
+		this._registerAttachments(attachments);
+		await this._queueSteer(
+			expandedText,
+			images,
+			attachments?.map((record) => ({ type: "attachment", attachmentId: record.id })),
+		);
 	}
 
 	/**
@@ -1352,7 +1437,7 @@ export class AgentSession {
 	 * @param images Optional image attachments to include with the message
 	 * @throws Error if text is an extension command
 	 */
-	async followUp(text: string, images?: ImageContent[]): Promise<void> {
+	async followUp(text: string, images?: ImageContent[], attachments?: AttachmentRecord[]): Promise<void> {
 		// Check for extension commands (cannot be queued)
 		if (text.startsWith("/")) {
 			this._throwIfExtensionCommand(text);
@@ -1362,13 +1447,22 @@ export class AgentSession {
 		let expandedText = this._expandSkillCommand(text);
 		expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
 
-		await this._queueFollowUp(expandedText, images);
+		this._registerAttachments(attachments);
+		await this._queueFollowUp(
+			expandedText,
+			images,
+			attachments?.map((record) => ({ type: "attachment", attachmentId: record.id })),
+		);
 	}
 
 	/**
 	 * Internal: Queue a steering message (already expanded, no extension command check).
 	 */
-	private async _queueSteer(text: string, images?: ImageContent[]): Promise<void> {
+	private async _queueSteer(
+		text: string,
+		images?: ImageContent[],
+		attachments?: AttachmentReference[],
+	): Promise<void> {
 		this._steeringMessages.push(text);
 		this._emitQueueUpdate();
 		const content: (TextContent | ImageContent)[] = [{ type: "text", text }];
@@ -1378,6 +1472,7 @@ export class AgentSession {
 		this.agent.steer({
 			role: "user",
 			content,
+			...(attachments?.length ? { attachments } : {}),
 			timestamp: Date.now(),
 		});
 	}
@@ -1385,7 +1480,11 @@ export class AgentSession {
 	/**
 	 * Internal: Queue a follow-up message (already expanded, no extension command check).
 	 */
-	private async _queueFollowUp(text: string, images?: ImageContent[]): Promise<void> {
+	private async _queueFollowUp(
+		text: string,
+		images?: ImageContent[],
+		attachments?: AttachmentReference[],
+	): Promise<void> {
 		this._followUpMessages.push(text);
 		this._emitQueueUpdate();
 		const content: (TextContent | ImageContent)[] = [{ type: "text", text }];
@@ -1395,6 +1494,7 @@ export class AgentSession {
 		this.agent.followUp({
 			role: "user",
 			content,
+			...(attachments?.length ? { attachments } : {}),
 			timestamp: Date.now(),
 		});
 	}
@@ -1471,7 +1571,7 @@ export class AgentSession {
 	 */
 	async sendUserMessage(
 		content: string | (TextContent | ImageContent)[],
-		options?: { deliverAs?: "steer" | "followUp" },
+		options?: { deliverAs?: "steer" | "followUp"; attachments?: AttachmentRecord[] },
 	): Promise<void> {
 		// Normalize content to text string + optional images
 		let text: string;
@@ -1498,6 +1598,7 @@ export class AgentSession {
 			expandPromptTemplates: false,
 			streamingBehavior: options?.deliverAs,
 			images,
+			attachments: options?.attachments,
 			source: "extension",
 		});
 	}
