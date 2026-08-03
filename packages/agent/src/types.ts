@@ -3,6 +3,7 @@ import type {
 	AssistantMessage,
 	AssistantMessageEvent,
 	AssistantMessageEventStream,
+	AttachmentRegistry,
 	Context,
 	ImageContent,
 	Message,
@@ -410,6 +411,8 @@ export interface AgentContext {
 	messages: AgentMessage[];
 	/** Tools available for this run. */
 	tools?: AgentTool<any>[];
+	/** Request-scoped attachment records referenced by messages in this context. */
+	attachmentRegistry?: AttachmentRegistry;
 }
 
 /**
