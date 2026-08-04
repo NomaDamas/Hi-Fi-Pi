@@ -2,7 +2,11 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { processFileArguments } from "../src/cli/file-processor.ts";
+import {
+	extractPromptFileReferences,
+	processFileArguments,
+	processPromptFileReferences,
+} from "../src/cli/file-processor.ts";
 
 const TINY_PNG_BASE64 =
 	"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==";
@@ -126,6 +130,46 @@ describe("processFileArguments attachment classification", () => {
 		expect(result.images).toHaveLength(1);
 		expect(result.attachments).toHaveLength(1);
 		expect(result.attachments[0]?.filename).toBe("paper.pdf");
+	});
+
+	it("extracts unquoted and quoted interactive @file references without treating emails as files", () => {
+		const result = extractPromptFileReferences(
+			'Analyze @paper.pdf and @"slides deck.pptx" then email test@example.com',
+		);
+
+		expect(result.fileArgs).toEqual(["paper.pdf", "slides deck.pptx"]);
+		expect(result.text).toBe("Analyze  and  then email test@example.com");
+	});
+
+	it("preserves plain @mentions while extracting path-like file references", async () => {
+		const extracted = extractPromptFileReferences("Ask @alice to review @paper.pdf");
+
+		expect(extracted.fileArgs).toEqual(["paper.pdf"]);
+		expect(extracted.text).toBe("Ask @alice to review");
+
+		await expect(processPromptFileReferences("Ask @alice for status", { failureMode: "throw" })).resolves.toEqual({
+			text: "Ask @alice for status",
+			images: [],
+			attachments: [],
+		});
+	});
+
+	it("processes interactive text plus a PDF through the typed attachment path", async () => {
+		const pdfPath = join(testDir, "paper.pdf");
+		writeFileSync(pdfPath, Buffer.from("%PDF-1.7\nbinary\n"));
+
+		const result = await processPromptFileReferences(`@"${pdfPath}" Analyze the equations`, {
+			failureMode: "throw",
+		});
+
+		expect(result.text).toBe("Analyze the equations");
+		expect(result.images).toEqual([]);
+		expect(result.attachments).toHaveLength(1);
+		expect(result.attachments[0]).toMatchObject({
+			filename: "paper.pdf",
+			mediaType: "application/pdf",
+			source: { type: "path", path: resolve(pdfPath) },
+		});
 	});
 
 	it("preserves attachment argument order", async () => {
