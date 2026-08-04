@@ -160,6 +160,70 @@ describe("Issue 5 attachment persistence", () => {
 		expect(branch.getAttachment(attachment.id)).toBeUndefined();
 	});
 
+	it("scopes attachment lookup to the active branch", () => {
+		const manager = createPersistentManager();
+		manager.appendMessage(userMessage("before attachment"));
+		const branchPoint = flushTurn(manager);
+		manager.appendAttachment(attachment);
+		manager.appendMessage(userMessage("branch A", attachment.id));
+		flushTurn(manager);
+
+		manager.branch(branchPoint);
+
+		expect(manager.getAttachment(attachment.id)).toBeUndefined();
+		expect(manager.getAttachments()).toEqual([]);
+	});
+
+	it("persists the same attachment identity independently on sibling branches", () => {
+		const manager = createPersistentManager();
+		manager.appendMessage(userMessage("before attachment"));
+		const branchPoint = flushTurn(manager);
+		const branchAEntryId = manager.appendAttachment(attachment);
+		manager.appendMessage(userMessage("branch A", attachment.id));
+		flushTurn(manager);
+
+		manager.branch(branchPoint);
+		const branchBEntryId = manager.appendAttachment(attachment);
+		manager.appendMessage(userMessage("branch B", attachment.id));
+		const branchBLeaf = flushTurn(manager);
+
+		expect(branchBEntryId).not.toBe(branchAEntryId);
+		expect(manager.findDanglingAttachmentReferences()).toEqual([]);
+
+		const branchFile = manager.createBranchedSession(branchBLeaf)!;
+		const branch = withAttachmentApi(SessionManager.open(branchFile));
+
+		expect(branch.getAttachment(attachment.id)).toEqual(attachment);
+		expect(branch.findDanglingAttachmentReferences()).toEqual([]);
+	});
+
+	it("refreshes the provider attachment registry when AgentSession navigates between branches", async () => {
+		const manager = createPersistentManager();
+		manager.appendMessage(userMessage("branch point"));
+		const branchPoint = flushTurn(manager);
+		manager.appendAttachment(attachment);
+		manager.appendMessage(userMessage("branch A", attachment.id));
+		const branchALeaf = flushTurn(manager);
+
+		manager.branch(branchPoint);
+		manager.appendMessage(userMessage("branch B"));
+		flushTurn(manager);
+		const harness = await createHarness({ sessionManager: manager });
+		harnesses.push(harness);
+		let resolved: AttachmentRecord | undefined;
+		harness.setResponses([
+			(context) => {
+				resolved = context.attachmentRegistry?.resolve(attachment.id);
+				return fauxAssistantMessage("done");
+			},
+		]);
+
+		await harness.session.navigateTree(branchALeaf);
+		await harness.session.prompt("Continue branch A");
+
+		expect(resolved).toEqual(attachment);
+	});
+
 	it("retains attachment entries when forking a persisted session", () => {
 		const manager = createPersistentManager();
 		manager.appendAttachment(attachment);
@@ -175,19 +239,37 @@ describe("Issue 5 attachment persistence", () => {
 		expect(fork.getAttachment(attachment.id)).toEqual(attachment);
 	});
 
-	it("keeps the attachment registry authoritative after compaction omits old message entries", () => {
+	it("preserves compacted attachment identity in a versioned manifest and summary context", () => {
 		const manager = createPersistentManager();
 		manager.appendAttachment(attachment);
-		manager.appendMessage(userMessage("old attachment turn", attachment.id));
+		const introducedByMessageEntryId = manager.appendMessage(userMessage("old attachment turn", attachment.id));
 		flushTurn(manager);
 		const keptId = manager.appendMessage(userMessage("kept turn"));
 		flushTurn(manager);
-		manager.appendCompaction("summary mentioning paper.pdf", keptId, 10_000);
+		const compactionId = manager.appendCompaction("summary", keptId, 10_000);
 
 		expect(manager.buildContextEntries().some((entry) => (entry as { type: string }).type === "attachment")).toBe(
 			false,
 		);
 		expect(manager.getAttachment(attachment.id)).toEqual(attachment);
+		expect(manager.getEntry(compactionId)).toMatchObject({
+			type: "compaction",
+			attachmentManifest: {
+				version: 1,
+				attachments: [
+					{
+						attachmentId: attachment.id,
+						filename: attachment.filename,
+						mediaType: attachment.mediaType,
+						introducedByMessageEntryId,
+						required: true,
+					},
+				],
+			},
+		});
+		expect(JSON.stringify(manager.buildSessionContext().messages)).toContain(
+			`paper.pdf (${attachment.mediaType}, id: ${attachment.id}, introduced by: ${introducedByMessageEntryId})`,
+		);
 	});
 
 	it("reports dangling message attachment references without rejecting session load", () => {
@@ -224,11 +306,33 @@ describe("Issue 5 attachment persistence", () => {
 				id: inlineAttachment.id,
 				filename: inlineAttachment.filename,
 				mediaType: inlineAttachment.mediaType,
-				source: { type: "base64", data: "[omitted from HTML export]" },
+				metadata: { sourceAvailable: false },
+				source: { type: "base64", data: "[omitted from export]" },
 			},
 		});
 		expect(html).toContain("attachment-entry");
 		expect(html).not.toContain("JVBERi0xLjQ=");
+	});
+
+	it("redacts inline attachment bytes from JSONL exports by default", async () => {
+		const manager = createPersistentManager();
+		const inlineAttachment: AttachmentRecord = {
+			...attachment,
+			id: "att_json_inline",
+			source: { type: "base64", data: "JVBERi0xLjQ=SECRET" },
+		};
+		manager.appendAttachment(inlineAttachment);
+		manager.appendMessage(userMessage("Analyze", inlineAttachment.id));
+		flushTurn(manager);
+		const harness = await createHarness({ sessionManager: manager });
+		harnesses.push(harness);
+		const outputPath = join(manager.getCwd(), "safe-export.jsonl");
+
+		harness.session.exportToJsonl(outputPath);
+		const exported = readFileSync(outputPath, "utf8");
+
+		expect(exported).toContain("[omitted from export]");
+		expect(exported).not.toContain("JVBERi0xLjQ=SECRET");
 	});
 
 	it("stores inline attachment bytes once even when multiple messages reference them", () => {

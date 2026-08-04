@@ -1297,10 +1297,11 @@
 			? ` · ${attachment.sizeBytes.toLocaleString()} bytes`
 			: '';
 		  const sourceType = attachment.source?.type || 'unknown';
-		  const remoteCount = attachment.remotes ? Object.keys(attachment.remotes).length : 0;
+		  const sourceStatus = attachment.metadata?.sourceAvailable === false ? 'missing' : 'available';
+		  const remoteProviders = attachment.remotes ? Object.keys(attachment.remotes) : [];
 		  return `<div class="attachment-entry" id="${entryDomId}">${tsHtml}
 			<div class="attachment-name">${escapeHtml(attachment.filename || attachment.id || 'Attachment')}</div>
-			<div class="attachment-meta">${escapeHtml(attachment.mediaType || 'application/octet-stream')}${size} · ${escapeHtml(sourceType)} source${remoteCount ? ` · ${remoteCount} provider upload${remoteCount === 1 ? '' : 's'}` : ''}</div>
+			<div class="attachment-meta">${escapeHtml(attachment.mediaType || 'application/octet-stream')}${size} · ${escapeHtml(sourceType)} source ${sourceStatus}${remoteProviders.length ? ` · uploaded: ${escapeHtml(remoteProviders.join(', '))}` : ''}</div>
 		  </div>`;
 		}
 

@@ -67,7 +67,7 @@ import {
 	shouldCompact,
 } from "./compaction/index.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
-import { exportSessionToHtml, type ToolHtmlRenderer } from "./export-html/index.ts";
+import { exportSessionToHtml, sanitizeSessionEntriesForExport, type ToolHtmlRenderer } from "./export-html/index.ts";
 import { createToolHtmlRenderer } from "./export-html/tool-renderer.ts";
 import {
 	type ContextUsage,
@@ -335,6 +335,12 @@ export class AgentSession {
 	private readonly _attachmentRecords = new Map<string, AttachmentRecord>();
 	private readonly _attachmentRegistry: AttachmentRegistry = {
 		resolve: (id) => this._attachmentRecords.get(id),
+		read: (attachment) => {
+			if (attachment.source.type !== "path") {
+				throw new Error(`Attachment ${attachment.id} does not have a local path source.`);
+			}
+			return new Uint8Array(readFileSync(attachment.source.path));
+		},
 		list: () => Array.from(this._attachmentRecords.values()),
 	};
 	/** Messages queued to be included with the next user prompt as context ("asides"). */
@@ -406,12 +412,7 @@ export class AgentSession {
 		this._excludedToolNames = config.excludedToolNames ? new Set(config.excludedToolNames) : undefined;
 		this._baseToolsOverride = config.baseToolsOverride;
 		this._sessionStartEvent = config.sessionStartEvent ?? { type: "session_start", reason: "startup" };
-		for (const attachment of this.sessionManager.getAttachments()) {
-			this._attachmentRecords.set(attachment.id, attachment);
-		}
-		if (this._attachmentRecords.size > 0) {
-			this.agent.attachmentRegistry = this._attachmentRegistry;
-		}
+		this._syncAttachmentsFromActiveBranch();
 
 		// Always subscribe to agent events for internal handling
 		// (session persistence, extensions, auto-compaction, retry logic)
@@ -1110,6 +1111,14 @@ export class AgentSession {
 		this.agent.attachmentRegistry = this._attachmentRegistry;
 	}
 
+	private _syncAttachmentsFromActiveBranch(): void {
+		this._attachmentRecords.clear();
+		for (const attachment of this.sessionManager.getAttachments()) {
+			this._attachmentRecords.set(attachment.id, attachment);
+		}
+		this.agent.attachmentRegistry = this._attachmentRecords.size > 0 ? this._attachmentRegistry : undefined;
+	}
+
 	private _validateAttachmentRecord(value: unknown): asserts value is AttachmentRecord {
 		if (!value || typeof value !== "object") throw new Error("Invalid attachment: expected an object.");
 		const record = value as Partial<AttachmentRecord>;
@@ -1125,10 +1134,26 @@ export class AgentSession {
 		if (!record.source || typeof record.source !== "object") {
 			throw new Error(`Invalid attachment "${record.id}": source is required.`);
 		}
-		const source = record.source as { type?: unknown; path?: unknown; data?: unknown; url?: unknown };
+		const source = record.source as {
+			type?: unknown;
+			path?: unknown;
+			data?: unknown;
+			url?: unknown;
+			provider?: unknown;
+			fileId?: unknown;
+		};
 		if (source.type === "path" && typeof source.path === "string" && source.path.length > 0) return;
 		if (source.type === "base64" && typeof source.data === "string" && source.data.length > 0) return;
 		if (source.type === "url" && typeof source.url === "string" && source.url.length > 0) return;
+		if (
+			source.type === "provider-file" &&
+			typeof source.provider === "string" &&
+			source.provider.length > 0 &&
+			typeof source.fileId === "string" &&
+			source.fileId.length > 0
+		) {
+			return;
+		}
 		throw new Error(`Invalid attachment "${record.id}": unsupported or malformed source.`);
 	}
 
@@ -3177,6 +3202,7 @@ export class AgentSession {
 				// No summary, navigating to non-root
 				this.sessionManager.branch(newLeafId);
 			}
+			this._syncAttachmentsFromActiveBranch();
 
 			// Attach label to target entry when not summarizing (no summary entry to label)
 			if (label && !summaryText) {
@@ -3374,7 +3400,7 @@ export class AgentSession {
 			cwd: this.sessionManager.getCwd(),
 		};
 
-		const branchEntries = this.sessionManager.getBranch();
+		const branchEntries = sanitizeSessionEntriesForExport(this.sessionManager.getBranch());
 		const lines = [JSON.stringify(header)];
 
 		// Re-chain parentIds to form a linear sequence
