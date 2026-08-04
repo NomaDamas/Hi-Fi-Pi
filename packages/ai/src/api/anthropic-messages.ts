@@ -36,7 +36,7 @@ import { parseJsonWithRepair, parseStreamingJson } from "../utils/json-parse.ts"
 import { getProviderEnvValue } from "../utils/provider-env.ts";
 import { retryProviderRequest } from "../utils/provider-retry.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
-import { resolvePdfAttachments, UnsupportedInputError } from "./attachment-lowering.ts";
+import { resolvePdfAttachments } from "./attachment-lowering.ts";
 import { resolveJsonSchemaStrictSampling } from "./constrained-sampling.ts";
 import { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "./github-copilot-headers.ts";
 import { adjustMaxTokensForThinking, buildBaseOptions, clampMaxTokensToContext } from "./simple-options.ts";
@@ -169,6 +169,7 @@ export type AnthropicThinkingDisplay = "summarized" | "omitted";
 
 const FINE_GRAINED_TOOL_STREAMING_BETA = "fine-grained-tool-streaming-2025-05-14";
 const INTERLEAVED_THINKING_BETA = "interleaved-thinking-2025-05-14";
+const FILES_API_BETA = "files-api-2025-04-14";
 
 function getAnthropicCompat(
 	model: Model<"anthropic-messages">,
@@ -538,6 +539,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 					apiKey,
 					options?.interleavedThinking ?? true,
 					shouldUseFineGrainedToolStreamingBeta(model, context),
+					hasProviderFileAttachment(model, context),
 					options?.headers,
 					options?.fetch,
 					copilotDynamicHeaders,
@@ -844,11 +846,35 @@ function isOAuthToken(apiKey: string): boolean {
 	return apiKey.includes("sk-ant-oat");
 }
 
+function hasProviderFileAttachment(model: Model<"anthropic-messages">, context: Context): boolean {
+	const now = Date.now();
+	for (const message of context.messages) {
+		if (message.role !== "user" && message.role !== "toolResult") continue;
+		for (const reference of message.attachments ?? []) {
+			const attachment = context.attachmentRegistry?.resolve(reference.attachmentId);
+			if (!attachment) continue;
+			if (attachment.source.type === "provider-file" && attachment.source.provider === model.provider) return true;
+			if (
+				Object.values(attachment.remotes ?? {}).some(
+					(remote) =>
+						remote.provider === model.provider &&
+						remote.api === model.api &&
+						(remote.expiresAt === undefined || remote.expiresAt > now),
+				)
+			) {
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
 function createClient(
 	model: Model<"anthropic-messages">,
 	apiKey: string | undefined,
 	interleavedThinking: boolean,
 	useFineGrainedToolStreamingBeta: boolean,
+	useFilesApiBeta: boolean,
 	optionsHeaders?: ProviderHeaders,
 	fetch?: typeof globalThis.fetch,
 	dynamicHeaders?: Record<string, string>,
@@ -862,6 +888,9 @@ function createClient(
 	}
 	if (needsInterleavedBeta) {
 		betaFeatures.push(INTERLEAVED_THINKING_BETA);
+	}
+	if (useFilesApiBeta) {
+		betaFeatures.push(FILES_API_BETA);
 	}
 
 	// Copilot: Bearer auth, selective betas.
@@ -1154,12 +1183,11 @@ function convertMessages(
 							title: attachment.filename,
 						};
 					case "provider-file":
-						if (!attachmentModel) throw new Error("Attachment model is unavailable");
-						throw new UnsupportedInputError(
-							attachmentModel,
-							attachment.mediaType,
-							"Anthropic file IDs require a Files API beta transport",
-						);
+						return {
+							type: "document",
+							source: { type: "file", file_id: attachment.source.fileId },
+							title: attachment.filename,
+						} as unknown as ContentBlockParam;
 				}
 				throw new Error("Unknown attachment source");
 			});

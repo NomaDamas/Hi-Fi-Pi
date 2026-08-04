@@ -14,12 +14,17 @@ function makeModel<TApi extends "openai-responses" | "anthropic-messages" | "goo
 	api: TApi,
 	provider: string,
 ): Model<TApi> {
+	const baseUrls: Record<TApi, string> = {
+		"openai-responses": "https://api.openai.com/v1",
+		"anthropic-messages": "https://api.anthropic.com",
+		"google-generative-ai": "https://generativelanguage.googleapis.com",
+	} as Record<TApi, string>;
 	return {
 		id: `${provider}-test-model`,
 		name: `${provider} Test Model`,
 		api,
 		provider,
-		baseUrl: "http://127.0.0.1:9",
+		baseUrl: baseUrls[api],
 		reasoning: false,
 		input: ["text", "image"],
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
@@ -59,9 +64,12 @@ function makeContext(): Context {
 	};
 }
 
-async function captureAnthropicMessages(context: Context): Promise<unknown> {
+async function captureAnthropicMessages(
+	context: Context,
+	model = makeModel("anthropic-messages", "anthropic"),
+): Promise<unknown> {
 	let capturedPayload: unknown;
-	const result = streamAnthropic(makeModel("anthropic-messages", "anthropic"), context, {
+	const result = streamAnthropic(model, context, {
 		apiKey: "test-key",
 		cacheRetention: "none",
 		onPayload: (payload) => {
@@ -72,6 +80,27 @@ async function captureAnthropicMessages(context: Context): Promise<unknown> {
 	await result.result();
 
 	return (capturedPayload as { messages?: unknown } | undefined)?.messages;
+}
+
+async function captureAnthropicHeaders(context: Context): Promise<Headers> {
+	let capturedHeaders = new Headers();
+	const result = streamAnthropic(makeModel("anthropic-messages", "anthropic"), context, {
+		apiKey: "test-key",
+		cacheRetention: "none",
+		interleavedThinking: false,
+		fetch: async (input, init) => {
+			capturedHeaders = input instanceof Request ? new Headers(input.headers) : new Headers(init?.headers);
+			return new Response(
+				JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: "stop" } }),
+				{
+					status: 400,
+					headers: { "content-type": "application/json" },
+				},
+			);
+		},
+	});
+	await result.result();
+	return capturedHeaders;
 }
 
 describe("provider-native PDF attachment lowering", () => {
@@ -134,6 +163,73 @@ describe("provider-native PDF attachment lowering", () => {
 				],
 			},
 		]);
+	});
+
+	it("rejects a custom OpenAI-compatible endpoint until native PDF support is opted in", () => {
+		const model: Model<"openai-responses"> = {
+			...makeModel("openai-responses", "myproxy"),
+			baseUrl: "https://proxy.example.com/v1",
+		};
+
+		expect(() => convertResponsesMessages(model, makeContext(), new Set(["myproxy"]))).toThrow(
+			/custom endpoints require nativeAttachments\.pdf\.supported opt-in/i,
+		);
+	});
+
+	it("allows a custom endpoint to opt into only the native PDF sources it implements", () => {
+		const model: Model<"openai-responses"> = {
+			...makeModel("openai-responses", "myproxy"),
+			baseUrl: "https://proxy.example.com/v1",
+			nativeAttachments: {
+				pdf: { supported: true, sources: ["inline"], maximumInlineBytes: 1024 },
+			},
+		};
+
+		const input = convertResponsesMessages(model, makeContext(), new Set(["myproxy"])) as unknown as Array<{
+			content: Array<{ type: string; filename?: string }>;
+		}>;
+		expect(input[0]?.content[0]).toMatchObject({ type: "input_file", filename: "paper.pdf" });
+
+		const urlRecord: AttachmentRecord = {
+			...makePdfRecord(),
+			source: { type: "url", url: "https://example.com/paper.pdf" },
+		};
+		const urlContext = makeContext();
+		urlContext.attachmentRegistry = { resolve: () => urlRecord };
+		expect(() => convertResponsesMessages(model, urlContext, new Set(["myproxy"]))).toThrow(
+			/URL sources are disabled by model configuration/i,
+		);
+	});
+
+	it("rejects inline PDF bytes larger than the configured endpoint limit", () => {
+		const model: Model<"openai-responses"> = {
+			...makeModel("openai-responses", "myproxy"),
+			baseUrl: "https://proxy.example.com/v1",
+			nativeAttachments: {
+				pdf: { supported: true, sources: ["inline"], maximumInlineBytes: 4 },
+			},
+		};
+
+		expect(() => convertResponsesMessages(model, makeContext(), new Set(["myproxy"]))).toThrow(
+			/inline limit is 4 bytes/i,
+		);
+	});
+
+	it("rejects remote PDF URLs for the official Gemini 2.0 family", () => {
+		const model: Model<"google-generative-ai"> = {
+			...makeModel("google-generative-ai", "google"),
+			id: "gemini-2.0-flash",
+		};
+		const record: AttachmentRecord = {
+			...makePdfRecord(),
+			source: { type: "url", url: "https://example.com/paper.pdf" },
+		};
+		const context = makeContext();
+		context.attachmentRegistry = { resolve: () => record };
+
+		expect(() => convertGoogleMessages(model, context)).toThrow(
+			/gemini-2\.0-flash does not support remote PDF URLs/i,
+		);
 	});
 
 	it("keeps attachment-free text payloads unchanged across all providers", async () => {
@@ -418,6 +514,27 @@ describe("provider-native PDF attachment lowering", () => {
 		expect(openAi[0]?.content[0]).toEqual({ type: "input_file", file_id: "file_123" });
 	});
 
+	it("lowers an Anthropic provider file ID and enables the Files API beta", async () => {
+		const record: AttachmentRecord = {
+			...makePdfRecord(),
+			source: { type: "provider-file", provider: "anthropic", fileId: "file_anthropic_123" },
+		};
+		const context: Context = {
+			...makeContext(),
+			attachmentRegistry: { resolve: () => record },
+		};
+
+		const messages = (await captureAnthropicMessages(context)) as Array<{ content: Array<unknown> }>;
+		expect(messages[0]?.content[0]).toEqual({
+			type: "document",
+			source: { type: "file", file_id: "file_anthropic_123" },
+			title: "paper.pdf",
+		});
+
+		const headers = await captureAnthropicHeaders(context);
+		expect(headers.get("anthropic-beta")).toContain("files-api-2025-04-14");
+	});
+
 	it("rejects a provider-file source owned by another provider", () => {
 		const record: AttachmentRecord = {
 			id: "att_foreign",
@@ -524,6 +641,30 @@ describe("provider-native PDF attachment lowering", () => {
 		expect(() =>
 			convertResponsesMessages(makeModel("openai-responses", "openai"), context, new Set(["openai"])),
 		).toThrow(/Attachment source is unavailable.*ENOENT/);
+	});
+
+	it("fails clearly when inline bytes were redacted from an exported session", () => {
+		const record: AttachmentRecord = {
+			id: "att_redacted",
+			filename: "paper.pdf",
+			mediaType: "application/pdf",
+			source: { type: "base64", data: "[omitted from export]" },
+		};
+		const context: Context = {
+			messages: [
+				{
+					role: "user",
+					content: "Analyze",
+					attachments: [{ type: "attachment", attachmentId: record.id }],
+					timestamp: 1_700_000_000_000,
+				},
+			],
+			attachmentRegistry: { resolve: () => record },
+		};
+
+		expect(() =>
+			convertResponsesMessages(makeModel("openai-responses", "openai"), context, new Set(["openai"])),
+		).toThrow(/Attachment source is unavailable.*redacted from an export/);
 	});
 
 	it("rejects unsupported media before provider request construction", () => {
