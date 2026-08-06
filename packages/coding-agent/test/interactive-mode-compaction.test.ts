@@ -58,6 +58,10 @@ describe("InteractiveMode compaction events", () => {
 	});
 
 	test("preserves steering behavior when flushing into an active agent run", async () => {
+		const sendAttachmentAwareCompactionMessage = Reflect.get(
+			InteractiveMode.prototype,
+			"sendAttachmentAwareCompactionMessage",
+		) as (message: { text: string; mode: "steer" | "followUp" }, startPrompt: boolean) => Promise<void>;
 		const fakeThis = {
 			compactionQueuedMessages: [{ text: "change direction", mode: "steer" as const }],
 			session: {
@@ -67,6 +71,8 @@ describe("InteractiveMode compaction events", () => {
 				followUp: vi.fn().mockResolvedValue(undefined),
 			},
 			isExtensionCommand: vi.fn().mockReturnValue(false),
+			processInteractiveFileReferences: vi.fn(async (text: string) => ({ text, images: [], attachments: [] })),
+			sendAttachmentAwareCompactionMessage,
 			updatePendingMessagesDisplay: vi.fn(),
 			showError: vi.fn(),
 		};
