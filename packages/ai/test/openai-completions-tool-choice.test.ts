@@ -196,7 +196,26 @@ describe("openai-completions tool_choice", () => {
 	});
 
 	it("maps groq qwen3 reasoning levels to default reasoning_effort", async () => {
-		const model = getModel("groq", "qwen/qwen3-32b")!;
+		const model = {
+			...localOpenAICompletionsModel,
+			id: "qwen/qwen3-32b",
+			name: "Qwen3-32B",
+			provider: "groq",
+			baseUrl: "https://api.groq.com/openai/v1",
+			thinkingLevelMap: {
+				off: "none",
+				minimal: null,
+				low: null,
+				medium: null,
+				high: "default",
+				xhigh: null,
+				max: null,
+			},
+			compat: {
+				thinkingFormat: "qwen",
+				supportsReasoningEffort: true,
+			},
+		} satisfies Model<"openai-completions">;
 		let payload: unknown;
 
 		await streamSimple(
