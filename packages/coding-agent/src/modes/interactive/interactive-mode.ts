@@ -871,7 +871,14 @@ export class InteractiveMode {
 		});
 
 		// Show startup warnings
-		const { migratedProviders, modelFallbackMessage, initialMessage, initialImages, initialMessages } = this.options;
+		const {
+			migratedProviders,
+			modelFallbackMessage,
+			initialMessage,
+			initialImages,
+			initialAttachments,
+			initialMessages,
+		} = this.options;
 
 		if (migratedProviders && migratedProviders.length > 0) {
 			this.showWarning(`Migrated credentials to auth.json: ${migratedProviders.join(", ")}`);
@@ -891,7 +898,10 @@ export class InteractiveMode {
 		// Process initial messages
 		if (initialMessage) {
 			try {
-				await this.session.prompt(initialMessage, { images: initialImages });
+				await this.session.prompt(initialMessage, {
+					images: initialImages,
+					...(initialAttachments?.length ? { attachments: initialAttachments } : {}),
+				});
 			} catch (error: unknown) {
 				const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
 				this.showError(errorMessage);

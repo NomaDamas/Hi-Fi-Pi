@@ -1,4 +1,5 @@
 import type {
+	AttachmentRegistry,
 	ImageContent,
 	Message,
 	Model,
@@ -204,6 +205,8 @@ export class Agent {
 	public transport: Transport;
 	/** Optional cap for provider-requested retry delays. */
 	public maxRetryDelayMs?: number;
+	/** Optional attachment registry forwarded to provider request contexts. */
+	public attachmentRegistry?: AttachmentRegistry;
 	/** Tool execution strategy for assistant messages that contain multiple tool calls. */
 	public toolExecution: ToolExecutionMode;
 
@@ -424,11 +427,13 @@ export class Agent {
 	}
 
 	private createContextSnapshot(): AgentContext {
-		return {
+		const context: AgentContext = {
 			systemPrompt: this._state.systemPrompt,
 			messages: this._state.messages.slice(),
 			tools: this._state.tools.slice(),
 		};
+		if (this.attachmentRegistry) context.attachmentRegistry = this.attachmentRegistry;
+		return context;
 	}
 
 	private createLoopConfig(options: { skipInitialSteeringPoll?: boolean } = {}): AgentLoopConfig {

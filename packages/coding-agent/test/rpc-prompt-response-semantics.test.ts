@@ -5,6 +5,8 @@ import { Agent } from "@earendil-works/pi-agent-core";
 import {
 	type AssistantMessage,
 	type AssistantMessageEvent,
+	type AttachmentRecord,
+	type Context,
 	EventStream,
 	getModel,
 	type Model,
@@ -114,7 +116,8 @@ async function createRuntimeHost(options: { withAuth: boolean; responseDelayMs: 
 			systemPrompt: "Test",
 			tools: [],
 		},
-		streamFn: (_model, _context, _options) => {
+		streamFn: (_model, context, _options) => {
+			testContextCapture.current?.(context);
 			const stream = new MockAssistantStream();
 			queueMicrotask(() => {
 				stream.push({ type: "start", partial: createAssistantMessage("") });
@@ -170,6 +173,8 @@ async function createRuntimeHost(options: { withAuth: boolean; responseDelayMs: 
 	};
 }
 
+const testContextCapture: { current?: (context: Context) => void } = {};
+
 async function startRpcMode(options: { withAuth: boolean; responseDelayMs: number; model?: Model<any> }): Promise<{
 	lineHandler: (line: string) => void;
 	cleanup: () => Promise<void>;
@@ -188,6 +193,7 @@ describe("RPC prompt response semantics", () => {
 	afterEach(() => {
 		rpcIo.outputLines = [];
 		rpcIo.lineHandler = undefined;
+		testContextCapture.current = undefined;
 	});
 
 	it("emits one failure response when prompt preflight rejects", async () => {
@@ -245,6 +251,64 @@ describe("RPC prompt response semantics", () => {
 					success: true,
 				});
 			});
+		} finally {
+			await cleanup();
+		}
+	});
+
+	it("carries JSONL prompt attachments through RPC mode into the provider context", async () => {
+		const attachment: AttachmentRecord = {
+			id: "att_rpc",
+			filename: "paper.pdf",
+			mediaType: "application/pdf",
+			source: { type: "base64", data: "JVBERi0xLjQ=" },
+		};
+		let providerContext: Context | undefined;
+		testContextCapture.current = (context) => {
+			providerContext = context;
+		};
+		const { lineHandler, cleanup } = await startRpcMode({ withAuth: true, responseDelayMs: 0 });
+
+		try {
+			lineHandler(JSON.stringify({ id: "att-1", type: "prompt", message: "Analyze", attachments: [attachment] }));
+
+			await vi.waitFor(() => {
+				expect(providerContext?.attachmentRegistry?.resolve(attachment.id)).toEqual(attachment);
+				expect(providerContext?.messages.find((message) => message.role === "user")).toMatchObject({
+					attachments: [{ type: "attachment", attachmentId: attachment.id }],
+				});
+				expect(getPromptResponses(rpcIo.outputLines, "att-1")).toMatchObject([{ success: true }]);
+			});
+		} finally {
+			await cleanup();
+		}
+	});
+
+	it("rejects malformed JSONL RPC attachments before provider execution", async () => {
+		let providerCallCount = 0;
+		testContextCapture.current = () => {
+			providerCallCount += 1;
+		};
+		const { lineHandler, cleanup } = await startRpcMode({ withAuth: true, responseDelayMs: 0 });
+
+		try {
+			lineHandler(
+				JSON.stringify({
+					id: "att-invalid",
+					type: "prompt",
+					message: "Analyze",
+					attachments: [
+						{ id: "att_bad", filename: "paper.pdf", mediaType: "application/pdf", source: { type: "path" } },
+					],
+				}),
+			);
+
+			await vi.waitFor(() => {
+				expect(getPromptResponses(rpcIo.outputLines, "att-invalid")).toMatchObject([
+					{ success: false, error: expect.stringContaining("unsupported or malformed source") },
+				]);
+			});
+			expect(providerCallCount).toBe(0);
 		} finally {
 			await cleanup();
 		}
