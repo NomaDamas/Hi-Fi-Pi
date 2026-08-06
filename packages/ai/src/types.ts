@@ -374,6 +374,12 @@ export type AttachmentSource =
 	| {
 			type: "url";
 			url: string;
+	  }
+	| {
+			type: "provider-file";
+			provider: ProviderId;
+			fileId: string;
+			uri?: string;
 	  };
 
 export interface ProviderFileReference {
@@ -399,6 +405,7 @@ export interface AttachmentRecord {
 
 export interface AttachmentRegistry {
 	resolve(id: string): AttachmentRecord | undefined;
+	read?(attachment: AttachmentRecord): Uint8Array;
 	list?(): readonly AttachmentRecord[];
 }
 
@@ -803,6 +810,20 @@ export interface ModelCost extends ModelCostRates {
 	tiers?: ModelCostTier[];
 }
 
+export type NativeAttachmentTransportSource = "inline" | "url" | "provider-file";
+
+export interface NativePdfAttachmentCapabilityConfig {
+	supported: boolean;
+	sources?: NativeAttachmentTransportSource[];
+	maximumInlineBytes?: number;
+	maximumRequestBytes?: number;
+}
+
+/** Explicit opt-in/out for provider-native inputs on custom endpoints and model overrides. */
+export interface NativeAttachmentCapabilitiesConfig {
+	pdf?: NativePdfAttachmentCapabilityConfig;
+}
+
 // Model interface for the unified model system
 export interface Model<TApi extends Api> {
 	id: string;
@@ -821,6 +842,7 @@ export interface Model<TApi extends Api> {
 	contextWindow: number;
 	maxTokens: number;
 	headers?: Record<string, string>;
+	nativeAttachments?: NativeAttachmentCapabilitiesConfig;
 	/** Compatibility overrides for OpenAI-compatible APIs. If not set, auto-detected from baseUrl. */
 	compat?: TApi extends "openai-completions"
 		? OpenAICompletionsCompat

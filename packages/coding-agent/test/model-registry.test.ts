@@ -97,6 +97,34 @@ describe("ModelRegistry", () => {
 	};
 
 	describe("baseUrl override (no custom models)", () => {
+		test("propagates provider-native attachment opt-in from models.json", async () => {
+			writeRawModelsJson({
+				myproxy: {
+					baseUrl: "https://proxy.example.com/v1",
+					apiKey: "test-key",
+					api: "openai-responses",
+					nativeAttachments: {
+						pdf: {
+							supported: true,
+							sources: ["inline", "provider-file"],
+							maximumInlineBytes: 1048576,
+						},
+					},
+					models: [{ id: "custom-model" }],
+				},
+			});
+
+			const registry = await createModelRegistry(authStorage, modelsJsonPath);
+
+			expect(registry.find("myproxy", "custom-model")?.nativeAttachments).toEqual({
+				pdf: {
+					supported: true,
+					sources: ["inline", "provider-file"],
+					maximumInlineBytes: 1048576,
+				},
+			});
+		});
+
 		test("overriding baseUrl keeps all built-in models", async () => {
 			writeRawModelsJson({
 				anthropic: overrideConfig("https://my-proxy.example.com/v1"),
