@@ -600,6 +600,24 @@
       font-weight: bold;
     }
 
+    .attachment-entry {
+      background: var(--infoBg);
+      border-left: 3px solid var(--borderAccent);
+      border-radius: 4px;
+      padding: var(--line-height);
+    }
+
+    .attachment-name {
+      color: var(--text);
+      font-weight: bold;
+    }
+
+    .attachment-meta {
+      color: var(--dim);
+      font-size: 11px;
+      margin-top: 4px;
+    }
+
     /* Compaction / Branch Summary - matches customMessage colors from TUI */
     .compaction {
       background: var(--customMessageBg);

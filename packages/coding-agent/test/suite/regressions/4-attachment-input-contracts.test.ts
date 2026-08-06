@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { AgentMessage, AgentTool } from "@earendil-works/pi-agent-core";
 import {
 	type AttachmentRecord,
@@ -120,6 +123,34 @@ describe("Issue 4 attachment input contracts", () => {
 		expect(resolvedAttachment).toEqual(attachment);
 	});
 
+	it("allows provider lowering to read the exact bytes of a local attachment", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "pi-attachment-registry-"));
+		const filePath = join(directory, "paper.pdf");
+		const bytes = Uint8Array.from([0x25, 0x50, 0x44, 0x46, 0x2d, 0x00, 0xff]);
+		writeFileSync(filePath, bytes);
+		const localAttachment: AttachmentRecord = {
+			...attachment,
+			source: { type: "path", path: filePath },
+		};
+		const harness = await createHarness();
+		harnesses.push(harness);
+		let providerBytes: Uint8Array | undefined;
+		harness.setResponses([
+			(context) => {
+				const resolved = context.attachmentRegistry?.resolve(localAttachment.id);
+				if (resolved) providerBytes = context.attachmentRegistry?.read?.(resolved);
+				return fauxAssistantMessage("done");
+			},
+		]);
+
+		try {
+			await harness.session.prompt("Analyze this", { attachments: [localAttachment] });
+			expect(providerBytes).toEqual(bytes);
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
 	it("supports object-style SDK prompts with multiple ordered attachments", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
@@ -136,6 +167,27 @@ describe("Issue 4 attachment input contracts", () => {
 		expect(providerUser).toMatchObject({
 			attachments: [reference, { type: "attachment", attachmentId: secondAttachment.id }],
 		});
+	});
+
+	it("accepts an already-uploaded provider file as an additive SDK input", async () => {
+		const providerFile: AttachmentRecord = {
+			...attachment,
+			id: "att_remote",
+			source: { type: "provider-file", provider: "openai", fileId: "file_123" },
+		};
+		const harness = await createHarness();
+		harnesses.push(harness);
+		let resolvedAttachment: AttachmentRecord | undefined;
+		harness.setResponses([
+			(context) => {
+				resolvedAttachment = context.attachmentRegistry?.resolve(providerFile.id);
+				return fauxAssistantMessage("done");
+			},
+		]);
+
+		await harness.session.prompt("Reuse this", { attachments: [providerFile] });
+
+		expect(resolvedAttachment).toEqual(providerFile);
 	});
 
 	it("exposes attachment references on the input event", async () => {
