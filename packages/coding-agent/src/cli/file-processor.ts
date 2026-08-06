@@ -2,17 +2,19 @@
  * Process @file CLI arguments into text content and image attachments
  */
 
+import { randomUUID } from "node:crypto";
 import { access, readFile, stat } from "node:fs/promises";
-import type { ImageContent } from "@earendil-works/pi-ai";
+import type { AttachmentRecord, ImageContent } from "@earendil-works/pi-ai";
 import chalk from "chalk";
-import { resolve } from "path";
+import { basename, resolve } from "path";
 import { resolveReadPath } from "../core/tools/path-utils.ts";
 import { processImage } from "../utils/image-process.ts";
-import { detectSupportedImageMimeTypeFromFile } from "../utils/mime.ts";
+import { detectAttachmentMimeTypeFromFile, detectSupportedImageMimeTypeFromFile } from "../utils/mime.ts";
 
 export interface ProcessedFiles {
 	text: string;
 	images: ImageContent[];
+	attachments: AttachmentRecord[];
 }
 
 export interface ProcessFileOptions {
@@ -25,6 +27,7 @@ export async function processFileArguments(fileArgs: string[], options?: Process
 	const autoResizeImages = options?.autoResizeImages ?? true;
 	let text = "";
 	const images: ImageContent[] = [];
+	const attachments: AttachmentRecord[] = [];
 
 	for (const fileArg of fileArgs) {
 		// Expand and resolve path (handles ~ expansion and macOS screenshot Unicode spaces)
@@ -71,17 +74,28 @@ export async function processFileArguments(fileArgs: string[], options?: Process
 				text += `<file name="${absolutePath}"></file>\n`;
 			}
 		} else {
-			// Handle text file
-			try {
-				const content = await readFile(absolutePath, "utf-8");
-				text += `<file name="${absolutePath}">\n${content}\n</file>\n`;
-			} catch (error: unknown) {
-				const message = error instanceof Error ? error.message : String(error);
-				console.error(chalk.red(`Error: Could not read file ${absolutePath}: ${message}`));
-				process.exit(1);
+			const attachmentMimeType = await detectAttachmentMimeTypeFromFile(absolutePath);
+			if (attachmentMimeType) {
+				attachments.push({
+					id: `att_${randomUUID()}`,
+					filename: basename(absolutePath),
+					mediaType: attachmentMimeType,
+					sizeBytes: stats.size,
+					source: { type: "path", path: absolutePath },
+				});
+			} else {
+				// Preserve the existing inline behavior for UTF-8 text files.
+				try {
+					const content = await readFile(absolutePath, "utf-8");
+					text += `<file name="${absolutePath}">\n${content}\n</file>\n`;
+				} catch (error: unknown) {
+					const message = error instanceof Error ? error.message : String(error);
+					console.error(chalk.red(`Error: Could not read file ${absolutePath}: ${message}`));
+					process.exit(1);
+				}
 			}
 		}
 	}
 
-	return { text, images };
+	return { text, images, attachments };
 }
