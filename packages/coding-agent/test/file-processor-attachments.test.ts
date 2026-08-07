@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -163,6 +163,78 @@ describe("processFileArguments attachment classification", () => {
 		});
 
 		expect(result.text).toBe("Analyze the equations");
+		expect(result.images).toEqual([]);
+		expect(result.attachments).toHaveLength(1);
+		expect(result.attachments[0]).toMatchObject({
+			filename: "paper.pdf",
+			mediaType: "application/pdf",
+			source: { type: "path", path: resolve(pdfPath) },
+		});
+	});
+
+	it("preserves directory mentions instead of attempting to read them as files", async () => {
+		const directoryPath = join(testDir, "packages");
+		mkdirSync(directoryPath);
+		const input = `summarize @"${directoryPath}"`;
+
+		await expect(processPromptFileReferences(input, { failureMode: "throw" })).resolves.toEqual({
+			text: input,
+			images: [],
+			attachments: [],
+		});
+	});
+
+	it.each(["install @types/node for me", "ping @user.name", "review @missing.pdf", "  keep @missing.pdf verbatim  "])(
+		"preserves non-file path-like mention: %s",
+		async (input) => {
+			await expect(processPromptFileReferences(input, { failureMode: "throw" })).resolves.toEqual({
+				text: input,
+				images: [],
+				attachments: [],
+			});
+		},
+	);
+
+	it("preserves interactive text and image references for stock Pi handling", async () => {
+		const textPath = join(testDir, "note.txt");
+		const imagePath = join(testDir, "figure.png");
+		writeFileSync(textPath, "Keep this reference intact.\n");
+		writeFileSync(imagePath, Buffer.from(TINY_PNG_BASE64, "base64"));
+		const input = `/mytemplate @"${textPath}" @"${imagePath}"`;
+
+		await expect(processPromptFileReferences(input, { failureMode: "throw" })).resolves.toEqual({
+			text: input,
+			images: [],
+			attachments: [],
+		});
+	});
+
+	it("promotes only native files while preserving other @ references", async () => {
+		const pdfPath = join(testDir, "paper.pdf");
+		const textPath = join(testDir, "note.txt");
+		writeFileSync(pdfPath, Buffer.from("%PDF-1.7\nbinary\n"));
+		writeFileSync(textPath, "Keep this reference intact.\n");
+
+		const result = await processPromptFileReferences(
+			`Compare @types/node @"${textPath}" @"${pdfPath}" with @user.name`,
+			{ failureMode: "throw" },
+		);
+
+		expect(result.text).toBe(`Compare @types/node @"${textPath}"  with @user.name`);
+		expect(result.images).toEqual([]);
+		expect(result.attachments).toHaveLength(1);
+		expect(result.attachments[0]?.filename).toBe("paper.pdf");
+	});
+
+	it("keeps prompt-template semantics while promoting a native binary attachment", async () => {
+		const pdfPath = join(testDir, "paper.pdf");
+		writeFileSync(pdfPath, Buffer.from("%PDF-1.7\nbinary\n"));
+
+		const result = await processPromptFileReferences(`/mytemplate @"${pdfPath}"`, {
+			failureMode: "throw",
+		});
+
+		expect(result.text).toBe("/mytemplate");
 		expect(result.images).toEqual([]);
 		expect(result.attachments).toHaveLength(1);
 		expect(result.attachments[0]).toMatchObject({
