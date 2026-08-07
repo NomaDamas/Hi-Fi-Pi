@@ -427,6 +427,10 @@ describe("Issue 6 attachment TUI contracts", () => {
 		expect(output).toContain("Model: gpt-test");
 		expect(output).toContain("Transport: openai-responses");
 		expect(output).toContain("Declared inputs: text, image");
+		expect(output).toContain("Endpoint profile: openai-official");
+		expect(output).toContain("Native openai-responses-pdf: supported");
+		expect(output).toContain("inline→input_file");
+		expect(output).toContain("official-default");
 		expect(output).toContain("PDF: native via input_file");
 	});
 });

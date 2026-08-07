@@ -11,6 +11,7 @@ import {
 	type Model,
 	type ModelAuth,
 	type NativeAttachmentCapabilitiesConfig,
+	type NativeInputCapabilitiesConfig,
 	type OAuthAuth,
 	type OAuthCredentials,
 	type OAuthLoginCallbacks,
@@ -50,6 +51,7 @@ export interface ProviderConfigInput {
 	streamSimple?: (model: Model<Api>, context: Context, options?: SimpleStreamOptions) => AssistantMessageEventStream;
 	headers?: Record<string, string>;
 	nativeAttachments?: NativeAttachmentCapabilitiesConfig;
+	nativeInputs?: NativeInputCapabilitiesConfig;
 	authHeader?: boolean;
 	oauth?: ExtensionOAuthConfig;
 	models?: Array<{
@@ -65,6 +67,7 @@ export interface ProviderConfigInput {
 		maxTokens: number;
 		headers?: Record<string, string>;
 		nativeAttachments?: NativeAttachmentCapabilitiesConfig;
+		nativeInputs?: NativeInputCapabilitiesConfig;
 		compat?: Model<Api>["compat"];
 	}>;
 	refreshModels?(context: RefreshModelsContext): Promise<NonNullable<ProviderConfigInput["models"]>>;
@@ -121,6 +124,7 @@ function applyModelOverride(model: Model<Api>, override: ModelsJsonModelOverride
 		contextWindow: override.contextWindow ?? model.contextWindow,
 		maxTokens: override.maxTokens ?? model.maxTokens,
 		nativeAttachments: override.nativeAttachments ?? model.nativeAttachments,
+		nativeInputs: override.nativeInputs ?? model.nativeInputs,
 		compat: mergeCompat(model.compat, override.compat),
 	};
 }
@@ -160,6 +164,7 @@ function modelFromJson(
 		headers: undefined,
 		nativeAttachments:
 			definition.nativeAttachments ?? providerConfig.nativeAttachments ?? defaults?.nativeAttachments,
+		nativeInputs: definition.nativeInputs ?? providerConfig.nativeInputs ?? defaults?.nativeInputs,
 		compat: mergeCompat(providerConfig.compat, definition.compat),
 	};
 }
@@ -179,6 +184,7 @@ function applyModelsJson(
 		!config.baseUrl &&
 		!config.headers &&
 		!config.nativeAttachments &&
+		!config.nativeInputs &&
 		!config.compat &&
 		!hasOverrides &&
 		!config.apiKey &&
@@ -195,6 +201,7 @@ function applyModelsJson(
 		baseUrl: config.oauth === "radius" ? model.baseUrl : (config.baseUrl ?? model.baseUrl),
 		compat: mergeCompat(model.compat, config.compat),
 		nativeAttachments: config.nativeAttachments ?? model.nativeAttachments,
+		nativeInputs: config.nativeInputs ?? model.nativeInputs,
 	}));
 	for (const definition of config.models ?? []) {
 		const existingIndex = models.findIndex((model) => model.id === definition.id);
@@ -213,11 +220,12 @@ function applyExtension(
 ): Model<Api>[] {
 	if (!config) return [...models];
 	if (!config.models) {
-		return config.baseUrl || config.nativeAttachments
+		return config.baseUrl || config.nativeAttachments || config.nativeInputs
 			? models.map((model) => ({
 					...model,
 					baseUrl: config.baseUrl ?? model.baseUrl,
 					nativeAttachments: config.nativeAttachments ?? model.nativeAttachments,
+					nativeInputs: config.nativeInputs ?? model.nativeInputs,
 				}))
 			: [...models];
 	}
@@ -238,6 +246,7 @@ function applyExtension(
 			baseUrl,
 			headers: undefined,
 			nativeAttachments: definition.nativeAttachments ?? config.nativeAttachments ?? defaults?.nativeAttachments,
+			nativeInputs: definition.nativeInputs ?? config.nativeInputs ?? defaults?.nativeInputs,
 		};
 	});
 }

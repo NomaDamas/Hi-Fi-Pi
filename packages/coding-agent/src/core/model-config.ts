@@ -164,6 +164,44 @@ const NativeAttachmentCapabilitiesSchema = Type.Object({
 	pdf: Type.Optional(NativePdfAttachmentCapabilitySchema),
 });
 
+const NativeInputTransportSourceSchema = Type.Union([
+	Type.Literal("inline"),
+	Type.Literal("url"),
+	Type.Literal("provider-file"),
+	Type.Literal("cloud-uri"),
+]);
+
+const NativeInputCapabilitySchema = Type.Object({
+	id: Type.String({ minLength: 1 }),
+	supported: Type.Boolean(),
+	mediaTypes: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
+	sources: Type.Array(NativeInputTransportSourceSchema, { minItems: 1 }),
+	wireKinds: Type.Record(Type.String(), Type.String({ minLength: 1 })),
+	limits: Type.Optional(
+		Type.Object({
+			maximumBytes: Type.Optional(Type.Number({ minimum: 1 })),
+			maximumRequestBytes: Type.Optional(Type.Number({ minimum: 1 })),
+			maximumCount: Type.Optional(Type.Number({ minimum: 1 })),
+		}),
+	),
+	requiredHeaders: Type.Optional(Type.Record(Type.String(), Type.String())),
+	options: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
+	modelAllowList: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
+	modelDenyList: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
+	provenance: Type.Union([
+		Type.Literal("official-default"),
+		Type.Literal("configured"),
+		Type.Literal("live-verified"),
+	]),
+	verifiedAt: Type.Optional(Type.String({ minLength: 1 })),
+	reason: Type.Optional(Type.String({ minLength: 1 })),
+});
+
+const NativeInputCapabilitiesSchema = Type.Object({
+	profile: Type.String({ minLength: 1 }),
+	capabilities: Type.Array(NativeInputCapabilitySchema, { minItems: 1 }),
+});
+
 const ModelDefinitionSchema = Type.Object({
 	id: Type.String({ minLength: 1 }),
 	name: Type.Optional(Type.String({ minLength: 1 })),
@@ -177,6 +215,7 @@ const ModelDefinitionSchema = Type.Object({
 	maxTokens: Type.Optional(Type.Number()),
 	headers: Type.Optional(Type.Record(Type.String(), Type.String())),
 	nativeAttachments: Type.Optional(NativeAttachmentCapabilitiesSchema),
+	nativeInputs: Type.Optional(NativeInputCapabilitiesSchema),
 	compat: Type.Optional(ProviderCompatSchema),
 });
 
@@ -198,6 +237,7 @@ const ModelOverrideSchema = Type.Object({
 	maxTokens: Type.Optional(Type.Number()),
 	headers: Type.Optional(Type.Record(Type.String(), Type.String())),
 	nativeAttachments: Type.Optional(NativeAttachmentCapabilitiesSchema),
+	nativeInputs: Type.Optional(NativeInputCapabilitiesSchema),
 	compat: Type.Optional(ProviderCompatSchema),
 });
 
@@ -209,6 +249,7 @@ const ProviderConfigSchema = Type.Object({
 	oauth: Type.Optional(Type.Literal("radius")),
 	headers: Type.Optional(Type.Record(Type.String(), Type.String())),
 	nativeAttachments: Type.Optional(NativeAttachmentCapabilitiesSchema),
+	nativeInputs: Type.Optional(NativeInputCapabilitiesSchema),
 	compat: Type.Optional(ProviderCompatSchema),
 	authHeader: Type.Optional(Type.Boolean()),
 	models: Type.Optional(Type.Array(ModelDefinitionSchema)),

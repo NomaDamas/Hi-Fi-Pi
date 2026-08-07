@@ -1,9 +1,11 @@
+import { resolveNativeInputCapability } from "../native-input-capabilities.ts";
 import type {
 	Api,
 	AttachmentRecord,
 	AttachmentRegistry,
 	Model,
 	NativeAttachmentTransportSource,
+	NativeInputCapabilityProvenance,
 	ProviderFileReference,
 	ToolResultMessage,
 	UserMessage,
@@ -41,114 +43,26 @@ export class AttachmentSourceUnavailableError extends Error {
 
 export interface NativeAttachmentCapability {
 	supported: boolean;
-	method?: "input_file" | "document" | "inlineData" | "fileData";
+	method?: string;
 	sources?: NativeAttachmentTransportSource[];
 	maximumInlineBytes?: number;
 	maximumRequestBytes?: number;
+	maximumCount?: number;
+	capabilityId?: string;
+	endpointProfile?: string;
+	provenance?: NativeInputCapabilityProvenance;
+	requiredHeaders?: Record<string, string>;
+	options?: Record<string, unknown>;
 	reason?: string;
 }
 
-const OPENAI_FILE_LIMIT_BYTES = 50 * 1024 * 1024;
-const ANTHROPIC_REQUEST_LIMIT_BYTES = 32 * 1024 * 1024;
-const GEMINI_INLINE_LIMIT_BYTES = 50 * 1024 * 1024;
-
-type AttachmentCapabilityModel = Pick<Model<string>, "api" | "baseUrl" | "id" | "nativeAttachments" | "provider">;
-
-function getHostname(baseUrl: string): string | undefined {
-	try {
-		return new URL(baseUrl).hostname.toLowerCase();
-	} catch {
-		return undefined;
-	}
-}
+type AttachmentCapabilityModel = Pick<
+	Model<string>,
+	"api" | "baseUrl" | "id" | "nativeAttachments" | "nativeInputs" | "provider"
+>;
 
 function transportSource(sourceType: AttachmentRecord["source"]["type"]): NativeAttachmentTransportSource {
 	return sourceType === "path" || sourceType === "base64" ? "inline" : sourceType;
-}
-
-function methodForApi(api: string, source?: NativeAttachmentTransportSource): NativeAttachmentCapability["method"] {
-	if (api === "openai-responses") return "input_file";
-	if (api === "anthropic-messages") return "document";
-	if (api === "google-generative-ai" || api === "google-vertex") {
-		return source === "inline" || source === undefined ? "inlineData" : "fileData";
-	}
-	return undefined;
-}
-
-function configuredPdfCapability(
-	model: AttachmentCapabilityModel,
-	source?: NativeAttachmentTransportSource,
-): NativeAttachmentCapability | undefined {
-	const configured = model.nativeAttachments?.pdf;
-	if (!configured) return undefined;
-	if (!configured.supported) return { supported: false, reason: "disabled by model configuration" };
-	const sources = configured.sources ?? ["inline"];
-	if (source && !sources.includes(source)) {
-		return { supported: false, reason: `${source} sources are disabled by model configuration` };
-	}
-	const method = methodForApi(model.api, source);
-	if (!method) return { supported: false, reason: `${model.api} has no PDF lowering implementation` };
-	return {
-		supported: true,
-		method,
-		sources,
-		maximumInlineBytes: configured.maximumInlineBytes,
-		maximumRequestBytes: configured.maximumRequestBytes,
-	};
-}
-
-function officialPdfCapability(
-	model: AttachmentCapabilityModel,
-	source?: NativeAttachmentTransportSource,
-): NativeAttachmentCapability | undefined {
-	const hostname = getHostname(model.baseUrl);
-	let sources: NativeAttachmentTransportSource[];
-	let maximumInlineBytes: number;
-	let maximumRequestBytes: number | undefined;
-
-	if (model.provider === "openai" && model.api === "openai-responses" && hostname === "api.openai.com") {
-		sources = ["inline", "url", "provider-file"];
-		maximumInlineBytes = OPENAI_FILE_LIMIT_BYTES;
-		maximumRequestBytes = OPENAI_FILE_LIMIT_BYTES;
-	} else if (
-		model.provider === "anthropic" &&
-		model.api === "anthropic-messages" &&
-		hostname === "api.anthropic.com"
-	) {
-		sources = ["inline", "url", "provider-file"];
-		maximumInlineBytes = ANTHROPIC_REQUEST_LIMIT_BYTES;
-		maximumRequestBytes = ANTHROPIC_REQUEST_LIMIT_BYTES;
-	} else if (
-		model.provider === "google" &&
-		model.api === "google-generative-ai" &&
-		hostname === "generativelanguage.googleapis.com"
-	) {
-		sources = ["inline", "url", "provider-file"];
-		maximumInlineBytes = GEMINI_INLINE_LIMIT_BYTES;
-	} else if (
-		model.provider === "google-vertex" &&
-		model.api === "google-vertex" &&
-		hostname?.endsWith(".aiplatform.googleapis.com")
-	) {
-		sources = ["inline", "provider-file"];
-		maximumInlineBytes = GEMINI_INLINE_LIMIT_BYTES;
-	} else {
-		return undefined;
-	}
-
-	if (source === "url" && model.provider === "google" && /^gemini-2\.0(?:-|$)/.test(model.id)) {
-		return { supported: false, reason: `${model.id} does not support remote PDF URLs` };
-	}
-	if (source && !sources.includes(source)) {
-		return { supported: false, reason: `${source} sources are not supported by the official endpoint` };
-	}
-	return {
-		supported: true,
-		method: methodForApi(model.api, source),
-		sources,
-		maximumInlineBytes,
-		maximumRequestBytes,
-	};
 }
 
 export function getNativeAttachmentCapability(
@@ -156,17 +70,30 @@ export function getNativeAttachmentCapability(
 	mediaType: string,
 	sourceType?: AttachmentRecord["source"]["type"],
 ): NativeAttachmentCapability {
-	if (mediaType !== "application/pdf") {
-		return { supported: false, reason: "only application/pdf is enabled" };
-	}
 	const source = sourceType ? transportSource(sourceType) : undefined;
-	return (
-		configuredPdfCapability(model, source) ??
-		officialPdfCapability(model, source) ?? {
-			supported: false,
-			reason: "custom endpoints require nativeAttachments.pdf.supported opt-in",
-		}
-	);
+	const capability = resolveNativeInputCapability(model, mediaType, source);
+	return {
+		supported: capability.supported,
+		...(capability.wireKind ? { method: capability.wireKind } : {}),
+		...(capability.sources
+			? {
+					sources: capability.sources.filter(
+						(candidate): candidate is NativeAttachmentTransportSource => candidate !== "cloud-uri",
+					),
+				}
+			: {}),
+		...(capability.limits?.maximumBytes !== undefined ? { maximumInlineBytes: capability.limits.maximumBytes } : {}),
+		...(capability.limits?.maximumRequestBytes !== undefined
+			? { maximumRequestBytes: capability.limits.maximumRequestBytes }
+			: {}),
+		...(capability.limits?.maximumCount !== undefined ? { maximumCount: capability.limits.maximumCount } : {}),
+		...(capability.capabilityId ? { capabilityId: capability.capabilityId } : {}),
+		...(capability.endpointProfile ? { endpointProfile: capability.endpointProfile } : {}),
+		...(capability.provenance ? { provenance: capability.provenance } : {}),
+		...(capability.requiredHeaders ? { requiredHeaders: capability.requiredHeaders } : {}),
+		...(capability.options ? { options: capability.options } : {}),
+		...(capability.reason ? { reason: capability.reason } : {}),
+	};
 }
 
 function encodeBase64(bytes: Uint8Array): string {

@@ -9,7 +9,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AuthEvent, AuthPrompt } from "@earendil-works/pi-ai";
-import { getNativeAttachmentCapability } from "@earendil-works/pi-ai";
+import { getNativeAttachmentCapability, getNativeInputCapabilityManifest } from "@earendil-works/pi-ai";
 import type {
 	Api,
 	AssistantMessage,
@@ -5970,6 +5970,20 @@ export class InteractiveMode {
 		info += `${theme.fg("dim", "Model:")} ${model.id}\n`;
 		info += `${theme.fg("dim", "Transport:")} ${model.api}\n`;
 		info += `${theme.fg("dim", "Declared inputs:")} ${model.input.join(", ") || "none"}\n`;
+		const manifest = getNativeInputCapabilityManifest(model);
+		if (manifest) {
+			info += `${theme.fg("dim", "Endpoint profile:")} ${manifest.endpointProfile}\n`;
+			for (const capability of manifest.capabilities) {
+				const transports = capability.sources
+					.map((source) => `${source}→${capability.wireKinds[source] ?? "undeclared"}`)
+					.join(", ");
+				info += `${theme.fg("dim", `Native ${capability.id}:`)} ${
+					capability.supported ? "supported" : `unsupported${capability.reason ? ` · ${capability.reason}` : ""}`
+				} · ${capability.mediaTypes.join(", ")} · ${transports} · ${capability.provenance}\n`;
+			}
+		} else {
+			info += `${theme.fg("dim", "Endpoint profile:")} none (explicit opt-in required)\n`;
+		}
 		const pdfCapability = getNativeAttachmentCapability(model, "application/pdf");
 		info += `${theme.fg("dim", "PDF:")} ${
 			pdfCapability.supported ? `native via ${pdfCapability.method}` : `unsupported · ${pdfCapability.reason}`

@@ -97,6 +97,36 @@ describe("ModelRegistry", () => {
 	};
 
 	describe("baseUrl override (no custom models)", () => {
+		test("propagates generalized native input manifests from models.json", async () => {
+			const nativeInputs = {
+				profile: "myproxy-files-v1",
+				capabilities: [
+					{
+						id: "office-files",
+						supported: true,
+						mediaTypes: ["application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
+						sources: ["inline", "provider-file"],
+						wireKinds: { inline: "input_file", "provider-file": "input_file" },
+						limits: { maximumBytes: 10_000_000 },
+						provenance: "configured",
+					},
+				],
+			};
+			writeRawModelsJson({
+				myproxy: {
+					baseUrl: "https://proxy.example.com/v1",
+					apiKey: "test-key",
+					api: "openai-responses",
+					nativeInputs,
+					models: [{ id: "custom-model" }],
+				},
+			});
+
+			const registry = await createModelRegistry(authStorage, modelsJsonPath);
+
+			expect(registry.find("myproxy", "custom-model")?.nativeInputs).toEqual(nativeInputs);
+		});
+
 		test("propagates provider-native attachment opt-in from models.json", async () => {
 			writeRawModelsJson({
 				myproxy: {
@@ -943,6 +973,42 @@ describe("ModelRegistry", () => {
 	});
 
 	describe("dynamic provider lifecycle", () => {
+		test("propagates native input manifests from extension providers", async () => {
+			const registry = await createModelRegistry(authStorage, modelsJsonPath);
+			const nativeInputs = {
+				profile: "extension-documents-v1",
+				capabilities: [
+					{
+						id: "documents",
+						supported: true,
+						mediaTypes: ["application/pdf"],
+						sources: ["inline" as const],
+						wireKinds: { inline: "input_file" },
+						provenance: "configured" as const,
+					},
+				],
+			};
+			registry.registerProvider("extension-provider", {
+				baseUrl: "https://provider.test/v1",
+				apiKey: "test-key",
+				api: "openai-responses",
+				nativeInputs,
+				models: [
+					{
+						id: "extension-model",
+						name: "Extension Model",
+						reasoning: false,
+						input: ["text"],
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+						contextWindow: 128000,
+						maxTokens: 4096,
+					},
+				],
+			});
+
+			expect(registry.find("extension-provider", "extension-model")?.nativeInputs).toEqual(nativeInputs);
+		});
+
 		test("getProviderDisplayName resolves registered, OAuth, built-in, and fallback names", async () => {
 			const registry = await createModelRegistry(authStorage, modelsJsonPath);
 

@@ -812,6 +812,50 @@ export interface ModelCost extends ModelCostRates {
 
 export type NativeAttachmentTransportSource = "inline" | "url" | "provider-file";
 
+export type NativeInputTransportSource = NativeAttachmentTransportSource | "cloud-uri";
+
+export type NativeInputCapabilityProvenance = "official-default" | "configured" | "live-verified";
+
+export interface NativeInputCapabilityLimits {
+	maximumBytes?: number;
+	maximumRequestBytes?: number;
+	maximumCount?: number;
+}
+
+export interface NativeInputCapabilityDefinition {
+	id: string;
+	supported: boolean;
+	mediaTypes: string[];
+	sources: NativeInputTransportSource[];
+	wireKinds: Partial<Record<NativeInputTransportSource, string>>;
+	limits?: NativeInputCapabilityLimits;
+	requiredHeaders?: Record<string, string>;
+	options?: Record<string, unknown>;
+	modelAllowList?: string[];
+	modelDenyList?: string[];
+	provenance: NativeInputCapabilityProvenance;
+	verifiedAt?: string;
+	reason?: string;
+}
+
+export interface NativeInputCapabilitiesConfig {
+	profile: string;
+	capabilities: NativeInputCapabilityDefinition[];
+}
+
+export interface NativeInputCapabilityContext {
+	provider: string;
+	api: string;
+	modelId: string;
+	baseUrl: string;
+}
+
+export interface NativeInputCapabilityResolver {
+	id: string;
+	matches(context: NativeInputCapabilityContext): boolean;
+	resolve(context: NativeInputCapabilityContext): NativeInputCapabilitiesConfig;
+}
+
 export interface NativePdfAttachmentCapabilityConfig {
 	supported: boolean;
 	sources?: NativeAttachmentTransportSource[];
@@ -843,6 +887,8 @@ export interface Model<TApi extends Api> {
 	maxTokens: number;
 	headers?: Record<string, string>;
 	nativeAttachments?: NativeAttachmentCapabilitiesConfig;
+	/** Additive provider-native input manifest. Does not reinterpret the legacy text/image input field. */
+	nativeInputs?: NativeInputCapabilitiesConfig;
 	/** Compatibility overrides for OpenAI-compatible APIs. If not set, auto-detected from baseUrl. */
 	compat?: TApi extends "openai-completions"
 		? OpenAICompletionsCompat
