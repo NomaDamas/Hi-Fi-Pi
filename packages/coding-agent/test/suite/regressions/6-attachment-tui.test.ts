@@ -1,3 +1,6 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { AttachmentRecord } from "@earendil-works/pi-ai";
 import { Container } from "@earendil-works/pi-tui";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -59,12 +62,19 @@ type InteractiveModePrivate = {
 	handleFileCommand(this: CommandContext, selector: string): void;
 	handleCapabilitiesCommand(this: CommandContext): void;
 	addMessageToChat(this: MessageContext, message: unknown): void;
-	updateAttachmentPreview(this: PreviewContext, text: string): void;
+	updateAttachmentPreview(this: PreviewContext, text: string): Promise<void>;
+	handleInteractiveInputError(this: InputErrorContext, text: string, error: unknown): void;
 };
 
 type PreviewContext = {
 	attachmentPreviewContainer: Container;
+	attachmentPreviewRevision: number;
 	ui: { requestRender: ReturnType<typeof vi.fn> };
+};
+
+type InputErrorContext = {
+	editor: { setText: ReturnType<typeof vi.fn> };
+	showError: ReturnType<typeof vi.fn>;
 };
 
 type MessageContext = {
@@ -225,17 +235,72 @@ describe("Issue 6 attachment TUI contracts", () => {
 		expect(commands).toEqual(expect.arrayContaining(["files", "file", "capabilities"]));
 	});
 
-	it("shows selected @file names before submission", () => {
+	it("shows selected native @file names before submission", async () => {
+		const testDir = mkdtempSync(join(tmpdir(), "pi-attachment-preview-"));
+		const paperPath = join(testDir, "paper.pdf");
+		const slidesPath = join(testDir, "slides deck.pptx");
+		writeFileSync(paperPath, Buffer.from("%PDF-1.7\nbinary\n"));
+		writeFileSync(slidesPath, Buffer.from("PK\x03\x04\x00\x00", "binary"));
 		const context: PreviewContext = {
 			attachmentPreviewContainer: new Container(),
+			attachmentPreviewRevision: 0,
 			ui: { requestRender: vi.fn() },
 		};
 		const prototype = InteractiveMode.prototype as unknown as InteractiveModePrivate;
-		prototype.updateAttachmentPreview.call(context, '@paper.pdf @"slides deck.pptx" Analyze');
+		try {
+			await prototype.updateAttachmentPreview.call(context, `@"${paperPath}" @"${slidesPath}" Analyze`);
+		} finally {
+			rmSync(testDir, { recursive: true, force: true });
+		}
 
 		const output = context.attachmentPreviewContainer.render(80).map(stripAnsi).join("\n");
 		expect(output).toContain("Attachments: paper.pdf, slides deck.pptx");
-		expect(context.ui.requestRender).toHaveBeenCalledOnce();
+		expect(context.ui.requestRender).toHaveBeenCalled();
+	});
+
+	it("does not preview directories, missing paths, scoped packages, text files, or images as native attachments", async () => {
+		const testDir = mkdtempSync(join(tmpdir(), "pi-attachment-preview-"));
+		const directoryPath = join(testDir, "packages");
+		const textPath = join(testDir, "note.txt");
+		const imagePath = join(testDir, "figure.png");
+		mkdirSync(directoryPath);
+		writeFileSync(textPath, "plain text\n");
+		writeFileSync(
+			imagePath,
+			Buffer.from(
+				"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==",
+				"base64",
+			),
+		);
+		const context: PreviewContext = {
+			attachmentPreviewContainer: new Container(),
+			attachmentPreviewRevision: 0,
+			ui: { requestRender: vi.fn() },
+		};
+		const prototype = InteractiveMode.prototype as unknown as InteractiveModePrivate;
+		try {
+			await prototype.updateAttachmentPreview.call(
+				context,
+				`@"${directoryPath}" @"${textPath}" @"${imagePath}" @types/node @user.name @missing.pdf`,
+			);
+		} finally {
+			rmSync(testDir, { recursive: true, force: true });
+		}
+
+		expect(context.attachmentPreviewContainer.render(80)).toEqual([]);
+	});
+
+	it("restores an idle submission when attachment preprocessing fails", () => {
+		const context: InputErrorContext = {
+			editor: { setText: vi.fn() },
+			showError: vi.fn(),
+		};
+		const prototype = InteractiveMode.prototype as unknown as InteractiveModePrivate;
+
+		prototype.handleInteractiveInputError.call(context, "analyze @paper.pdf", new Error("read failed"));
+
+		expect(context.editor.setText).toHaveBeenCalledWith("analyze @paper.pdf");
+		expect(context.showError).toHaveBeenCalledWith("read failed");
 	});
 
 	it("routes /files without submitting it as a model prompt", async () => {
