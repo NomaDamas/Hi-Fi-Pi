@@ -977,7 +977,7 @@ const continuation = await models.complete(model, context);
 
 ### Debugging Provider Payloads
 
-Use the `onPayload` callback to inspect the request payload sent to the provider. This is useful for debugging request formatting issues or provider validation errors.
+Use the `onPayload` callback to inspect or replace the exact request payload sent to the provider. This is useful for debugging request formatting issues or provider validation errors, but it is a raw hook: payloads may contain inline file bytes, signed URLs, or other sensitive request data.
 
 ```typescript
 const response = await models.complete(model, context, {
@@ -988,6 +988,21 @@ const response = await models.complete(model, context, {
 ```
 
 The callback is supported by `stream`, `complete`, `streamSimple`, and `completeSimple`.
+
+For safe diagnostics, use `onTrace`. It emits structured provider-native input stages while redacting authorization headers, cookies, API keys, signed URL credentials, and inline/base64 bytes. Trace observers cannot modify requests, and callback failures do not interrupt provider execution.
+
+```typescript
+const response = await models.complete(model, context, {
+  onTrace: (event) => {
+    console.log(event.traceId, event.stage, event.wire?.kind);
+    if (event.stage === "sanitized_wire_payload") {
+      console.log(JSON.stringify(event.payload, null, 2));
+    }
+  }
+});
+```
+
+Native attachment traces cover input resolution, capability decisions and provenance, source selection, remote-file reuse, provider lowering, sanitized request headers and wire payload, response metadata where the transport exposes it, and stream completion. Attachment-free requests keep their existing payload and streaming path; enabling `onTrace` only adds diagnostic callbacks.
 
 ## Custom Providers
 

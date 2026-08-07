@@ -45,6 +45,9 @@ Type `/` in the editor to open command completion. Extensions can register custo
 | `/new` | Start a new session |
 | `/name <name>` | Set session display name |
 | `/session` | Show session file, ID, messages, tokens, and cost |
+| `/files`, `/file <id>` | List or inspect native attachments in the session |
+| `/capabilities` | Show native input capabilities for the selected transport |
+| `/input-inspect` | Inspect the latest sanitized provider-native input trace |
 | `/tree` | Jump to any point in the session and continue from there |
 | `/trust` | Save project trust decision for future sessions |
 | `/fork` | Create a new session from a previous user message |

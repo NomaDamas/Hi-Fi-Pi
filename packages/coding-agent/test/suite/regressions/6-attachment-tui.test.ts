@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AttachmentRecord } from "@earendil-works/pi-ai";
+import type { AttachmentRecord, ProviderTraceEvent } from "@earendil-works/pi-ai";
 import { Container } from "@earendil-works/pi-tui";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { BUILTIN_SLASH_COMMANDS } from "../../../src/core/slash-commands.ts";
@@ -54,6 +54,7 @@ type SubmitContext = {
 	handleFilesCommand: ReturnType<typeof vi.fn>;
 	handleFileCommand: ReturnType<typeof vi.fn>;
 	handleCapabilitiesCommand: ReturnType<typeof vi.fn>;
+	handleInputInspectCommand: ReturnType<typeof vi.fn>;
 };
 
 type InteractiveModePrivate = {
@@ -61,6 +62,7 @@ type InteractiveModePrivate = {
 	handleFilesCommand(this: CommandContext): void;
 	handleFileCommand(this: CommandContext, selector: string): void;
 	handleCapabilitiesCommand(this: CommandContext): void;
+	handleInputInspectCommand(this: CommandContext): void;
 	addMessageToChat(this: MessageContext, message: unknown): void;
 	updateAttachmentPreview(this: PreviewContext, text: string): Promise<void>;
 	handleInteractiveInputError(this: InputErrorContext, text: string, error: unknown): void;
@@ -93,7 +95,10 @@ type CommandContext = {
 		getAttachments: () => AttachmentRecord[];
 		getAttachment: (id: string) => AttachmentRecord | undefined;
 	};
-	session: { model?: { provider: string; id: string; api: string; baseUrl: string; input: string[] } };
+	session: {
+		model?: { provider: string; id: string; api: string; baseUrl: string; input: string[] };
+		getProviderTraceEvents: () => ProviderTraceEvent[];
+	};
 	chatContainer: Container;
 	ui: { requestRender: ReturnType<typeof vi.fn> };
 	showWarning: ReturnType<typeof vi.fn>;
@@ -114,6 +119,7 @@ function createSubmitContext(): SubmitContext {
 		handleFilesCommand: vi.fn(),
 		handleFileCommand: vi.fn(),
 		handleCapabilitiesCommand: vi.fn(),
+		handleInputInspectCommand: vi.fn(),
 	};
 }
 
@@ -131,6 +137,7 @@ function createCommandContext(attachments: AttachmentRecord[] = [pdf]): CommandC
 				baseUrl: "https://api.openai.com/v1",
 				input: ["text", "image"],
 			},
+			getProviderTraceEvents: () => [],
 		},
 		chatContainer: new Container(),
 		ui: { requestRender: vi.fn() },
@@ -232,7 +239,7 @@ describe("Issue 6 attachment TUI contracts", () => {
 	it("registers attachment inspection commands in slash command discovery", () => {
 		const commands = BUILTIN_SLASH_COMMANDS.map((command) => command.name);
 
-		expect(commands).toEqual(expect.arrayContaining(["files", "file", "capabilities"]));
+		expect(commands).toEqual(expect.arrayContaining(["files", "file", "capabilities", "input-inspect"]));
 	});
 
 	it("shows selected native @file names before submission", async () => {
@@ -335,6 +342,54 @@ describe("Issue 6 attachment TUI contracts", () => {
 
 		expect(context.handleCapabilitiesCommand).toHaveBeenCalledOnce();
 		expect(context.session.prompt).not.toHaveBeenCalled();
+	});
+
+	it("routes /input-inspect to sanitized provider trace inspection", async () => {
+		const context = createSubmitContext();
+		const prototype = InteractiveMode.prototype as unknown as InteractiveModePrivate;
+		prototype.setupEditorSubmitHandler.call(context);
+
+		await context.defaultEditor.onSubmit?.("/input-inspect");
+
+		expect(context.handleInputInspectCommand).toHaveBeenCalledOnce();
+		expect(context.session.prompt).not.toHaveBeenCalled();
+	});
+
+	it("renders the latest sanitized provider trace stages", () => {
+		const context = createCommandContext();
+		context.session.getProviderTraceEvents = () => [
+			{
+				type: "provider_trace",
+				traceId: "provider_trace_1",
+				sequence: 0,
+				timestamp: 1,
+				stage: "capability_decision",
+				provider: "openai",
+				api: "openai-responses",
+				modelId: "gpt-test",
+				endpointProfile: "openai-responses-official",
+				capability: { supported: true, wireKind: "input_file", provenance: "official-default" },
+			},
+			{
+				type: "provider_trace",
+				traceId: "provider_trace_1",
+				sequence: 1,
+				timestamp: 2,
+				stage: "sanitized_wire_payload",
+				provider: "openai",
+				api: "openai-responses",
+				modelId: "gpt-test",
+				payload: { input: [{ type: "input_file", file_data: "[redacted binary data]" }] },
+			},
+		];
+		const prototype = InteractiveMode.prototype as unknown as InteractiveModePrivate;
+		prototype.handleInputInspectCommand.call(context);
+		const output = renderCommandOutput(context);
+
+		expect(output).toContain("Latest Provider Input Trace");
+		expect(output).toContain("capability_decision");
+		expect(output).toContain("input_file");
+		expect(output).toContain("[redacted binary data]");
 	});
 
 	it("lists attachment metadata and preparation status", () => {

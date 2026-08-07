@@ -2838,6 +2838,11 @@ export class InteractiveMode {
 				this.editor.setText("");
 				return;
 			}
+			if (text === "/input-inspect") {
+				this.handleInputInspectCommand();
+				this.editor.setText("");
+				return;
+			}
 			if (text === "/changelog") {
 				this.handleChangelogCommand();
 				this.editor.setText("");
@@ -5988,6 +5993,51 @@ export class InteractiveMode {
 		info += `${theme.fg("dim", "PDF:")} ${
 			pdfCapability.supported ? `native via ${pdfCapability.method}` : `unsupported · ${pdfCapability.reason}`
 		}`;
+		this.chatContainer.addChild(new Spacer(1));
+		this.chatContainer.addChild(new Text(info, 1, 0));
+		this.ui.requestRender();
+	}
+
+	private handleInputInspectCommand(): void {
+		const events = this.session.getProviderTraceEvents();
+		const latest = events[events.length - 1];
+		if (!latest) {
+			this.showWarning("No provider-native input trace is available yet.");
+			return;
+		}
+
+		const trace = events.filter((event) => event.traceId === latest.traceId);
+		let info = `${theme.bold("Latest Provider Input Trace")}\n\n`;
+		info += `${theme.fg("dim", "Trace:")} ${latest.traceId}\n`;
+		info += `${theme.fg("dim", "Provider:")} ${latest.provider}\n`;
+		info += `${theme.fg("dim", "Model:")} ${latest.modelId}\n`;
+		info += `${theme.fg("dim", "Transport:")} ${latest.api}`;
+
+		for (const event of trace) {
+			info += `\n\n${theme.fg("accent", `${event.sequence + 1}. ${event.stage}`)}`;
+			if (event.endpointProfile) info += `\n${theme.fg("dim", "Profile:")} ${event.endpointProfile}`;
+			if (event.attachment) {
+				info += `\n${theme.fg("dim", "Attachment:")} ${event.attachment.filename} · ${event.attachment.mediaType} · ${event.attachment.id}`;
+			}
+			if (event.capability) {
+				info += `\n${theme.fg("dim", "Capability:")} ${event.capability.supported ? "supported" : "unsupported"}`;
+				if (event.capability.provenance) info += ` · ${event.capability.provenance}`;
+				if (event.capability.wireKind) info += ` · ${event.capability.wireKind}`;
+			}
+			if (event.source) info += `\n${theme.fg("dim", "Source:")} ${event.source.form}`;
+			if (event.remote) info += `\n${theme.fg("dim", "Remote:")} ${event.remote.provider}/${event.remote.fileId}`;
+			if (event.wire) info += `\n${theme.fg("dim", "Wire:")} ${event.wire.kind} · ${event.wire.source}`;
+			if (event.headers) info += `\n${theme.fg("dim", "Headers:")} ${JSON.stringify(event.headers)}`;
+			if (event.payload !== undefined) {
+				info += `\n${theme.fg("dim", "Payload:")} ${JSON.stringify(event.payload, null, 2)}`;
+			}
+			if (event.response) info += `\n${theme.fg("dim", "Response:")} HTTP ${event.response.status}`;
+			if (event.completion) {
+				info += `\n${theme.fg("dim", "Completion:")} ${event.completion.stopReason} · ${event.completion.usage.totalTokens} tokens`;
+			}
+			if (event.error) info += `\n${theme.fg("error", event.error)}`;
+		}
+
 		this.chatContainer.addChild(new Spacer(1));
 		this.chatContainer.addChild(new Text(info, 1, 0));
 		this.ui.requestRender();

@@ -298,6 +298,7 @@ user sends prompt ────────────────────�
   │   ├─► before_provider_headers (can mutate headers)     |
   │   ├─► before_provider_request (can inspect or replace payload)
   │   ├─► after_provider_response (status + headers, before stream consume)
+  │   ├─► provider_trace (sanitized diagnostic stages; may fire multiple times)
   │   │                                            │       │
   │   │   LLM responds, may call tools:            │       │
   │   │     ├─► tool_execution_start               │       │
@@ -707,6 +708,23 @@ pi.on("after_provider_response", (event, ctx) => {
 ```
 
 Header availability depends on provider and transport. Providers that abstract HTTP responses may not expose headers.
+
+#### provider_trace
+
+Fired for each available stage of a sanitized provider request trace. Unlike `before_provider_request`, this event is read-only and never exposes inline/base64 bytes, credentials, cookies, or signed URL secrets. A single provider call may emit several events with the same `traceId` and increasing `sequence` values.
+
+```typescript
+pi.on("provider_trace", (event) => {
+  if (event.stage === "provider_lowering") {
+    console.log(event.attachment?.filename, event.wire?.kind);
+  }
+  if (event.stage === "stream_completion") {
+    console.log(event.completion?.stopReason, event.completion?.usage.totalTokens);
+  }
+});
+```
+
+Possible stages include `input_resolution`, `capability_decision`, `source_selection`, `remote_reuse`, `provider_lowering`, `request_headers`, `sanitized_wire_payload`, `response_metadata`, and `stream_completion`. Provider SDKs that do not expose raw HTTP metadata may omit `response_metadata`.
 
 ### Model Events
 

@@ -3,9 +3,10 @@
  */
 
 import { type Content, FinishReason, FunctionCallingConfigMode, type Part } from "@google/genai";
+import type { ProviderTraceRecorder } from "../provider-trace.ts";
 import type { Context, ImageContent, Model, StopReason, TextContent, Tool } from "../types.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
-import { resolvePdfAttachments } from "./attachment-lowering.ts";
+import { recordProviderAttachmentLowering, resolvePdfAttachments } from "./attachment-lowering.ts";
 import { resolveJsonSchemaStrictSampling } from "./constrained-sampling.ts";
 import { transformMessages } from "./transform-messages.ts";
 
@@ -90,7 +91,11 @@ function supportsMultimodalFunctionResponse(modelId: string): boolean {
 /**
  * Convert internal messages to Gemini Content[] format.
  */
-export function convertMessages<T extends GoogleApiType>(model: Model<T>, context: Context): Content[] {
+export function convertMessages<T extends GoogleApiType>(
+	model: Model<T>,
+	context: Context,
+	trace?: ProviderTraceRecorder,
+): Content[] {
 	const contents: Content[] = [];
 	const normalizeToolCallId = (id: string): string => {
 		if (!requiresToolCallId(model.id)) return id;
@@ -101,8 +106,10 @@ export function convertMessages<T extends GoogleApiType>(model: Model<T>, contex
 
 	for (const msg of transformedMessages) {
 		if (msg.role === "user") {
-			const attachments = resolvePdfAttachments(msg, context.attachmentRegistry, model);
+			const attachments = resolvePdfAttachments(msg, context.attachmentRegistry, model, trace);
 			const attachmentParts: Part[] = attachments.map((attachment) => {
+				const wireKind = attachment.source.type === "base64" ? "inlineData" : "fileData";
+				recordProviderAttachmentLowering(trace, attachment, wireKind);
 				switch (attachment.source.type) {
 					case "base64":
 						return {

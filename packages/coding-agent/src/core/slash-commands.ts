@@ -29,6 +29,7 @@ export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 	{ name: "files", description: "List attachments in the current session" },
 	{ name: "file", description: "Inspect a session attachment", argumentHint: "<number-or-id>" },
 	{ name: "capabilities", description: "Show input capabilities reported for the current model transport" },
+	{ name: "input-inspect", description: "Inspect the latest sanitized provider-native input trace" },
 	{ name: "changelog", description: "Show changelog entries" },
 	{ name: "hotkeys", description: "Show all keyboard shortcuts" },
 	{ name: "fork", description: "Create a new fork from a previous user message" },

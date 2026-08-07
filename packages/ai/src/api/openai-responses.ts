@@ -1,6 +1,14 @@
 import OpenAI from "openai";
 import type { ResponseCreateParamsStreaming } from "openai/resources/responses/responses.js";
 import { clampThinkingLevel } from "../models.ts";
+import {
+	createProviderTraceRecorder,
+	type ProviderTraceRecorder,
+	traceProviderCompletion,
+	traceProviderPayload,
+	traceProviderResponse,
+	traceRequestHeaders,
+} from "../provider-trace.ts";
 import type {
 	Api,
 	AssistantMessage,
@@ -124,6 +132,8 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 			stopReason: "pending",
 			timestamp: Date.now(),
 		};
+		const trace = createProviderTraceRecorder(model, options?.onTrace);
+		let completionTraced = false;
 
 		try {
 			// Create OpenAI client
@@ -136,11 +146,14 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 				compat.supportsOpenAIGrammarTools,
 			);
 			const client = createClient(model, context, apiKey, options?.headers, options?.fetch, cacheSessionId);
-			let params = buildParams(model, context, options, compat, grammarToolInputProperties);
+			let params = buildParams(model, context, options, compat, grammarToolInputProperties, trace);
+			await trace?.flush(options?.onTrace);
 			const nextParams = await options?.onPayload?.(params, model);
 			if (nextParams !== undefined) {
 				params = nextParams as ResponseCreateParamsStreaming;
 			}
+			await traceRequestHeaders(trace, options?.onTrace, { ...model.headers, ...options?.headers });
+			await traceProviderPayload(trace, options?.onTrace, params);
 			const requestOptions = {
 				...(options?.signal ? { signal: options.signal } : {}),
 				...(options?.timeoutMs !== undefined ? { timeout: options.timeoutMs } : {}),
@@ -154,7 +167,9 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 					signal: options?.signal,
 				},
 			);
-			await options?.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
+			const providerResponse = { status: response.status, headers: headersToRecord(response.headers) };
+			await options?.onResponse?.(providerResponse, model);
+			await traceProviderResponse(trace, options?.onTrace, providerResponse);
 			stream.push({ type: "start", partial: output });
 
 			await processResponsesStream(openaiStream, output, stream, model, {
@@ -174,6 +189,8 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 				throw new Error("An unknown error occurred");
 			}
 
+			await traceProviderCompletion(trace, options?.onTrace, output);
+			completionTraced = true;
 			stream.push({ type: "done", reason: output.stopReason, message: output });
 			stream.end();
 		} catch (error) {
@@ -185,6 +202,7 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 			}
 			output.stopReason = options?.signal?.aborted ? "aborted" : "error";
 			output.errorMessage = formatOpenAIResponsesError(error);
+			if (!completionTraced) await traceProviderCompletion(trace, options?.onTrace, output);
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();
 		}
@@ -263,6 +281,7 @@ function buildParams(
 		context.tools,
 		compat.supportsOpenAIGrammarTools,
 	),
+	trace?: ProviderTraceRecorder,
 ) {
 	const toolPlacement = splitDeferredTools(context, compat.supportsToolSearch);
 	const messages = convertResponsesMessages(model, context, OPENAI_TOOL_CALL_PROVIDERS, {
@@ -272,6 +291,7 @@ function buildParams(
 			supportsStrictMode: compat.supportsStrictMode,
 			supportsOpenAIGrammarTools: compat.supportsOpenAIGrammarTools,
 		},
+		trace,
 	});
 
 	const cacheRetention = resolveCacheRetention(options?.cacheRetention, options?.env);

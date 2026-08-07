@@ -15,6 +15,7 @@ import type {
 	ResponseToolSearchOutputItemParam,
 } from "openai/resources/responses/responses.js";
 import { calculateCost } from "../models.ts";
+import type { ProviderTraceRecorder } from "../provider-trace.ts";
 import type {
 	Api,
 	AssistantMessage,
@@ -33,7 +34,7 @@ import type { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { shortHash } from "../utils/hash.ts";
 import { parseStreamingJson } from "../utils/json-parse.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
-import { resolvePdfAttachments } from "./attachment-lowering.ts";
+import { recordProviderAttachmentLowering, resolvePdfAttachments } from "./attachment-lowering.ts";
 import {
 	appendGrammarToolInputJsonDelta,
 	type GrammarToolInputJsonBuffer,
@@ -122,6 +123,7 @@ export interface ConvertResponsesMessagesOptions {
 	grammarToolInputProperties?: ReadonlyMap<string, string>;
 	deferredTools?: ReadonlyMap<string, Tool>;
 	toolOptions?: ConvertResponsesToolsOptions;
+	trace?: ProviderTraceRecorder;
 }
 
 export interface ConvertResponsesToolsOptions {
@@ -184,8 +186,9 @@ export function convertResponsesMessages<TApi extends Api>(
 	let msgIndex = 0;
 	for (const msg of transformedMessages) {
 		if (msg.role === "user") {
-			const attachments = resolvePdfAttachments(msg, context.attachmentRegistry, model);
+			const attachments = resolvePdfAttachments(msg, context.attachmentRegistry, model, options?.trace);
 			const attachmentContent: ResponseInputFile[] = attachments.map((attachment) => {
+				recordProviderAttachmentLowering(options?.trace, attachment, "input_file");
 				switch (attachment.source.type) {
 					case "base64":
 						return {

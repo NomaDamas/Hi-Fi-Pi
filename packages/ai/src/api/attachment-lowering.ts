@@ -1,4 +1,9 @@
 import { resolveNativeInputCapability } from "../native-input-capabilities.ts";
+import {
+	type ProviderTraceRecorder,
+	sanitizeProviderHeadersForTrace,
+	sanitizeProviderTraceValue,
+} from "../provider-trace.ts";
 import type {
 	Api,
 	AttachmentRecord,
@@ -90,7 +95,9 @@ export function getNativeAttachmentCapability(
 		...(capability.capabilityId ? { capabilityId: capability.capabilityId } : {}),
 		...(capability.endpointProfile ? { endpointProfile: capability.endpointProfile } : {}),
 		...(capability.provenance ? { provenance: capability.provenance } : {}),
-		...(capability.requiredHeaders ? { requiredHeaders: capability.requiredHeaders } : {}),
+		...(capability.requiredHeaders
+			? { requiredHeaders: sanitizeProviderHeadersForTrace(capability.requiredHeaders) }
+			: {}),
 		...(capability.options ? { options: capability.options } : {}),
 		...(capability.reason ? { reason: capability.reason } : {}),
 	};
@@ -138,27 +145,67 @@ function assertInlineSize(
 }
 
 export function sanitizeProviderPayloadForTrace(payload: unknown): unknown {
-	if (Array.isArray(payload)) return payload.map(sanitizeProviderPayloadForTrace);
-	if (!payload || typeof payload !== "object") return payload;
+	return sanitizeProviderTraceValue(payload);
+}
 
-	return Object.fromEntries(
-		Object.entries(payload).map(([key, value]) => {
-			if (
-				typeof value === "string" &&
-				(key === "file_data" || (key === "data" && value.length > 0)) &&
-				(value.startsWith("data:") || /^[A-Za-z0-9+/]+={0,2}$/.test(value))
-			) {
-				return [key, `[redacted ${value.length} chars]`];
-			}
-			return [key, sanitizeProviderPayloadForTrace(value)];
-		}),
-	);
+function traceAttachment(attachment: Pick<AttachmentRecord, "id" | "filename" | "mediaType" | "sizeBytes" | "sha256">) {
+	return {
+		id: attachment.id,
+		filename: attachment.filename,
+		mediaType: attachment.mediaType,
+		...(attachment.sizeBytes !== undefined ? { sizeBytes: attachment.sizeBytes } : {}),
+		...(attachment.sha256 ? { sha256: attachment.sha256 } : {}),
+	};
+}
+
+function traceCapability(capability: NativeAttachmentCapability, source?: NativeAttachmentTransportSource) {
+	return {
+		...(capability.capabilityId ? { id: capability.capabilityId } : {}),
+		supported: capability.supported,
+		...(source ? { source } : {}),
+		...(capability.method ? { wireKind: capability.method } : {}),
+		...(capability.provenance ? { provenance: capability.provenance } : {}),
+		...(capability.maximumInlineBytes !== undefined ||
+		capability.maximumRequestBytes !== undefined ||
+		capability.maximumCount !== undefined
+			? {
+					limits: {
+						...(capability.maximumInlineBytes !== undefined
+							? { maximumBytes: capability.maximumInlineBytes }
+							: {}),
+						...(capability.maximumRequestBytes !== undefined
+							? { maximumRequestBytes: capability.maximumRequestBytes }
+							: {}),
+						...(capability.maximumCount !== undefined ? { maximumCount: capability.maximumCount } : {}),
+					},
+				}
+			: {}),
+		...(capability.requiredHeaders ? { requiredHeaders: capability.requiredHeaders } : {}),
+		...(capability.reason ? { reason: capability.reason } : {}),
+	};
+}
+
+export function recordProviderAttachmentLowering(
+	trace: ProviderTraceRecorder | undefined,
+	attachment: ResolvedPdfAttachment,
+	wireKind: string,
+): void {
+	if (!trace) return;
+	trace.record({
+		stage: "provider_lowering",
+		attachment: traceAttachment(attachment),
+		wire: {
+			kind: wireKind,
+			source: attachment.source.type === "base64" ? "inline" : attachment.source.type,
+		},
+	});
 }
 
 export function resolvePdfAttachments(
 	message: AttachmentMessage,
 	registry: AttachmentRegistry | undefined,
 	model: AttachmentCapabilityModel,
+	trace?: ProviderTraceRecorder,
 ): ResolvedPdfAttachment[] {
 	if (!message.attachments || message.attachments.length === 0) return [];
 	if (!registry) {
@@ -170,7 +217,14 @@ export function resolvePdfAttachments(
 		if (!attachment) {
 			throw new Error(`Attachment not found: ${attachmentId}`);
 		}
+		trace?.record({ stage: "input_resolution", attachment: traceAttachment(attachment) });
 		const capability = getNativeAttachmentCapability(model, attachment.mediaType);
+		trace?.record({
+			stage: "capability_decision",
+			attachment: traceAttachment(attachment),
+			...(capability.endpointProfile ? { endpointProfile: capability.endpointProfile } : {}),
+			capability: traceCapability(capability),
+		});
 		if (!capability.supported) {
 			throw new UnsupportedInputError(model, attachment.mediaType, capability.reason ?? "unsupported input");
 		}
@@ -178,6 +232,23 @@ export function resolvePdfAttachments(
 		const remote = findRemote(attachment, model);
 		const remoteCapability = getNativeAttachmentCapability(model, attachment.mediaType, "provider-file");
 		if (remote && remoteCapability.supported) {
+			trace?.record({
+				stage: "source_selection",
+				attachment: traceAttachment(attachment),
+				source: { form: "provider-file" },
+			});
+			trace?.record({
+				stage: "remote_reuse",
+				attachment: traceAttachment(attachment),
+				remote: {
+					state: "reused",
+					provider: remote.provider,
+					api: remote.api,
+					fileId: remote.fileId,
+					...(remote.uri ? { uri: String(sanitizeProviderTraceValue(remote.uri)) } : {}),
+					...(remote.expiresAt !== undefined ? { expiresAt: remote.expiresAt } : {}),
+				},
+			});
 			return {
 				...attachment,
 				source: { type: "provider-file", fileId: remote.fileId, uri: remote.uri },
@@ -198,6 +269,11 @@ export function resolvePdfAttachments(
 					);
 				}
 				assertInlineSize(model, attachment, sourceCapability, base64ByteLength(attachment.source.data));
+				trace?.record({
+					stage: "source_selection",
+					attachment: traceAttachment(attachment),
+					source: { form: "inline" },
+				});
 				return { ...attachment, source: attachment.source };
 			}
 			case "url": {
@@ -209,6 +285,11 @@ export function resolvePdfAttachments(
 						sourceCapability.reason ?? "URL source is unsupported",
 					);
 				}
+				trace?.record({
+					stage: "source_selection",
+					attachment: traceAttachment(attachment),
+					source: { form: "url" },
+				});
 				return { ...attachment, source: attachment.source };
 			}
 			case "provider-file": {
@@ -227,6 +308,21 @@ export function resolvePdfAttachments(
 						providerFileCapability.reason ?? "provider file source is unsupported",
 					);
 				}
+				trace?.record({
+					stage: "source_selection",
+					attachment: traceAttachment(attachment),
+					source: { form: "provider-file" },
+				});
+				trace?.record({
+					stage: "remote_reuse",
+					attachment: traceAttachment(attachment),
+					remote: {
+						state: "provided",
+						provider: attachment.source.provider,
+						fileId: attachment.source.fileId,
+						...(attachment.source.uri ? { uri: attachment.source.uri } : {}),
+					},
+				});
 				return { ...attachment, source: attachment.source };
 			}
 			case "path": {
@@ -257,6 +353,11 @@ export function resolvePdfAttachments(
 					);
 				}
 				assertInlineSize(model, attachment, sourceCapability, bytes.byteLength);
+				trace?.record({
+					stage: "source_selection",
+					attachment: traceAttachment(attachment),
+					source: { form: "inline" },
+				});
 				return {
 					...attachment,
 					sizeBytes: attachment.sizeBytes ?? bytes.byteLength,

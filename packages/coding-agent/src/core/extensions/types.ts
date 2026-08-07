@@ -29,6 +29,7 @@ import type {
 	OAuthLoginCallbacks,
 	Provider,
 	ProviderHeaders,
+	ProviderTraceEvent,
 	RefreshModelsContext,
 	SimpleStreamOptions,
 	TextContent,
@@ -1045,6 +1046,7 @@ export type ExtensionEvent =
 	| BeforeProviderRequestEvent
 	| BeforeProviderHeadersEvent
 	| AfterProviderResponseEvent
+	| ProviderTraceEvent
 	| BeforeAgentStartEvent
 	| AgentStartEvent
 	| AgentEndEvent
@@ -1217,6 +1219,7 @@ export interface ExtensionAPI {
 	): void;
 	on(event: "before_provider_headers", handler: ExtensionHandler<BeforeProviderHeadersEvent>): void;
 	on(event: "after_provider_response", handler: ExtensionHandler<AfterProviderResponseEvent>): void;
+	on(event: "provider_trace", handler: ExtensionHandler<ProviderTraceEvent>): void;
 	on(event: "before_agent_start", handler: ExtensionHandler<BeforeAgentStartEvent, BeforeAgentStartEventResult>): void;
 	on(event: "agent_start", handler: ExtensionHandler<AgentStartEvent>): void;
 	on(event: "agent_end", handler: ExtensionHandler<AgentEndEvent>): void;

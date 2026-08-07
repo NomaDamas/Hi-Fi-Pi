@@ -5,6 +5,13 @@ import {
 	type ThinkingConfig,
 } from "@google/genai";
 import { calculateCost, clampThinkingLevel } from "../models.ts";
+import {
+	createProviderTraceRecorder,
+	type ProviderTraceRecorder,
+	traceProviderCompletion,
+	traceProviderPayload,
+	traceRequestHeaders,
+} from "../provider-trace.ts";
 import type {
 	Api,
 	AssistantMessage,
@@ -73,6 +80,8 @@ export const stream: StreamFunction<"google-generative-ai", GoogleOptions> = (
 			stopReason: "pending",
 			timestamp: Date.now(),
 		};
+		const trace = createProviderTraceRecorder(model, options?.onTrace);
+		let completionTraced = false;
 
 		try {
 			if (options?.fetch && options.fetch !== globalThis.fetch) {
@@ -83,11 +92,14 @@ export const stream: StreamFunction<"google-generative-ai", GoogleOptions> = (
 				throw new Error(`No API key for provider: ${model.provider}`);
 			}
 			const client = createClient(model, apiKey, options?.headers);
-			let params = buildParams(model, context, options);
+			let params = buildParams(model, context, options, trace);
+			await trace?.flush(options?.onTrace);
 			const nextParams = await options?.onPayload?.(params, model);
 			if (nextParams !== undefined) {
 				params = nextParams as GenerateContentParameters;
 			}
+			await traceRequestHeaders(trace, options?.onTrace, { ...model.headers, ...options?.headers });
+			await traceProviderPayload(trace, options?.onTrace, params);
 			const googleStream = await client.models.generateContentStream(params);
 
 			stream.push({ type: "start", partial: output });
@@ -273,6 +285,8 @@ export const stream: StreamFunction<"google-generative-ai", GoogleOptions> = (
 				throw new Error(errorMessage);
 			}
 
+			await traceProviderCompletion(trace, options?.onTrace, output);
+			completionTraced = true;
 			stream.push({ type: "done", reason: output.stopReason, message: output });
 			stream.end();
 		} catch (error) {
@@ -284,6 +298,7 @@ export const stream: StreamFunction<"google-generative-ai", GoogleOptions> = (
 			}
 			output.stopReason = options?.signal?.aborted ? "aborted" : "error";
 			output.errorMessage = formatProviderError(normalizeProviderError(error));
+			if (!completionTraced) await traceProviderCompletion(trace, options?.onTrace, output);
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();
 		}
@@ -355,8 +370,9 @@ function buildParams(
 	model: Model<"google-generative-ai">,
 	context: Context,
 	options: GoogleOptions = {},
+	trace?: ProviderTraceRecorder,
 ): GenerateContentParameters {
-	const contents = convertMessages(model, context);
+	const contents = convertMessages(model, context, trace);
 
 	const generationConfig: GenerateContentConfig = {};
 	if (options.temperature !== undefined) {

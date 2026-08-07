@@ -79,6 +79,10 @@ interface AgentSession {
   // Subscribe to events (returns unsubscribe function)
   subscribe(listener: (event: AgentSessionEvent) => void): () => void;
 
+  // Bounded, sanitized provider trace history for the current process
+  getProviderTraceEvents(): ProviderTraceEvent[];
+  getLatestProviderTrace(): ProviderTraceEvent | undefined;
+
   // Session info
   sessionFile: string | undefined;
   sessionId: string;
@@ -263,9 +267,14 @@ await session.agent.waitForIdle();
 
 Subscribe to events to receive streaming output and lifecycle notifications.
 
+Pass `onTrace` to `createAgentSession()` for a direct sanitized trace observer, or handle `provider_trace` in the normal session event stream. Trace events are also emitted by RPC mode. They redact credentials, cookies, signed URL secrets, and inline/base64 file bytes; use the separate raw `before_provider_request` extension hook only when request mutation is required.
+
 ```typescript
 session.subscribe((event) => {
   switch (event.type) {
+	case "provider_trace":
+		console.log(event.traceId, event.stage, event.wire?.kind);
+		break;
     // Streaming text from assistant
     case "message_update":
       if (event.assistantMessageEvent.type === "text_delta") {
