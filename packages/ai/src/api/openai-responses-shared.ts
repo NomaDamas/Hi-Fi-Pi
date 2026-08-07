@@ -4,6 +4,7 @@ import type {
 	ResponseCreateParamsStreaming,
 	ResponseInput,
 	ResponseInputContent,
+	ResponseInputFile,
 	ResponseInputImage,
 	ResponseInputItem,
 	ResponseInputText,
@@ -32,6 +33,7 @@ import type { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { shortHash } from "../utils/hash.ts";
 import { parseStreamingJson } from "../utils/json-parse.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
+import { resolvePdfAttachments } from "./attachment-lowering.ts";
 import {
 	appendGrammarToolInputJsonDelta,
 	type GrammarToolInputJsonBuffer,
@@ -182,25 +184,48 @@ export function convertResponsesMessages<TApi extends Api>(
 	let msgIndex = 0;
 	for (const msg of transformedMessages) {
 		if (msg.role === "user") {
+			const attachments = resolvePdfAttachments(msg, context.attachmentRegistry, model);
+			const attachmentContent: ResponseInputFile[] = attachments.map((attachment) => {
+				switch (attachment.source.type) {
+					case "base64":
+						return {
+							type: "input_file",
+							filename: attachment.filename,
+							file_data: `data:${attachment.mediaType};base64,${attachment.source.data}`,
+						};
+					case "url":
+						return { type: "input_file", file_url: attachment.source.url };
+					case "provider-file":
+						return { type: "input_file", file_id: attachment.source.fileId };
+				}
+				throw new Error("Unknown attachment source");
+			});
 			if (typeof msg.content === "string") {
+				const textContent: ResponseInputText[] =
+					attachmentContent.length > 0 && msg.content.length === 0
+						? []
+						: [{ type: "input_text", text: sanitizeSurrogates(msg.content) }];
 				messages.push({
 					role: "user",
-					content: [{ type: "input_text", text: sanitizeSurrogates(msg.content) }],
+					content: [...attachmentContent, ...textContent],
 				});
 			} else {
-				const content: ResponseInputContent[] = msg.content.map((item): ResponseInputContent => {
-					if (item.type === "text") {
+				const content: ResponseInputContent[] = [
+					...attachmentContent,
+					...msg.content.map((item): ResponseInputContent => {
+						if (item.type === "text") {
+							return {
+								type: "input_text",
+								text: sanitizeSurrogates(item.text),
+							} satisfies ResponseInputText;
+						}
 						return {
-							type: "input_text",
-							text: sanitizeSurrogates(item.text),
-						} satisfies ResponseInputText;
-					}
-					return {
-						type: "input_image",
-						detail: "auto",
-						image_url: `data:${item.mimeType};base64,${item.data}`,
-					} satisfies ResponseInputImage;
-				});
+							type: "input_image",
+							detail: "auto",
+							image_url: `data:${item.mimeType};base64,${item.data}`,
+						} satisfies ResponseInputImage;
+					}),
+				];
 				if (content.length === 0) continue;
 				messages.push({
 					role: "user",

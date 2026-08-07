@@ -1291,6 +1291,20 @@
           return `<div class="model-change" id="${entryDomId}">${tsHtml}Switched to model: <span class="model-name">${escapeHtml(entry.provider)}/${escapeHtml(entry.modelId)}</span></div>`;
         }
 
+		if (entry.type === 'attachment') {
+		  const attachment = entry.attachment || {};
+		  const size = typeof attachment.sizeBytes === 'number'
+			? ` · ${attachment.sizeBytes.toLocaleString()} bytes`
+			: '';
+		  const sourceType = attachment.source?.type || 'unknown';
+		  const sourceStatus = attachment.metadata?.sourceAvailable === false ? 'missing' : 'available';
+		  const remoteProviders = attachment.remotes ? Object.keys(attachment.remotes) : [];
+		  return `<div class="attachment-entry" id="${entryDomId}">${tsHtml}
+			<div class="attachment-name">${escapeHtml(attachment.filename || attachment.id || 'Attachment')}</div>
+			<div class="attachment-meta">${escapeHtml(attachment.mediaType || 'application/octet-stream')}${size} · ${escapeHtml(sourceType)} source ${sourceStatus}${remoteProviders.length ? ` · uploaded: ${escapeHtml(remoteProviders.join(', '))}` : ''}</div>
+		  </div>`;
+		}
+
         if (entry.type === 'compaction') {
           return `<div class="compaction" id="${entryDomId}" onclick="if(window.getSelection().toString())return;this.classList.toggle('expanded')">
             <div class="compaction-label">[compaction]</div>

@@ -300,6 +300,7 @@ async function streamAssistantResponse(
 		messages: llmMessages,
 		tools: context.tools,
 	};
+	if (context.attachmentRegistry) llmContext.attachmentRegistry = context.attachmentRegistry;
 
 	// Resolve API key (important for expiring tokens)
 	const resolvedApiKey =

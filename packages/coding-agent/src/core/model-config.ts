@@ -151,6 +151,19 @@ const ModelCostSchema = Type.Object({
 	tiers: Type.Optional(Type.Array(ModelCostTierSchema)),
 });
 
+const NativePdfAttachmentCapabilitySchema = Type.Object({
+	supported: Type.Boolean(),
+	sources: Type.Optional(
+		Type.Array(Type.Union([Type.Literal("inline"), Type.Literal("url"), Type.Literal("provider-file")])),
+	),
+	maximumInlineBytes: Type.Optional(Type.Number({ minimum: 1 })),
+	maximumRequestBytes: Type.Optional(Type.Number({ minimum: 1 })),
+});
+
+const NativeAttachmentCapabilitiesSchema = Type.Object({
+	pdf: Type.Optional(NativePdfAttachmentCapabilitySchema),
+});
+
 const ModelDefinitionSchema = Type.Object({
 	id: Type.String({ minLength: 1 }),
 	name: Type.Optional(Type.String({ minLength: 1 })),
@@ -163,6 +176,7 @@ const ModelDefinitionSchema = Type.Object({
 	contextWindow: Type.Optional(Type.Number()),
 	maxTokens: Type.Optional(Type.Number()),
 	headers: Type.Optional(Type.Record(Type.String(), Type.String())),
+	nativeAttachments: Type.Optional(NativeAttachmentCapabilitiesSchema),
 	compat: Type.Optional(ProviderCompatSchema),
 });
 
@@ -183,6 +197,7 @@ const ModelOverrideSchema = Type.Object({
 	contextWindow: Type.Optional(Type.Number()),
 	maxTokens: Type.Optional(Type.Number()),
 	headers: Type.Optional(Type.Record(Type.String(), Type.String())),
+	nativeAttachments: Type.Optional(NativeAttachmentCapabilitiesSchema),
 	compat: Type.Optional(ProviderCompatSchema),
 });
 
@@ -193,6 +208,7 @@ const ProviderConfigSchema = Type.Object({
 	api: Type.Optional(Type.String({ minLength: 1 })),
 	oauth: Type.Optional(Type.Literal("radius")),
 	headers: Type.Optional(Type.Record(Type.String(), Type.String())),
+	nativeAttachments: Type.Optional(NativeAttachmentCapabilitiesSchema),
 	compat: Type.Optional(ProviderCompatSchema),
 	authHeader: Type.Optional(Type.Boolean()),
 	models: Type.Optional(Type.Array(ModelDefinitionSchema)),

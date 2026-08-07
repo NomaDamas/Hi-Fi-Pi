@@ -36,7 +36,7 @@ import { parseJsonWithRepair, parseStreamingJson } from "../utils/json-parse.ts"
 import { getProviderEnvValue } from "../utils/provider-env.ts";
 import { retryProviderRequest } from "../utils/provider-retry.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
-
+import { resolvePdfAttachments } from "./attachment-lowering.ts";
 import { resolveJsonSchemaStrictSampling } from "./constrained-sampling.ts";
 import { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "./github-copilot-headers.ts";
 import { adjustMaxTokensForThinking, buildBaseOptions, clampMaxTokensToContext } from "./simple-options.ts";
@@ -169,6 +169,7 @@ export type AnthropicThinkingDisplay = "summarized" | "omitted";
 
 const FINE_GRAINED_TOOL_STREAMING_BETA = "fine-grained-tool-streaming-2025-05-14";
 const INTERLEAVED_THINKING_BETA = "interleaved-thinking-2025-05-14";
+const FILES_API_BETA = "files-api-2025-04-14";
 
 function getAnthropicCompat(
 	model: Model<"anthropic-messages">,
@@ -538,6 +539,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 					apiKey,
 					options?.interleavedThinking ?? true,
 					shouldUseFineGrainedToolStreamingBeta(model, context),
+					hasProviderFileAttachment(model, context),
 					options?.headers,
 					options?.fetch,
 					copilotDynamicHeaders,
@@ -844,11 +846,35 @@ function isOAuthToken(apiKey: string): boolean {
 	return apiKey.includes("sk-ant-oat");
 }
 
+function hasProviderFileAttachment(model: Model<"anthropic-messages">, context: Context): boolean {
+	const now = Date.now();
+	for (const message of context.messages) {
+		if (message.role !== "user" && message.role !== "toolResult") continue;
+		for (const reference of message.attachments ?? []) {
+			const attachment = context.attachmentRegistry?.resolve(reference.attachmentId);
+			if (!attachment) continue;
+			if (attachment.source.type === "provider-file" && attachment.source.provider === model.provider) return true;
+			if (
+				Object.values(attachment.remotes ?? {}).some(
+					(remote) =>
+						remote.provider === model.provider &&
+						remote.api === model.api &&
+						(remote.expiresAt === undefined || remote.expiresAt > now),
+				)
+			) {
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
 function createClient(
 	model: Model<"anthropic-messages">,
 	apiKey: string | undefined,
 	interleavedThinking: boolean,
 	useFineGrainedToolStreamingBeta: boolean,
+	useFilesApiBeta: boolean,
 	optionsHeaders?: ProviderHeaders,
 	fetch?: typeof globalThis.fetch,
 	dynamicHeaders?: Record<string, string>,
@@ -862,6 +888,9 @@ function createClient(
 	}
 	if (needsInterleavedBeta) {
 		betaFeatures.push(INTERLEAVED_THINKING_BETA);
+	}
+	if (useFilesApiBeta) {
+		betaFeatures.push(FILES_API_BETA);
 	}
 
 	// Copilot: Bearer auth, selective betas.
@@ -967,6 +996,8 @@ function buildParams(
 			compat.allowEmptySignature,
 			deferredToolNames,
 			normalizeToolName,
+			context,
+			model,
 		),
 		max_tokens: options?.maxTokens ?? model.maxTokens,
 		stream: true,
@@ -1120,6 +1151,8 @@ function convertMessages(
 	allowEmptySignature = false,
 	deferredToolNames: ReadonlySet<string> = new Set(),
 	normalizeToolName: (name: string) => string = (name) => name,
+	context?: Context,
+	model?: Model<"anthropic-messages">,
 ): MessageParam[] {
 	const params: MessageParam[] = [];
 	const loadedToolNames = new Set<string>();
@@ -1128,31 +1161,70 @@ function convertMessages(
 		const msg = transformedMessages[i];
 
 		if (msg.role === "user") {
+			const attachmentModel = model;
+			const attachments =
+				context && attachmentModel ? resolvePdfAttachments(msg, context.attachmentRegistry, attachmentModel) : [];
+			const attachmentBlocks: ContentBlockParam[] = attachments.map((attachment) => {
+				switch (attachment.source.type) {
+					case "base64":
+						return {
+							type: "document",
+							source: {
+								type: "base64",
+								media_type: "application/pdf",
+								data: attachment.source.data,
+							},
+							title: attachment.filename,
+						};
+					case "url":
+						return {
+							type: "document",
+							source: { type: "url", url: attachment.source.url },
+							title: attachment.filename,
+						};
+					case "provider-file":
+						return {
+							type: "document",
+							source: { type: "file", file_id: attachment.source.fileId },
+							title: attachment.filename,
+						} as unknown as ContentBlockParam;
+				}
+				throw new Error("Unknown attachment source");
+			});
 			if (typeof msg.content === "string") {
-				if (msg.content.trim().length > 0) {
+				const text = sanitizeSurrogates(msg.content);
+				if (text.trim().length > 0 || attachmentBlocks.length > 0) {
 					params.push({
 						role: "user",
-						content: sanitizeSurrogates(msg.content),
+						content:
+							attachmentBlocks.length > 0
+								? text.trim().length > 0
+									? [...attachmentBlocks, { type: "text", text }]
+									: attachmentBlocks
+								: text,
 					});
 				}
 			} else {
-				const blocks: ContentBlockParam[] = msg.content.map((item) => {
-					if (item.type === "text") {
-						return {
-							type: "text",
-							text: sanitizeSurrogates(item.text),
-						};
-					} else {
-						return {
-							type: "image",
-							source: {
-								type: "base64",
-								media_type: item.mimeType as "image/jpeg" | "image/png" | "image/gif" | "image/webp",
-								data: item.data,
-							},
-						};
-					}
-				});
+				const blocks: ContentBlockParam[] = [
+					...attachmentBlocks,
+					...msg.content.map((item): ContentBlockParam => {
+						if (item.type === "text") {
+							return {
+								type: "text",
+								text: sanitizeSurrogates(item.text),
+							};
+						} else {
+							return {
+								type: "image",
+								source: {
+									type: "base64",
+									media_type: item.mimeType as "image/jpeg" | "image/png" | "image/gif" | "image/webp",
+									data: item.data,
+								},
+							};
+						}
+					}),
+				];
 				const filteredBlocks = blocks.filter((b) => {
 					if (b.type === "text") {
 						return b.text.trim().length > 0;

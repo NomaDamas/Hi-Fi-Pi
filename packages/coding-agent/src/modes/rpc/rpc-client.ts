@@ -6,7 +6,7 @@
 
 import { type ChildProcess, spawn } from "node:child_process";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { ImageContent } from "@earendil-works/pi-ai";
+import type { AttachmentRecord, ImageContent } from "@earendil-works/pi-ai";
 import type { AgentSessionEvent, SessionStats } from "../../core/agent-session.ts";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { CompactionResult } from "../../core/compaction/index.ts";
@@ -194,22 +194,22 @@ export class RpcClient {
 	 * Returns immediately after sending; use onEvent() to receive streaming events.
 	 * Use waitForIdle() to wait for completion.
 	 */
-	async prompt(message: string, images?: ImageContent[]): Promise<void> {
-		await this.send({ type: "prompt", message, images });
+	async prompt(message: string, images?: ImageContent[], attachments?: AttachmentRecord[]): Promise<void> {
+		await this.send({ type: "prompt", message, images, ...(attachments ? { attachments } : {}) });
 	}
 
 	/**
 	 * Queue a steering message to interrupt the agent mid-run.
 	 */
-	async steer(message: string, images?: ImageContent[]): Promise<void> {
-		await this.send({ type: "steer", message, images });
+	async steer(message: string, images?: ImageContent[], attachments?: AttachmentRecord[]): Promise<void> {
+		await this.send({ type: "steer", message, images, ...(attachments ? { attachments } : {}) });
 	}
 
 	/**
 	 * Queue a follow-up message to be processed after the agent finishes.
 	 */
-	async followUp(message: string, images?: ImageContent[]): Promise<void> {
-		await this.send({ type: "follow_up", message, images });
+	async followUp(message: string, images?: ImageContent[], attachments?: AttachmentRecord[]): Promise<void> {
+		await this.send({ type: "follow_up", message, images, ...(attachments ? { attachments } : {}) });
 	}
 
 	/**
@@ -494,9 +494,14 @@ export class RpcClient {
 	/**
 	 * Send prompt and wait for completion, returning all events.
 	 */
-	async promptAndWait(message: string, images?: ImageContent[], timeout = 60000): Promise<AgentSessionEvent[]> {
+	async promptAndWait(
+		message: string,
+		images?: ImageContent[],
+		timeout = 60000,
+		attachments?: AttachmentRecord[],
+	): Promise<AgentSessionEvent[]> {
 		const eventsPromise = this.collectEvents(timeout);
-		await this.prompt(message, images);
+		await this.prompt(message, images, attachments);
 		return eventsPromise;
 	}
 

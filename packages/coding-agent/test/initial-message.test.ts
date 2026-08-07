@@ -1,3 +1,4 @@
+import type { AttachmentRecord } from "@earendil-works/pi-ai";
 import { describe, expect, test } from "vitest";
 import type { Args } from "../src/cli/args.ts";
 import { buildInitialMessage } from "../src/cli/initial-message.ts";
@@ -44,5 +45,24 @@ describe("buildInitialMessage", () => {
 
 		expect(result.initialMessage).toBe("stdin\nfile\nExplain it");
 		expect(parsed.messages).toEqual(["Second message"]);
+	});
+
+	test("preserves prepared native attachments without changing prompt text", () => {
+		const parsed = createArgs(["Analyze the document"]);
+		const attachment: AttachmentRecord = {
+			id: "att_pdf",
+			filename: "paper.pdf",
+			mediaType: "application/pdf",
+			sizeBytes: 128,
+			source: { type: "path", path: "/tmp/paper.pdf" },
+		};
+
+		const result = buildInitialMessage({
+			parsed,
+			fileAttachments: [attachment],
+		});
+
+		expect(result.initialMessage).toBe("Analyze the document");
+		expect(result.initialAttachments).toEqual([attachment]);
 	});
 });

@@ -9,7 +9,15 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AuthEvent, AuthPrompt } from "@earendil-works/pi-ai";
-import type { AssistantMessage, ImageContent, Message, Model } from "@earendil-works/pi-ai/compat";
+import { getNativeAttachmentCapability } from "@earendil-works/pi-ai";
+import type {
+	Api,
+	AssistantMessage,
+	AttachmentRecord,
+	ImageContent,
+	Message,
+	Model,
+} from "@earendil-works/pi-ai/compat";
 import type {
 	AutocompleteItem,
 	AutocompleteProvider,
@@ -40,6 +48,7 @@ import {
 } from "@earendil-works/pi-tui";
 import chalk from "chalk";
 import { spawn, spawnSync } from "child_process";
+import { extractPromptFileReferences, processPromptFileReferences } from "../../cli/file-processor.ts";
 import {
 	APP_NAME,
 	APP_TITLE,
@@ -140,7 +149,7 @@ import {
 import { ToolExecutionComponent } from "./components/tool-execution.ts";
 import { TreeSelectorComponent } from "./components/tree-selector.ts";
 import { TrustSelectorComponent } from "./components/trust-selector.ts";
-import { UserMessageComponent } from "./components/user-message.ts";
+import { formatAttachmentSize, UserMessageComponent } from "./components/user-message.ts";
 import { UserMessageSelectorComponent } from "./components/user-message-selector.ts";
 import { editInExternalEditor } from "./external-editor.ts";
 import { getModelSearchText } from "./model-search.ts";
@@ -314,10 +323,74 @@ export interface InteractiveModeOptions {
 	initialMessage?: string;
 	/** Images to attach to the initial message */
 	initialImages?: ImageContent[];
+	/** Native attachments prepared for Issue 4 prompt propagation */
+	initialAttachments?: AttachmentRecord[];
 	/** Additional messages to send after the initial message */
 	initialMessages?: string[];
 	/** Force verbose startup (overrides quietStartup setting) */
 	verbose?: boolean;
+}
+
+function attachmentMetadataString(attachment: AttachmentRecord, key: string): string | undefined {
+	const value = attachment.metadata?.[key];
+	return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function formatAttachmentSource(attachment: AttachmentRecord): string {
+	switch (attachment.source.type) {
+		case "path":
+			return fs.existsSync(attachment.source.path) ? attachment.source.path : `${attachment.source.path} (missing)`;
+		case "url":
+			return attachment.source.url;
+		case "base64":
+			return "inline base64 (data redacted)";
+		case "provider-file":
+			return `${attachment.source.provider} file ${attachment.source.fileId}`;
+	}
+}
+
+function prepareAttachmentForDisplay(attachment: AttachmentRecord, model: Model<Api> | undefined): AttachmentRecord {
+	const sourceAvailable =
+		attachment.metadata?.sourceAvailable !== false &&
+		(attachment.source.type !== "path" || fs.existsSync(attachment.source.path));
+	if (!model) {
+		return {
+			...attachment,
+			metadata: {
+				...attachment.metadata,
+				sourceAvailable,
+				preparationStatus: sourceAvailable ? "ready" : "source missing",
+			},
+		};
+	}
+	const matchingRemote = Object.values(attachment.remotes ?? {}).some(
+		(remote) =>
+			remote.provider === model.provider &&
+			remote.api === model.api &&
+			(remote.expiresAt === undefined || remote.expiresAt > Date.now()),
+	);
+	const capability = getNativeAttachmentCapability(
+		model,
+		attachment.mediaType,
+		matchingRemote ? "provider-file" : attachment.source.type,
+	);
+	const preparationStatus = !sourceAvailable
+		? "source missing"
+		: !capability.supported
+			? "unsupported"
+			: matchingRemote || attachment.source.type === "provider-file"
+				? "uploaded"
+				: "ready";
+	return {
+		...attachment,
+		metadata: {
+			...attachment.metadata,
+			sourceAvailable,
+			preparationStatus,
+			...(capability.method ? { nativeMethod: capability.method } : {}),
+			...(capability.reason ? { unsupportedReason: capability.reason } : {}),
+		},
+	};
 }
 
 export class InteractiveMode {
@@ -334,6 +407,7 @@ export class InteractiveMode {
 	private autocompleteProviderWrappers: AutocompleteProviderFactory[] = [];
 	private fdPath: string | undefined;
 	private editorContainer: Container;
+	private attachmentPreviewContainer: Container;
 	private footer: FooterComponent;
 	private footerDataProvider: FooterDataProvider;
 	// Stored so the same manager can be injected into custom editors, selectors, and extension UI.
@@ -476,6 +550,7 @@ export class InteractiveMode {
 		this.editor = this.defaultEditor;
 		this.editorContainer = new Container();
 		this.editorContainer.addChild(this.editor as Component);
+		this.attachmentPreviewContainer = new Container();
 		this.footerDataProvider = new FooterDataProvider(this.sessionManager.getCwd());
 		this.footer = new FooterComponent(this.session, this.footerDataProvider);
 		this.footer.setAutoCompactEnabled(this.session.autoCompactionEnabled);
@@ -714,6 +789,7 @@ export class InteractiveMode {
 		this.ui.addChild(this.statusContainer);
 		this.renderWidgets(); // Initialize with default spacer
 		this.ui.addChild(this.widgetContainerAbove);
+		this.ui.addChild(this.attachmentPreviewContainer);
 		this.ui.addChild(this.editorContainer);
 		this.ui.addChild(this.widgetContainerBelow);
 		this.ui.addChild(this.footer);
@@ -869,7 +945,14 @@ export class InteractiveMode {
 		});
 
 		// Show startup warnings
-		const { migratedProviders, modelFallbackMessage, initialMessage, initialImages, initialMessages } = this.options;
+		const {
+			migratedProviders,
+			modelFallbackMessage,
+			initialMessage,
+			initialImages,
+			initialAttachments,
+			initialMessages,
+		} = this.options;
 
 		if (migratedProviders && migratedProviders.length > 0) {
 			this.showWarning(`Migrated credentials to auth.json: ${migratedProviders.join(", ")}`);
@@ -889,7 +972,10 @@ export class InteractiveMode {
 		// Process initial messages
 		if (initialMessage) {
 			try {
-				await this.session.prompt(initialMessage, { images: initialImages });
+				await this.session.prompt(initialMessage, {
+					images: initialImages,
+					...(initialAttachments?.length ? { attachments: initialAttachments } : {}),
+				});
 			} catch (error: unknown) {
 				const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
 				this.showError(errorMessage);
@@ -911,7 +997,11 @@ export class InteractiveMode {
 		while (true) {
 			const userInput = await this.getUserInput();
 			try {
-				await this.session.prompt(userInput);
+				const processed = await this.processInteractiveFileReferences(userInput);
+				await this.session.prompt(processed.text, {
+					...(processed.images.length > 0 ? { images: processed.images } : {}),
+					...(processed.attachments.length > 0 ? { attachments: processed.attachments } : {}),
+				});
 			} catch (error: unknown) {
 				const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
 				this.showError(errorMessage);
@@ -2623,6 +2713,7 @@ export class InteractiveMode {
 			if (wasBashMode !== this.isBashMode) {
 				this.updateEditorBorderColor();
 			}
+			this.updateAttachmentPreview(text);
 		};
 
 		// Handle clipboard paste (triggered on Ctrl+V). Images are attached by path;
@@ -2630,6 +2721,17 @@ export class InteractiveMode {
 		this.defaultEditor.onPasteImage = () => {
 			void this.handleClipboardPaste();
 		};
+	}
+
+	private updateAttachmentPreview(text: string): void {
+		this.attachmentPreviewContainer.clear();
+		const fileArgs = extractPromptFileReferences(text).fileArgs;
+		if (fileArgs.length > 0) {
+			this.attachmentPreviewContainer.addChild(
+				new Text(theme.fg("dim", `Attachments: ${fileArgs.map((file) => path.basename(file)).join(", ")}`), 1, 0),
+			);
+		}
+		this.ui.requestRender();
 	}
 
 	private async handleClipboardPaste(): Promise<void> {
@@ -2706,6 +2808,21 @@ export class InteractiveMode {
 			}
 			if (text === "/session") {
 				this.handleSessionCommand();
+				this.editor.setText("");
+				return;
+			}
+			if (text === "/files") {
+				this.handleFilesCommand();
+				this.editor.setText("");
+				return;
+			}
+			if (text === "/file" || text.startsWith("/file ")) {
+				this.handleFileCommand(text.slice(5).trim());
+				this.editor.setText("");
+				return;
+			}
+			if (text === "/capabilities") {
+				this.handleCapabilitiesCommand();
 				this.editor.setText("");
 				return;
 			}
@@ -2827,7 +2944,18 @@ export class InteractiveMode {
 			if (this.session.isStreaming) {
 				this.editor.addToHistory?.(text);
 				this.editor.setText("");
-				await this.session.prompt(text, { streamingBehavior: "steer" });
+				try {
+					const processed = await this.processInteractiveFileReferences(text);
+					await this.session.prompt(processed.text, {
+						streamingBehavior: "steer",
+						...(processed.images.length > 0 ? { images: processed.images } : {}),
+						...(processed.attachments.length > 0 ? { attachments: processed.attachments } : {}),
+					});
+				} catch (error) {
+					this.editor.setText(text);
+					this.showError(error instanceof Error ? error.message : String(error));
+					return;
+				}
 				this.updatePendingMessagesDisplay();
 				this.ui.requestRender();
 				return;
@@ -2844,6 +2972,16 @@ export class InteractiveMode {
 			}
 			this.editor.addToHistory?.(text);
 		};
+	}
+
+	private processInteractiveFileReferences(text: string) {
+		if (this.isExtensionCommand(text)) {
+			return Promise.resolve({ text, images: [], attachments: [] });
+		}
+		return processPromptFileReferences(text, {
+			autoResizeImages: this.settingsManager.getImageAutoResize(),
+			failureMode: "throw",
+		});
 	}
 
 	private subscribeToAgent(): void {
@@ -3285,7 +3423,13 @@ export class InteractiveMode {
 			}
 			case "user": {
 				const textContent = this.getUserMessageText(message);
-				if (textContent) {
+				const unresolvedAttachmentIds: string[] = [];
+				const attachmentRecords = (message.attachments ?? []).flatMap((reference) => {
+					const attachment = this.sessionManager.getAttachment(reference.attachmentId);
+					if (!attachment) unresolvedAttachmentIds.push(reference.attachmentId);
+					return attachment ? [prepareAttachmentForDisplay(attachment, this.session.model)] : [];
+				});
+				if (textContent || attachmentRecords.length > 0 || unresolvedAttachmentIds.length > 0) {
 					if (this.chatContainer.children.length > 0) {
 						this.chatContainer.addChild(new Spacer(1));
 					}
@@ -3299,12 +3443,14 @@ export class InteractiveMode {
 						component.setExpanded(this.toolOutputExpanded);
 						this.chatContainer.addChild(component);
 						// Render user message separately if present
-						if (skillBlock.userMessage) {
+						if (skillBlock.userMessage || attachmentRecords.length > 0 || unresolvedAttachmentIds.length > 0) {
 							this.chatContainer.addChild(new Spacer(1));
 							const userComponent = new UserMessageComponent(
-								skillBlock.userMessage,
+								skillBlock.userMessage ?? "",
 								this.getMarkdownThemeWithSettings(),
 								this.outputPad,
+								attachmentRecords,
+								unresolvedAttachmentIds,
 							);
 							this.chatContainer.addChild(userComponent);
 						}
@@ -3313,6 +3459,8 @@ export class InteractiveMode {
 							textContent,
 							this.getMarkdownThemeWithSettings(),
 							this.outputPad,
+							attachmentRecords,
+							unresolvedAttachmentIds,
 						);
 						this.chatContainer.addChild(userComponent);
 					}
@@ -3751,7 +3899,18 @@ export class InteractiveMode {
 		if (this.session.isStreaming) {
 			this.editor.addToHistory?.(text);
 			this.editor.setText("");
-			await this.session.prompt(text, { streamingBehavior: "followUp" });
+			try {
+				const processed = await this.processInteractiveFileReferences(text);
+				await this.session.prompt(processed.text, {
+					streamingBehavior: "followUp",
+					...(processed.images.length > 0 ? { images: processed.images } : {}),
+					...(processed.attachments.length > 0 ? { attachments: processed.attachments } : {}),
+				});
+			} catch (error) {
+				this.editor.setText(text);
+				this.showError(error instanceof Error ? error.message : String(error));
+				return;
+			}
 			this.updatePendingMessagesDisplay();
 			this.ui.requestRender();
 		}
@@ -4057,10 +4216,8 @@ export class InteractiveMode {
 				for (const message of queuedMessages) {
 					if (this.isExtensionCommand(message.text)) {
 						await this.session.prompt(message.text);
-					} else if (message.mode === "followUp") {
-						await this.session.followUp(message.text);
 					} else {
-						await this.session.steer(message.text);
+						await this.sendAttachmentAwareCompactionMessage(message, false);
 					}
 				}
 				this.updatePendingMessagesDisplay();
@@ -4087,26 +4244,42 @@ export class InteractiveMode {
 			}
 
 			// Start a prompt when idle, or queue it into a run still finishing compaction.
-			const promptPromise = this.session
-				.prompt(firstPrompt.text, { streamingBehavior: firstPrompt.mode })
-				.catch((error) => {
-					restoreQueue(error);
-				});
+			const promptPromise = this.sendAttachmentAwareCompactionMessage(firstPrompt, true).catch((error) => {
+				restoreQueue(error);
+			});
 
 			// Queue remaining messages
 			for (const message of rest) {
 				if (this.isExtensionCommand(message.text)) {
 					await this.session.prompt(message.text);
-				} else if (message.mode === "followUp") {
-					await this.session.followUp(message.text);
 				} else {
-					await this.session.steer(message.text);
+					await this.sendAttachmentAwareCompactionMessage(message, false);
 				}
 			}
 			this.updatePendingMessagesDisplay();
 			void promptPromise;
 		} catch (error) {
 			restoreQueue(error);
+		}
+	}
+
+	private async sendAttachmentAwareCompactionMessage(
+		message: CompactionQueuedMessage,
+		startPrompt: boolean,
+	): Promise<void> {
+		const processed = await this.processInteractiveFileReferences(message.text);
+		if (startPrompt) {
+			await this.session.prompt(processed.text, {
+				streamingBehavior: message.mode,
+				...(processed.images.length > 0 ? { images: processed.images } : {}),
+				...(processed.attachments.length > 0 ? { attachments: processed.attachments } : {}),
+			});
+			return;
+		}
+		if (message.mode === "followUp") {
+			await this.session.followUp(processed.text, processed.images, processed.attachments);
+		} else {
+			await this.session.steer(processed.text, processed.images, processed.attachments);
 		}
 	}
 
@@ -5713,6 +5886,79 @@ export class InteractiveMode {
 			}
 		}
 
+		this.chatContainer.addChild(new Spacer(1));
+		this.chatContainer.addChild(new Text(info, 1, 0));
+		this.ui.requestRender();
+	}
+
+	private handleFilesCommand(): void {
+		const attachments = this.sessionManager.getAttachments();
+		let info = theme.bold("Session Attachments");
+		if (attachments.length === 0) {
+			info += `\n\n${theme.fg("dim", "No attachments in this session.")}`;
+		} else {
+			for (const [index, storedAttachment] of attachments.entries()) {
+				const attachment = prepareAttachmentForDisplay(storedAttachment, this.session.model);
+				const size =
+					attachment.sizeBytes === undefined ? "size unknown" : formatAttachmentSize(attachment.sizeBytes);
+				const status = attachmentMetadataString(attachment, "preparationStatus");
+				info += `\n${index + 1}. ${attachment.filename} · ${attachment.mediaType} · ${size}`;
+				if (status) info += ` · ${status}`;
+			}
+		}
+		this.chatContainer.addChild(new Spacer(1));
+		this.chatContainer.addChild(new Text(info, 1, 0));
+		this.ui.requestRender();
+	}
+
+	private handleFileCommand(selector: string): void {
+		const attachments = this.sessionManager.getAttachments();
+		const numericIndex = /^\d+$/.test(selector) ? Number(selector) - 1 : -1;
+		const attachment = numericIndex >= 0 ? attachments[numericIndex] : this.sessionManager.getAttachment(selector);
+		if (!selector || !attachment) {
+			this.showWarning(selector ? `Attachment not found: ${selector}` : "Usage: /file <number-or-id>");
+			return;
+		}
+
+		const displayAttachment = prepareAttachmentForDisplay(attachment, this.session.model);
+		const source = formatAttachmentSource(displayAttachment);
+		let info = `${theme.bold("Attachment Details")}\n\n`;
+		info += `${theme.fg("dim", "Filename:")} ${attachment.filename}\n`;
+		info += `${theme.fg("dim", "ID:")} ${attachment.id}\n`;
+		info += `${theme.fg("dim", "MIME:")} ${attachment.mediaType}\n`;
+		if (attachment.sizeBytes !== undefined) {
+			info += `${theme.fg("dim", "Size:")} ${formatAttachmentSize(attachment.sizeBytes)}\n`;
+		}
+		info += `${theme.fg("dim", "Source:")} ${source}`;
+		const nativeMethod = attachmentMetadataString(displayAttachment, "nativeMethod");
+		const status = attachmentMetadataString(displayAttachment, "preparationStatus");
+		const unsupportedReason = attachmentMetadataString(displayAttachment, "unsupportedReason");
+		if (nativeMethod) info += `\n${theme.fg("dim", "Native method:")} ${nativeMethod}`;
+		if (status) info += `\n${theme.fg("dim", "Status:")} ${status}`;
+		if (unsupportedReason) info += `\n${theme.fg("dim", "Reason:")} ${unsupportedReason}`;
+		for (const [provider, remote] of Object.entries(attachment.remotes ?? {})) {
+			info += `\n${theme.fg("dim", `Remote (${provider}):`)} ${remote.fileId}${remote.uri ? ` · ${remote.uri}` : ""}`;
+		}
+		this.chatContainer.addChild(new Spacer(1));
+		this.chatContainer.addChild(new Text(info, 1, 0));
+		this.ui.requestRender();
+	}
+
+	private handleCapabilitiesCommand(): void {
+		const model = this.session.model;
+		if (!model) {
+			this.showWarning("No model is currently selected.");
+			return;
+		}
+		let info = `${theme.bold("Current Input Capabilities")}\n\n`;
+		info += `${theme.fg("dim", "Provider:")} ${model.provider}\n`;
+		info += `${theme.fg("dim", "Model:")} ${model.id}\n`;
+		info += `${theme.fg("dim", "Transport:")} ${model.api}\n`;
+		info += `${theme.fg("dim", "Declared inputs:")} ${model.input.join(", ") || "none"}\n`;
+		const pdfCapability = getNativeAttachmentCapability(model, "application/pdf");
+		info += `${theme.fg("dim", "PDF:")} ${
+			pdfCapability.supported ? `native via ${pdfCapability.method}` : `unsupported · ${pdfCapability.reason}`
+		}`;
 		this.chatContainer.addChild(new Spacer(1));
 		this.chatContainer.addChild(new Text(info, 1, 0));
 		this.ui.requestRender();

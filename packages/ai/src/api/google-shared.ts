@@ -5,6 +5,7 @@
 import { type Content, FinishReason, FunctionCallingConfigMode, type Part } from "@google/genai";
 import type { Context, ImageContent, Model, StopReason, TextContent, Tool } from "../types.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
+import { resolvePdfAttachments } from "./attachment-lowering.ts";
 import { resolveJsonSchemaStrictSampling } from "./constrained-sampling.ts";
 import { transformMessages } from "./transform-messages.ts";
 
@@ -100,24 +101,58 @@ export function convertMessages<T extends GoogleApiType>(model: Model<T>, contex
 
 	for (const msg of transformedMessages) {
 		if (msg.role === "user") {
-			if (typeof msg.content === "string") {
-				contents.push({
-					role: "user",
-					parts: [{ text: sanitizeSurrogates(msg.content) }],
-				});
-			} else {
-				const parts: Part[] = msg.content.map((item) => {
-					if (item.type === "text") {
-						return { text: sanitizeSurrogates(item.text) };
-					} else {
+			const attachments = resolvePdfAttachments(msg, context.attachmentRegistry, model);
+			const attachmentParts: Part[] = attachments.map((attachment) => {
+				switch (attachment.source.type) {
+					case "base64":
 						return {
 							inlineData: {
-								mimeType: item.mimeType,
-								data: item.data,
+								mimeType: attachment.mediaType,
+								data: attachment.source.data,
 							},
 						};
-					}
+					case "url":
+						return {
+							fileData: {
+								mimeType: attachment.mediaType,
+								fileUri: attachment.source.url,
+							},
+						};
+					case "provider-file":
+						return {
+							fileData: {
+								mimeType: attachment.mediaType,
+								fileUri: attachment.source.uri ?? attachment.source.fileId,
+							},
+						};
+				}
+				throw new Error("Unknown attachment source");
+			});
+			if (typeof msg.content === "string") {
+				const textParts: Part[] =
+					attachmentParts.length > 0 && msg.content.length === 0
+						? []
+						: [{ text: sanitizeSurrogates(msg.content) }];
+				contents.push({
+					role: "user",
+					parts: [...attachmentParts, ...textParts],
 				});
+			} else {
+				const parts: Part[] = [
+					...attachmentParts,
+					...msg.content.map((item) => {
+						if (item.type === "text") {
+							return { text: sanitizeSurrogates(item.text) };
+						} else {
+							return {
+								inlineData: {
+									mimeType: item.mimeType,
+									data: item.data,
+								},
+							};
+						}
+					}),
+				];
 				if (parts.length === 0) continue;
 				contents.push({
 					role: "user",

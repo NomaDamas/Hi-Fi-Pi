@@ -3,7 +3,7 @@
  */
 
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { ImageContent, Model, Provider, ProviderHeaders } from "@earendil-works/pi-ai";
+import type { AttachmentReference, ImageContent, Model, Provider, ProviderHeaders } from "@earendil-works/pi-ai";
 import type { KeyId } from "@earendil-works/pi-tui";
 import { type Theme, theme } from "../../modes/interactive/theme/theme.ts";
 import type { ResourceDiagnostic } from "../diagnostics.ts";
@@ -1078,6 +1078,7 @@ export class ExtensionRunner {
 		images: ImageContent[] | undefined,
 		systemPrompt: string,
 		systemPromptOptions: BuildSystemPromptOptions,
+		attachments?: AttachmentReference[],
 	): Promise<BeforeAgentStartCombinedResult | undefined> {
 		let currentSystemPrompt = systemPrompt;
 		const ctx = Object.defineProperties(
@@ -1101,6 +1102,7 @@ export class ExtensionRunner {
 						type: "before_agent_start",
 						prompt,
 						images,
+						...(attachments?.length ? { attachments } : {}),
 						systemPrompt: currentSystemPrompt,
 						systemPromptOptions,
 					};
@@ -1193,10 +1195,12 @@ export class ExtensionRunner {
 		images: ImageContent[] | undefined,
 		source: InputSource,
 		streamingBehavior?: "steer" | "followUp",
+		attachments?: AttachmentReference[],
 	): Promise<InputEventResult> {
 		const ctx = this.createContext();
 		let currentText = text;
 		let currentImages = images;
+		let currentAttachments = attachments;
 
 		for (const ext of this.extensions) {
 			for (const handler of ext.handlers.get("input") ?? []) {
@@ -1205,6 +1209,7 @@ export class ExtensionRunner {
 						type: "input",
 						text: currentText,
 						images: currentImages,
+						...(currentAttachments?.length ? { attachments: currentAttachments } : {}),
 						source,
 						streamingBehavior,
 					};
@@ -1213,6 +1218,7 @@ export class ExtensionRunner {
 					if (result?.action === "transform") {
 						currentText = result.text;
 						currentImages = result.images ?? currentImages;
+						currentAttachments = result.attachments ?? currentAttachments;
 					}
 				} catch (err) {
 					this.emitError({
@@ -1224,8 +1230,13 @@ export class ExtensionRunner {
 				}
 			}
 		}
-		return currentText !== text || currentImages !== images
-			? { action: "transform", text: currentText, images: currentImages }
+		return currentText !== text || currentImages !== images || currentAttachments !== attachments
+			? {
+					action: "transform",
+					text: currentText,
+					images: currentImages,
+					...(currentAttachments !== undefined ? { attachments: currentAttachments } : {}),
+				}
 			: { action: "continue" };
 	}
 }
