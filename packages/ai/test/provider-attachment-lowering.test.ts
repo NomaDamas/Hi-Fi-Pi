@@ -165,6 +165,88 @@ describe("provider-native PDF attachment lowering", () => {
 		]);
 	});
 
+	it("preserves Gemini prompt text and attachment order without synthetic filename parts", () => {
+		const first = makePdfRecord();
+		const second: AttachmentRecord = {
+			...makePdfRecord(),
+			id: "att_second",
+			filename: "second.pdf",
+			source: { type: "base64", data: SECOND_PDF_BASE64 },
+		};
+		const originalPrompt = 'Compare "paper.pdf" with second.pdf exactly as requested.';
+		const records = new Map([
+			[first.id, first],
+			[second.id, second],
+		]);
+		const context: Context = {
+			messages: [
+				{
+					role: "user",
+					content: originalPrompt,
+					attachments: [
+						{ type: "attachment", attachmentId: first.id },
+						{ type: "attachment", attachmentId: second.id },
+					],
+					timestamp: 1_700_000_000_000,
+				},
+			],
+			attachmentRegistry: { resolve: (id) => records.get(id) },
+		};
+
+		const contents = convertGoogleMessages(makeModel("google-generative-ai", "google"), context);
+
+		expect(contents).toEqual([
+			{
+				role: "user",
+				parts: [
+					{ inlineData: { mimeType: "application/pdf", data: PDF_BASE64 } },
+					{ inlineData: { mimeType: "application/pdf", data: SECOND_PDF_BASE64 } },
+					{ text: originalPrompt },
+				],
+			},
+		]);
+		expect(JSON.stringify(contents)).not.toContain("Attached file:");
+		expect(JSON.stringify(contents)).not.toContain('"filename"');
+	});
+
+	it("uses Gemini fileData URI identity without injecting the attachment filename", () => {
+		const record: AttachmentRecord = {
+			...makePdfRecord(),
+			source: {
+				type: "provider-file",
+				provider: "google",
+				fileId: "files/paper-123",
+				uri: "https://generativelanguage.googleapis.com/v1beta/files/paper-123",
+			},
+		};
+		const context: Context = {
+			messages: [
+				{
+					role: "user",
+					content: "Analyze the selected file.",
+					attachments: [{ type: "attachment", attachmentId: record.id }],
+					timestamp: 1_700_000_000_000,
+				},
+			],
+			attachmentRegistry: { resolve: () => record },
+		};
+
+		expect(convertGoogleMessages(makeModel("google-generative-ai", "google"), context)).toEqual([
+			{
+				role: "user",
+				parts: [
+					{
+						fileData: {
+							mimeType: "application/pdf",
+							fileUri: "https://generativelanguage.googleapis.com/v1beta/files/paper-123",
+						},
+					},
+					{ text: "Analyze the selected file." },
+				],
+			},
+		]);
+	});
+
 	it("rejects a custom OpenAI-compatible endpoint until native PDF support is opted in", () => {
 		const model: Model<"openai-responses"> = {
 			...makeModel("openai-responses", "myproxy"),

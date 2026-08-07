@@ -27,6 +27,7 @@ Unified LLM API with provider collections, automatic auth resolution, token and 
   - [Validating Tool Arguments](#validating-tool-arguments)
   - [Complete Event Reference](#complete-event-reference)
 - [Image Input](#image-input)
+- [Native File Attachments](#native-file-attachments)
 - [Image Generation](#image-generation)
 - [Thinking/Reasoning](#thinkingreasoning)
   - [Unified Interface](#unified-interface-streamsimplecompletesimple)
@@ -694,6 +695,14 @@ for (const block of response.content) {
   }
 }
 ```
+
+## Native File Attachments
+
+Hi-Fi Pi keeps native files in an additive attachment sidecar instead of converting them into text or extending the legacy text/image content union. The active provider transport resolves each attachment reference into its official wire representation. Unsupported transports fail before network execution, and custom endpoints must opt in explicitly.
+
+Gemini inline and remote file parts have an important identity limitation: `inlineData` and `fileData` do not carry a filename field. Hi-Fi Pi therefore keeps the filename and stable attachment ID in the attachment registry, session, TUI, and trace surfaces, while the Gemini request contains only the official file part and the user's original text. The lowering layer never injects synthetic text such as `Attached file: "paper.pdf"`. Files API display names may be retained as remote metadata, but they do not rewrite the prompt.
+
+For multiple Gemini attachments, sidecar reference order determines `inlineData`/`fileData` part order. User-authored filename references remain ordinary prompt text and are preserved independently of transport identity.
 
 ## Image Generation
 
