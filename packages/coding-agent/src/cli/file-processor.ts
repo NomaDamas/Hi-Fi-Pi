@@ -29,6 +29,12 @@ export interface PromptFileReferences {
 	fileArgs: string[];
 }
 
+interface PromptFileReferenceCandidate {
+	path: string;
+	start: number;
+	end: number;
+}
+
 function isPathLikeFileReference(value: string): boolean {
 	return (
 		value.startsWith(".") ||
@@ -41,14 +47,28 @@ function isPathLikeFileReference(value: string): boolean {
 }
 
 export function extractPromptFileReferences(input: string): PromptFileReferences {
-	const fileArgs: string[] = [];
+	const candidates = findPromptFileReferenceCandidates(input);
 	let text = "";
+	let index = 0;
+	for (const candidate of candidates) {
+		text += input.slice(index, candidate.start);
+		index = candidate.end;
+	}
+	text += input.slice(index);
+
+	return {
+		text: text.replace(/[ \t]+\n/g, "\n").trim(),
+		fileArgs: candidates.map((candidate) => candidate.path),
+	};
+}
+
+function findPromptFileReferenceCandidates(input: string): PromptFileReferenceCandidate[] {
+	const candidates: PromptFileReferenceCandidate[] = [];
 	let index = 0;
 
 	while (index < input.length) {
 		const isTokenBoundary = index === 0 || /\s/.test(input[index - 1] ?? "");
 		if (input[index] !== "@" || !isTokenBoundary) {
-			text += input[index];
 			index += 1;
 			continue;
 		}
@@ -58,7 +78,7 @@ export function extractPromptFileReferences(input: string): PromptFileReferences
 			if (closingQuote !== -1) {
 				const path = input.slice(index + 2, closingQuote);
 				if (path.length > 0) {
-					fileArgs.push(path);
+					candidates.push({ path, start: index, end: closingQuote + 1 });
 					index = closingQuote + 1;
 					continue;
 				}
@@ -69,38 +89,79 @@ export function extractPromptFileReferences(input: string): PromptFileReferences
 		while (end < input.length && !/\s/.test(input[end] ?? "")) end += 1;
 		const path = input.slice(index + 1, end);
 		if (path.length > 0 && isPathLikeFileReference(path)) {
-			fileArgs.push(path);
+			candidates.push({ path, start: index, end });
 			index = end;
 			continue;
 		}
-		if (path.length > 0) {
-			text += `@${path}`;
-			index = end;
-			continue;
-		}
-
-		text += input[index];
-		index += 1;
+		index = path.length > 0 ? end : index + 1;
 	}
 
-	return { text: text.replace(/[ \t]+\n/g, "\n").trim(), fileArgs };
+	return candidates;
 }
 
 export async function processPromptFileReferences(
 	input: string,
-	options?: ProcessFileOptions,
+	_options?: ProcessFileOptions,
 ): Promise<ProcessedFiles> {
-	const extracted = extractPromptFileReferences(input);
-	if (extracted.fileArgs.length === 0) {
+	const candidates = findPromptFileReferenceCandidates(input);
+	if (candidates.length === 0) {
 		return { text: input, images: [], attachments: [] };
 	}
 
-	const processed = await processFileArguments(extracted.fileArgs, options);
+	const resolved = await Promise.all(candidates.map((candidate) => resolveNativePromptAttachment(candidate.path)));
+	if (resolved.every((attachment) => attachment === undefined)) {
+		return { text: input, images: [], attachments: [] };
+	}
+
+	const attachments: AttachmentRecord[] = [];
+	let text = "";
+	let index = 0;
+	for (let candidateIndex = 0; candidateIndex < candidates.length; candidateIndex += 1) {
+		const candidate = candidates[candidateIndex];
+		const attachment = resolved[candidateIndex];
+		if (!candidate) continue;
+		text += input.slice(index, candidate.start);
+		if (attachment) {
+			attachments.push(attachment);
+		} else {
+			text += input.slice(candidate.start, candidate.end);
+		}
+		index = candidate.end;
+	}
+	text += input.slice(index);
+
 	return {
-		text: [processed.text.trimEnd(), extracted.text].filter((part) => part.length > 0).join("\n"),
-		images: processed.images,
-		attachments: processed.attachments,
+		text: text.replace(/[ \t]+\n/g, "\n").trim(),
+		images: [],
+		attachments,
 	};
+}
+
+async function resolveNativePromptAttachment(fileArg: string): Promise<AttachmentRecord | undefined> {
+	const absolutePath = resolve(resolveReadPath(fileArg, process.cwd()));
+
+	try {
+		const stats = await stat(absolutePath);
+		if (!stats.isFile() || stats.size === 0) return undefined;
+
+		// Text and image references retain stock interactive Pi semantics. Only
+		// binary/native input types are promoted into the Hi-Fi attachment sidecar.
+		if (await detectSupportedImageMimeTypeFromFile(absolutePath)) return undefined;
+		const mediaType = await detectAttachmentMimeTypeFromFile(absolutePath);
+		if (!mediaType) return undefined;
+
+		return {
+			id: `att_${randomUUID()}`,
+			filename: basename(absolutePath),
+			mediaType,
+			sizeBytes: stats.size,
+			source: { type: "path", path: absolutePath },
+		};
+	} catch {
+		// A mention, missing path, unreadable file, or a path that changes while
+		// resolving is ordinary prompt text and must never block submission.
+		return undefined;
+	}
 }
 
 function failFileProcessing(message: string, failureMode: "exit" | "throw"): never {

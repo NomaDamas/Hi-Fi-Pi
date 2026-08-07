@@ -48,7 +48,7 @@ import {
 } from "@earendil-works/pi-tui";
 import chalk from "chalk";
 import { spawn, spawnSync } from "child_process";
-import { extractPromptFileReferences, processPromptFileReferences } from "../../cli/file-processor.ts";
+import { processPromptFileReferences } from "../../cli/file-processor.ts";
 import {
 	APP_NAME,
 	APP_TITLE,
@@ -408,6 +408,7 @@ export class InteractiveMode {
 	private fdPath: string | undefined;
 	private editorContainer: Container;
 	private attachmentPreviewContainer: Container;
+	private attachmentPreviewRevision = 0;
 	private footer: FooterComponent;
 	private footerDataProvider: FooterDataProvider;
 	// Stored so the same manager can be injected into custom editors, selectors, and extension UI.
@@ -1003,8 +1004,7 @@ export class InteractiveMode {
 					...(processed.attachments.length > 0 ? { attachments: processed.attachments } : {}),
 				});
 			} catch (error: unknown) {
-				const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
-				this.showError(errorMessage);
+				this.handleInteractiveInputError(userInput, error);
 			}
 		}
 	}
@@ -2713,7 +2713,7 @@ export class InteractiveMode {
 			if (wasBashMode !== this.isBashMode) {
 				this.updateEditorBorderColor();
 			}
-			this.updateAttachmentPreview(text);
+			void this.updateAttachmentPreview(text);
 		};
 
 		// Handle clipboard paste (triggered on Ctrl+V). Images are attached by path;
@@ -2723,12 +2723,24 @@ export class InteractiveMode {
 		};
 	}
 
-	private updateAttachmentPreview(text: string): void {
+	private async updateAttachmentPreview(text: string): Promise<void> {
+		const revision = ++this.attachmentPreviewRevision;
 		this.attachmentPreviewContainer.clear();
-		const fileArgs = extractPromptFileReferences(text).fileArgs;
-		if (fileArgs.length > 0) {
+		this.ui.requestRender();
+
+		const processed = await processPromptFileReferences(text);
+		if (revision !== this.attachmentPreviewRevision) return;
+
+		if (processed.attachments.length > 0) {
 			this.attachmentPreviewContainer.addChild(
-				new Text(theme.fg("dim", `Attachments: ${fileArgs.map((file) => path.basename(file)).join(", ")}`), 1, 0),
+				new Text(
+					theme.fg(
+						"dim",
+						`Attachments: ${processed.attachments.map((attachment) => attachment.filename).join(", ")}`,
+					),
+					1,
+					0,
+				),
 			);
 		}
 		this.ui.requestRender();
@@ -2952,8 +2964,7 @@ export class InteractiveMode {
 						...(processed.attachments.length > 0 ? { attachments: processed.attachments } : {}),
 					});
 				} catch (error) {
-					this.editor.setText(text);
-					this.showError(error instanceof Error ? error.message : String(error));
+					this.handleInteractiveInputError(text, error);
 					return;
 				}
 				this.updatePendingMessagesDisplay();
@@ -2982,6 +2993,11 @@ export class InteractiveMode {
 			autoResizeImages: this.settingsManager.getImageAutoResize(),
 			failureMode: "throw",
 		});
+	}
+
+	private handleInteractiveInputError(text: string, error: unknown): void {
+		this.editor.setText(text);
+		this.showError(error instanceof Error ? error.message : String(error));
 	}
 
 	private subscribeToAgent(): void {
@@ -3907,8 +3923,7 @@ export class InteractiveMode {
 					...(processed.attachments.length > 0 ? { attachments: processed.attachments } : {}),
 				});
 			} catch (error) {
-				this.editor.setText(text);
-				this.showError(error instanceof Error ? error.message : String(error));
+				this.handleInteractiveInputError(text, error);
 				return;
 			}
 			this.updatePendingMessagesDisplay();
