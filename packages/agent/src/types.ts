@@ -3,6 +3,7 @@ import type {
 	AssistantMessage,
 	AssistantMessageEvent,
 	AssistantMessageEventStream,
+	AttachmentRecord,
 	AttachmentRegistry,
 	Context,
 	ImageContent,
@@ -69,6 +70,7 @@ export interface BeforeToolCallResult {
  *
  * Merge semantics are field-by-field:
  * - `content`: if provided, replaces the tool result content array in full
+ * - `attachments`: if provided, replaces the tool result attachment records in full
  * - `details`: if provided, replaces the tool result details value in full
  * - `isError`: if provided, replaces the tool result error flag
  * - `usage`: if provided, replaces the tool result usage
@@ -79,6 +81,8 @@ export interface BeforeToolCallResult {
  */
 export interface AfterToolCallResult {
 	content?: (TextContent | ImageContent)[];
+	/** Provider-neutral files or media returned by the tool. */
+	attachments?: AttachmentRecord[];
 	details?: unknown;
 	isError?: boolean;
 	/** Usage from the final tool execution itself, if available. Not used for main LLM context accounting. */
@@ -356,6 +360,8 @@ export interface AgentState {
 export interface AgentToolResult<T> {
 	/** Text or image content returned to the model. */
 	content: (TextContent | ImageContent)[];
+	/** Provider-neutral files or media returned to the model without local parsing. */
+	attachments?: AttachmentRecord[];
 	/** Arbitrary structured details for logs or UI rendering. */
 	details: T;
 	/** Usage from the final tool execution itself, if available. Not used for main LLM context accounting. */
