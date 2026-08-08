@@ -706,6 +706,24 @@ For multiple Gemini attachments, sidecar reference order determines `inlineData`
 
 Tool results use the same sidecar contract. A tool returns attachment records, the agent session stores each record once, and the `ToolResultMessage` carries lightweight attachment references. On the following model turn, OpenAI Responses lowers PDF results to `function_call_output` file content, Anthropic nests `document` blocks inside `tool_result`, and Gemini 3 lowers them to multimodal `functionResponse.parts`. Unsupported model, transport, media, and source combinations fail before network execution; no parser or conversion fallback runs implicitly.
 
+### Native input contract verification
+
+The credential-free contract matrix uses two small repository fixtures and exact sanitized golden payloads. It verifies inline bytes, provider file references, URLs, multiple-file order, legacy text/image equality, capability failures, source limits, ownership checks, and trace redaction. Provenance and the last manual verification date are recorded in `test/fixtures/native-input/provider-payload-golden.json`.
+
+```bash
+npm --prefix packages/ai run test:native-input-contracts
+```
+
+Official endpoint E2E is a separate opt-in suite. A credential by itself does not activate it; set `HIFI_PI_LIVE_NATIVE_INPUTS=1` as well. Optional model variables are `HIFI_PI_OPENAI_NATIVE_INPUT_MODEL`, `HIFI_PI_ANTHROPIC_NATIVE_INPUT_MODEL`, and `HIFI_PI_GEMINI_NATIVE_INPUT_MODEL`.
+
+```bash
+HIFI_PI_LIVE_NATIVE_INPUTS=1 npm --prefix packages/ai run test:native-input-live
+```
+
+The live suite reports official OpenAI, Anthropic, and Gemini results independently, classifies authentication, capability, network, and provider failures, and retains only sanitized trace data. A proxy result is never reported as an official endpoint result. Acceptance proves the documented request form was accepted; it does not claim how the vendor internally parsed, rendered, or interpreted the file.
+
+Contract provenance: [OpenAI file inputs](https://developers.openai.com/api/docs/guides/file-inputs), [Anthropic PDF support](https://platform.claude.com/docs/en/build-with-claude/pdf-support), and [Gemini document processing](https://ai.google.dev/gemini-api/docs/document-processing).
+
 ## Image Generation
 
 Image generation uses a separate API surface from text/chat generation, mirroring the chat-side design: an `ImagesModels` collection holds `ImagesProvider`s, reads are sync, and auth resolves through the owning provider. Image generation is a one-shot API: `generateImages()` waits for the provider response and returns the final `AssistantImages` result — do not use the chat/stream APIs for it.
