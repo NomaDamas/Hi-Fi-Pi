@@ -838,7 +838,7 @@ In parallel tool mode, `tool_result` and `tool_execution_end` may interleave in 
 `tool_result` handlers chain like middleware:
 - Handlers run in extension load order
 - Each handler sees the latest result after previous handler changes
-- Handlers can return partial patches (`content`, `details`, `isError`, or `usage`); omitted fields keep their current values
+- Handlers can return partial patches (`content`, `attachments`, `details`, `isError`, or `usage`); omitted fields keep their current values
 
 Use `ctx.signal` for nested async work inside the handler. This lets Esc cancel model calls, `fetch()`, and other abort-aware operations started by the extension.
 
@@ -847,7 +847,7 @@ import { isBashToolResult } from "@earendil-works/pi-coding-agent";
 
 pi.on("tool_result", async (event, ctx) => {
   // event.toolName, event.toolCallId, event.input
-  // event.content, event.details, event.isError, event.usage
+  // event.content, event.attachments, event.details, event.isError, event.usage
 
   if (isBashToolResult(event)) {
     // event.details is typed as BashToolDetails
@@ -1958,6 +1958,14 @@ pi.registerTool({
     // Return result
     return {
       content: [{ type: "text", text: "Done" }],  // Sent to LLM
+      // Native files are registered once and referenced from the tool-result message.
+      // The active provider lowers them without parsing or format conversion.
+      attachments: [{
+        id: "att_report",
+        filename: "report.pdf",
+        mediaType: "application/pdf",
+        source: { type: "path", path: result.path },
+      }],
       details: { data: result },                   // For rendering & state
       // usage: nestedModelResponse.usage,          // Optional nested LLM usage
       // Optional: stop after this tool batch when every finalized tool result

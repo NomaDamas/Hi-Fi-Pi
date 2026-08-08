@@ -704,6 +704,8 @@ Gemini inline and remote file parts have an important identity limitation: `inli
 
 For multiple Gemini attachments, sidecar reference order determines `inlineData`/`fileData` part order. User-authored filename references remain ordinary prompt text and are preserved independently of transport identity.
 
+Tool results use the same sidecar contract. A tool returns attachment records, the agent session stores each record once, and the `ToolResultMessage` carries lightweight attachment references. On the following model turn, OpenAI Responses lowers PDF results to `function_call_output` file content, Anthropic nests `document` blocks inside `tool_result`, and Gemini 3 lowers them to multimodal `functionResponse.parts`. Unsupported model, transport, media, and source combinations fail before network execution; no parser or conversion fallback runs implicitly.
+
 ## Image Generation
 
 Image generation uses a separate API surface from text/chat generation, mirroring the chat-side design: an `ImagesModels` collection holds `ImagesProvider`s, reads are sync, and auth resolves through the owning provider. Image generation is a one-shot API: `generateImages()` waits for the provider response and returns the final `AssistantImages` result — do not use the chat/stream APIs for it.
