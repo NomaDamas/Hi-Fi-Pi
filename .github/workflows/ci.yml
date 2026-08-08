@@ -38,5 +38,8 @@ jobs:
       - name: Check
         run: npm run check
 
+      - name: Pi ecosystem compatibility
+        run: npm run test:pi-compat
+
       - name: Test
         run: npm test
