@@ -4,7 +4,11 @@
 	"description": "Coding agent CLI with read, bash, edit, write tools and session management",
 	"type": "module",
 	"piConfig": {
-		"configDir": ".pi"
+		"name": "hifi-pi",
+		"configDir": ".pi",
+		"userConfigDir": ".hifipi",
+		"envAgentDir": "HIFI_PI_AGENT_DIR",
+		"envSessionDir": "HIFI_PI_SESSION_DIR"
 	},
 	"bin": {
 		"pi": "dist/cli.js"

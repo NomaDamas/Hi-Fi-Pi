@@ -4,7 +4,7 @@
 
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import chalk from "chalk";
-import { APP_NAME, CONFIG_DIR_NAME, ENV_AGENT_DIR, ENV_SESSION_DIR } from "../config.ts";
+import { APP_NAME, CONFIG_DIR_NAME, ENV_AGENT_DIR, ENV_SESSION_DIR, USER_CONFIG_DIR_NAME } from "../config.ts";
 import type { ExtensionFlag } from "../core/extensions/types.ts";
 
 export type Mode = "text" | "json" | "rpc";
@@ -27,6 +27,7 @@ export interface Args {
 	sessionId?: string;
 	fork?: string;
 	sessionDir?: string;
+	agentDir?: string;
 	models?: string[];
 	tools?: string[];
 	excludeTools?: string[];
@@ -111,6 +112,12 @@ export function parseArgs(args: string[]): Args {
 			result.fork = args[++i];
 		} else if (arg === "--session-dir" && i + 1 < args.length) {
 			result.sessionDir = args[++i];
+		} else if (arg === "--agent-dir") {
+			if (i + 1 < args.length) {
+				result.agentDir = args[++i];
+			} else {
+				result.diagnostics.push({ type: "error", message: "--agent-dir requires a value" });
+			}
 		} else if (arg === "--models" && i + 1 < args.length) {
 			result.models = args[++i].split(",").map((s) => s.trim());
 		} else if (arg === "--no-tools" || arg === "-nt") {
@@ -209,6 +216,37 @@ export function parseArgs(args: string[]): Args {
 	return result;
 }
 
+export interface ExtractedAgentDirOverride {
+	agentDir?: string;
+	args: string[];
+	diagnostics: Array<{ type: "error"; message: string }>;
+}
+
+/**
+ * Consume the distribution-wide agent directory override before command dispatch.
+ * Package/config commands have their own parsers, so this global option must be
+ * removed before those parsers inspect their command-specific arguments.
+ */
+export function extractAgentDirOverride(args: string[]): ExtractedAgentDirOverride {
+	const remaining: string[] = [];
+	const diagnostics: Array<{ type: "error"; message: string }> = [];
+	let agentDir: string | undefined;
+	for (let index = 0; index < args.length; index++) {
+		if (args[index] !== "--agent-dir") {
+			remaining.push(args[index]);
+			continue;
+		}
+		const value = args[index + 1];
+		if (!value || value.startsWith("-")) {
+			diagnostics.push({ type: "error", message: "--agent-dir requires a value" });
+			continue;
+		}
+		agentDir = value;
+		index++;
+	}
+	return { ...(agentDir ? { agentDir } : {}), args: remaining, diagnostics };
+}
+
 export function printHelp(extensionFlags?: ExtensionFlag[]): void {
 	const extensionFlagsText =
 		extensionFlags && extensionFlags.length > 0
@@ -226,6 +264,8 @@ ${chalk.bold("Usage:")}
   ${APP_NAME} [options] [@files...] [messages...]
 
 ${chalk.bold("Commands:")}
+  ${APP_NAME} paths [--json]             Show active user and project roots
+  ${APP_NAME} import-pi <resources...>   Explicitly import selected upstream Pi resources
   ${APP_NAME} install <source> [-l]     Install extension source and add to settings
   ${APP_NAME} remove <source> [-l]      Remove extension source from settings
   ${APP_NAME} uninstall <source> [-l]   Alias for remove
@@ -248,6 +288,7 @@ ${chalk.bold("Options:")}
   --session <path|id>            Use specific session file or partial UUID
   --session-id <id>              Use exact project session ID, creating it if missing
   --fork <path|id>               Fork specific session file or partial UUID into a new session
+  --agent-dir <dir>              Override the Hi-Fi user state root for this process
   --session-dir <dir>            Directory for session storage and lookup
   --no-session                   Don't save session (ephemeral)
   --name, -n <name>              Set session display name
@@ -381,12 +422,14 @@ ${chalk.bold("Environment Variables:")}
   AWS_SECRET_ACCESS_KEY            - AWS secret key for Amazon Bedrock
   AWS_BEARER_TOKEN_BEDROCK         - Bedrock API key (bearer token)
   AWS_REGION                       - AWS region for Amazon Bedrock (e.g., us-east-1)
-  ${ENV_AGENT_DIR.padEnd(32)} - Config directory (default: ~/${CONFIG_DIR_NAME}/agent)
+  ${ENV_AGENT_DIR.padEnd(32)} - User state directory (default: ~/${USER_CONFIG_DIR_NAME}/agent)
   ${ENV_SESSION_DIR.padEnd(32)} - Session storage directory (overridden by --session-dir)
   PI_PACKAGE_DIR                   - Override package directory (for Nix/Guix store paths)
   PI_OFFLINE                       - Disable startup network operations when set to 1/true/yes
   PI_TELEMETRY                     - Override install telemetry when set to 1/true/yes or 0/false/no
   PI_SHARE_VIEWER_URL              - Base URL for /share command (default: https://pi.dev/session/)
+
+Project-local resources remain under ${CONFIG_DIR_NAME}/ for Pi package compatibility.
 
 ${chalk.bold("Built-in Tool Names:")}
   read   - Read file contents

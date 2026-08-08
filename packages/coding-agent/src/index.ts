@@ -4,12 +4,20 @@ export { type Args, parseArgs } from "./cli/args.ts";
 
 // Config paths
 export {
+	type AgentDirResolution,
+	type AgentDirResolutionOptions,
 	CONFIG_DIR_NAME,
+	ENV_AGENT_DIR,
+	ENV_SESSION_DIR,
 	getAgentDir,
 	getDocsPath,
 	getExamplesPath,
 	getPackageDir,
 	getReadmePath,
+	LEGACY_ENV_AGENT_DIR,
+	LEGACY_ENV_SESSION_DIR,
+	resolveAgentDir,
+	USER_CONFIG_DIR_NAME,
 	VERSION,
 } from "./config.ts";
 export {

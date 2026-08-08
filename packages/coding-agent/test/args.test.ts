@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { parseArgs } from "../src/cli/args.ts";
+import { extractAgentDirOverride, parseArgs } from "../src/cli/args.ts";
 
 describe("parseArgs", () => {
 	describe("--version flag", () => {
@@ -18,6 +18,26 @@ describe("parseArgs", () => {
 			expect(result.version).toBe(true);
 			expect(result.help).toBe(true);
 			expect(result.messages).toContain("some message");
+		});
+	});
+
+	describe("--agent-dir flag", () => {
+		test("parses the explicit user state root", () => {
+			const result = parseArgs(["--agent-dir", "~/.hifipi-test/agent"]);
+			expect(result.agentDir).toBe("~/.hifipi-test/agent");
+		});
+
+		test("reports a missing value", () => {
+			const result = parseArgs(["--agent-dir"]);
+			expect(result.diagnostics).toContainEqual({ type: "error", message: "--agent-dir requires a value" });
+		});
+
+		test("extracts the override before package command parsing", () => {
+			expect(extractAgentDirOverride(["install", "npm:@example/pi-package", "--agent-dir", "/tmp/hifi"])).toEqual({
+				agentDir: "/tmp/hifi",
+				args: ["install", "npm:@example/pi-package"],
+				diagnostics: [],
+			});
 		});
 	});
 
