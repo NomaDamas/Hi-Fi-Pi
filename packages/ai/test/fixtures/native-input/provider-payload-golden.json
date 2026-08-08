@@ -1,0 +1,141 @@
+{
+  "schemaVersion": 1,
+  "verifiedAt": "2026-08-07",
+  "payloadScope": "provider request message/content fragments after sanitization",
+  "providers": {
+    "openai-responses": {
+      "provenance": "https://developers.openai.com/api/docs/guides/file-inputs",
+      "inline": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_file",
+              "filename": "contract-sample.pdf",
+              "file_data": "[redacted 2436 chars]"
+            },
+            { "type": "input_text", "text": "Analyze the contract fixture." }
+          ]
+        }
+      ],
+      "providerFile": [
+        {
+          "role": "user",
+          "content": [
+            { "type": "input_file", "file_id": "file_contract_123" },
+            { "type": "input_text", "text": "Analyze the contract fixture." }
+          ]
+        }
+      ],
+      "url": [
+        {
+          "role": "user",
+          "content": [
+            { "type": "input_file", "file_url": "https://example.com/contract-sample.pdf" },
+            { "type": "input_text", "text": "Analyze the contract fixture." }
+          ]
+        }
+      ]
+    },
+    "anthropic-messages": {
+      "provenance": "https://platform.claude.com/docs/en/build-with-claude/pdf-support",
+      "inline": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "document",
+              "source": {
+                "type": "base64",
+                "media_type": "application/pdf",
+                "data": "[redacted 2408 chars]"
+              },
+              "title": "contract-sample.pdf"
+            },
+            { "type": "text", "text": "Analyze the contract fixture." }
+          ]
+        }
+      ],
+      "providerFile": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "document",
+              "source": { "type": "file", "file_id": "file_contract_123" },
+              "title": "contract-sample.pdf"
+            },
+            { "type": "text", "text": "Analyze the contract fixture." }
+          ]
+        }
+      ],
+      "providerFileHeaders": {
+        "anthropic-beta": "interleaved-thinking-2025-05-14,files-api-2025-04-14"
+      },
+      "url": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "document",
+              "source": { "type": "url", "url": "https://example.com/contract-sample.pdf" },
+              "title": "contract-sample.pdf"
+            },
+            { "type": "text", "text": "Analyze the contract fixture." }
+          ]
+        }
+      ]
+    },
+    "google-generative-ai": {
+      "provenance": "https://ai.google.dev/gemini-api/docs/document-processing",
+      "inline": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "inlineData": {
+                "mimeType": "application/pdf",
+                "data": "[redacted 2408 chars]"
+              }
+            },
+            { "text": "Analyze the contract fixture." }
+          ]
+        }
+      ],
+      "providerFile": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "fileData": {
+                "mimeType": "application/pdf",
+                "fileUri": "https://generativelanguage.googleapis.com/v1beta/files/contract-123"
+              }
+            },
+            { "text": "Analyze the contract fixture." }
+          ]
+        }
+      ],
+      "multiple": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "inlineData": {
+                "mimeType": "application/pdf",
+                "data": "[redacted 2408 chars]"
+              }
+            },
+            {
+              "inlineData": {
+                "mimeType": "application/pdf",
+                "data": "[redacted 2400 chars]"
+              }
+            },
+            { "text": "Compare the contract fixtures in attachment order." }
+          ]
+        }
+      ]
+    }
+  }
+}

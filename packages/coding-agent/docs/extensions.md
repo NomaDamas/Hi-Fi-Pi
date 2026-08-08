@@ -298,6 +298,7 @@ user sends prompt ────────────────────�
   │   ├─► before_provider_headers (can mutate headers)     |
   │   ├─► before_provider_request (can inspect or replace payload)
   │   ├─► after_provider_response (status + headers, before stream consume)
+  │   ├─► provider_trace (sanitized diagnostic stages; may fire multiple times)
   │   │                                            │       │
   │   │   LLM responds, may call tools:            │       │
   │   │     ├─► tool_execution_start               │       │
@@ -708,6 +709,23 @@ pi.on("after_provider_response", (event, ctx) => {
 
 Header availability depends on provider and transport. Providers that abstract HTTP responses may not expose headers.
 
+#### provider_trace
+
+Fired for each available stage of a sanitized provider request trace. Unlike `before_provider_request`, this event is read-only and never exposes inline/base64 bytes, credentials, cookies, or signed URL secrets. A single provider call may emit several events with the same `traceId` and increasing `sequence` values.
+
+```typescript
+pi.on("provider_trace", (event) => {
+  if (event.stage === "provider_lowering") {
+    console.log(event.attachment?.filename, event.wire?.kind);
+  }
+  if (event.stage === "stream_completion") {
+    console.log(event.completion?.stopReason, event.completion?.usage.totalTokens);
+  }
+});
+```
+
+Possible stages include `input_resolution`, `capability_decision`, `source_selection`, `remote_reuse`, `provider_lowering`, `request_headers`, `sanitized_wire_payload`, `response_metadata`, and `stream_completion`. Provider SDKs that do not expose raw HTTP metadata may omit `response_metadata`.
+
 ### Model Events
 
 #### model_select
@@ -820,7 +838,7 @@ In parallel tool mode, `tool_result` and `tool_execution_end` may interleave in 
 `tool_result` handlers chain like middleware:
 - Handlers run in extension load order
 - Each handler sees the latest result after previous handler changes
-- Handlers can return partial patches (`content`, `details`, `isError`, or `usage`); omitted fields keep their current values
+- Handlers can return partial patches (`content`, `attachments`, `details`, `isError`, or `usage`); omitted fields keep their current values
 
 Use `ctx.signal` for nested async work inside the handler. This lets Esc cancel model calls, `fetch()`, and other abort-aware operations started by the extension.
 
@@ -829,7 +847,7 @@ import { isBashToolResult } from "@earendil-works/pi-coding-agent";
 
 pi.on("tool_result", async (event, ctx) => {
   // event.toolName, event.toolCallId, event.input
-  // event.content, event.details, event.isError, event.usage
+  // event.content, event.attachments, event.details, event.isError, event.usage
 
   if (isBashToolResult(event)) {
     // event.details is typed as BashToolDetails
@@ -1940,6 +1958,14 @@ pi.registerTool({
     // Return result
     return {
       content: [{ type: "text", text: "Done" }],  // Sent to LLM
+      // Native files are registered once and referenced from the tool-result message.
+      // The active provider lowers them without parsing or format conversion.
+      attachments: [{
+        id: "att_report",
+        filename: "report.pdf",
+        mediaType: "application/pdf",
+        source: { type: "path", path: result.path },
+      }],
       details: { data: result },                   // For rendering & state
       // usage: nestedModelResponse.usage,          // Optional nested LLM usage
       // Optional: stop after this tool batch when every finalized tool result

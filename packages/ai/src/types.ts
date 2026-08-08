@@ -113,6 +113,81 @@ export interface ProviderResponse {
 	headers: Record<string, string>;
 }
 
+export type ProviderTraceStage =
+	| "input_resolution"
+	| "capability_decision"
+	| "source_selection"
+	| "remote_reuse"
+	| "provider_lowering"
+	| "request_headers"
+	| "sanitized_wire_payload"
+	| "response_metadata"
+	| "stream_completion";
+
+export interface ProviderTraceAttachment {
+	id: string;
+	filename: string;
+	mediaType: string;
+	sizeBytes?: number;
+	sha256?: string;
+}
+
+export interface ProviderTraceCapability {
+	id?: string;
+	supported: boolean;
+	source?: NativeInputTransportSource;
+	wireKind?: string;
+	provenance?: NativeInputCapabilityProvenance;
+	limits?: NativeInputCapabilityLimits;
+	requiredHeaders?: Record<string, string>;
+	reason?: string;
+}
+
+export interface ProviderTraceEvent {
+	type: "provider_trace";
+	traceId: string;
+	sequence: number;
+	timestamp: number;
+	stage: ProviderTraceStage;
+	provider: ProviderId;
+	api: Api;
+	modelId: string;
+	endpointProfile?: string;
+	attachment?: ProviderTraceAttachment;
+	capability?: ProviderTraceCapability;
+	source?: {
+		form: NativeInputTransportSource;
+	};
+	remote?: {
+		state: "provided" | "reused";
+		provider: ProviderId;
+		api?: Api;
+		fileId: string;
+		uri?: string;
+		expiresAt?: number;
+	};
+	wire?: {
+		kind: string;
+		source: NativeInputTransportSource;
+	};
+	headers?: Record<string, string>;
+	payload?: unknown;
+	response?: {
+		status: number;
+		headers: Record<string, string>;
+	};
+	completion?: {
+		responseId?: string;
+		stopReason: StopReason;
+		usage: Usage;
+		stateIdentifiers?: string[];
+		citationCount?: number;
+	};
+	error?: string;
+}
+
+export type ProviderTraceCallback = (event: ProviderTraceEvent, model: Model<Api>) => void | Promise<void>;
+
 export interface StreamOptions {
 	temperature?: number;
 	maxTokens?: number;
@@ -150,6 +225,8 @@ export interface StreamOptions {
 	 * its body stream is consumed.
 	 */
 	onResponse?: (response: ProviderResponse, model: Model<Api>) => void | Promise<void>;
+	/** Observe factual, credential-safe provider request lifecycle records without mutating the request. */
+	onTrace?: ProviderTraceCallback;
 	/**
 	 * Optional custom HTTP headers to include in API requests.
 	 * Merged with provider defaults; caller values override default headers.
@@ -812,6 +889,50 @@ export interface ModelCost extends ModelCostRates {
 
 export type NativeAttachmentTransportSource = "inline" | "url" | "provider-file";
 
+export type NativeInputTransportSource = NativeAttachmentTransportSource | "cloud-uri";
+
+export type NativeInputCapabilityProvenance = "official-default" | "configured" | "live-verified";
+
+export interface NativeInputCapabilityLimits {
+	maximumBytes?: number;
+	maximumRequestBytes?: number;
+	maximumCount?: number;
+}
+
+export interface NativeInputCapabilityDefinition {
+	id: string;
+	supported: boolean;
+	mediaTypes: string[];
+	sources: NativeInputTransportSource[];
+	wireKinds: Partial<Record<NativeInputTransportSource, string>>;
+	limits?: NativeInputCapabilityLimits;
+	requiredHeaders?: Record<string, string>;
+	options?: Record<string, unknown>;
+	modelAllowList?: string[];
+	modelDenyList?: string[];
+	provenance: NativeInputCapabilityProvenance;
+	verifiedAt?: string;
+	reason?: string;
+}
+
+export interface NativeInputCapabilitiesConfig {
+	profile: string;
+	capabilities: NativeInputCapabilityDefinition[];
+}
+
+export interface NativeInputCapabilityContext {
+	provider: string;
+	api: string;
+	modelId: string;
+	baseUrl: string;
+}
+
+export interface NativeInputCapabilityResolver {
+	id: string;
+	matches(context: NativeInputCapabilityContext): boolean;
+	resolve(context: NativeInputCapabilityContext): NativeInputCapabilitiesConfig;
+}
+
 export interface NativePdfAttachmentCapabilityConfig {
 	supported: boolean;
 	sources?: NativeAttachmentTransportSource[];
@@ -843,6 +964,8 @@ export interface Model<TApi extends Api> {
 	maxTokens: number;
 	headers?: Record<string, string>;
 	nativeAttachments?: NativeAttachmentCapabilitiesConfig;
+	/** Additive provider-native input manifest. Does not reinterpret the legacy text/image input field. */
+	nativeInputs?: NativeInputCapabilitiesConfig;
 	/** Compatibility overrides for OpenAI-compatible APIs. If not set, auto-detected from baseUrl. */
 	compat?: TApi extends "openai-completions"
 		? OpenAICompletionsCompat

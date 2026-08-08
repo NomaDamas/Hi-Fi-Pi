@@ -27,6 +27,7 @@ Unified LLM API with provider collections, automatic auth resolution, token and 
   - [Validating Tool Arguments](#validating-tool-arguments)
   - [Complete Event Reference](#complete-event-reference)
 - [Image Input](#image-input)
+- [Native File Attachments](#native-file-attachments)
 - [Image Generation](#image-generation)
 - [Thinking/Reasoning](#thinkingreasoning)
   - [Unified Interface](#unified-interface-streamsimplecompletesimple)
@@ -695,6 +696,34 @@ for (const block of response.content) {
 }
 ```
 
+## Native File Attachments
+
+Hi-Fi Pi keeps native files in an additive attachment sidecar instead of converting them into text or extending the legacy text/image content union. The active provider transport resolves each attachment reference into its official wire representation. Unsupported transports fail before network execution, and custom endpoints must opt in explicitly.
+
+Gemini inline and remote file parts have an important identity limitation: `inlineData` and `fileData` do not carry a filename field. Hi-Fi Pi therefore keeps the filename and stable attachment ID in the attachment registry, session, TUI, and trace surfaces, while the Gemini request contains only the official file part and the user's original text. The lowering layer never injects synthetic text such as `Attached file: "paper.pdf"`. Files API display names may be retained as remote metadata, but they do not rewrite the prompt.
+
+For multiple Gemini attachments, sidecar reference order determines `inlineData`/`fileData` part order. User-authored filename references remain ordinary prompt text and are preserved independently of transport identity.
+
+Tool results use the same sidecar contract. A tool returns attachment records, the agent session stores each record once, and the `ToolResultMessage` carries lightweight attachment references. On the following model turn, OpenAI Responses lowers PDF results to `function_call_output` file content, Anthropic nests `document` blocks inside `tool_result`, and Gemini 3 lowers them to multimodal `functionResponse.parts`. Unsupported model, transport, media, and source combinations fail before network execution; no parser or conversion fallback runs implicitly.
+
+### Native input contract verification
+
+The credential-free contract matrix uses two small repository fixtures and exact sanitized golden payloads. It verifies inline bytes, provider file references, URLs, multiple-file order, legacy text/image equality, capability failures, source limits, ownership checks, and trace redaction. Provenance and the last manual verification date are recorded in `test/fixtures/native-input/provider-payload-golden.json`.
+
+```bash
+npm --prefix packages/ai run test:native-input-contracts
+```
+
+Official endpoint E2E is a separate opt-in suite. A credential by itself does not activate it; set `HIFI_PI_LIVE_NATIVE_INPUTS=1` as well. Optional model variables are `HIFI_PI_OPENAI_NATIVE_INPUT_MODEL`, `HIFI_PI_ANTHROPIC_NATIVE_INPUT_MODEL`, and `HIFI_PI_GEMINI_NATIVE_INPUT_MODEL`.
+
+```bash
+HIFI_PI_LIVE_NATIVE_INPUTS=1 npm --prefix packages/ai run test:native-input-live
+```
+
+The live suite reports official OpenAI, Anthropic, and Gemini results independently, classifies authentication, capability, network, and provider failures, and retains only sanitized trace data. A proxy result is never reported as an official endpoint result. Acceptance proves the documented request form was accepted; it does not claim how the vendor internally parsed, rendered, or interpreted the file.
+
+Contract provenance: [OpenAI file inputs](https://developers.openai.com/api/docs/guides/file-inputs), [Anthropic PDF support](https://platform.claude.com/docs/en/build-with-claude/pdf-support), and [Gemini document processing](https://ai.google.dev/gemini-api/docs/document-processing).
+
 ## Image Generation
 
 Image generation uses a separate API surface from text/chat generation, mirroring the chat-side design: an `ImagesModels` collection holds `ImagesProvider`s, reads are sync, and auth resolves through the owning provider. Image generation is a one-shot API: `generateImages()` waits for the provider response and returns the final `AssistantImages` result — do not use the chat/stream APIs for it.
@@ -968,7 +997,7 @@ const continuation = await models.complete(model, context);
 
 ### Debugging Provider Payloads
 
-Use the `onPayload` callback to inspect the request payload sent to the provider. This is useful for debugging request formatting issues or provider validation errors.
+Use the `onPayload` callback to inspect or replace the exact request payload sent to the provider. This is useful for debugging request formatting issues or provider validation errors, but it is a raw hook: payloads may contain inline file bytes, signed URLs, or other sensitive request data.
 
 ```typescript
 const response = await models.complete(model, context, {
@@ -979,6 +1008,21 @@ const response = await models.complete(model, context, {
 ```
 
 The callback is supported by `stream`, `complete`, `streamSimple`, and `completeSimple`.
+
+For safe diagnostics, use `onTrace`. It emits structured provider-native input stages while redacting authorization headers, cookies, API keys, signed URL credentials, and inline/base64 bytes. Trace observers cannot modify requests, and callback failures do not interrupt provider execution.
+
+```typescript
+const response = await models.complete(model, context, {
+  onTrace: (event) => {
+    console.log(event.traceId, event.stage, event.wire?.kind);
+    if (event.stage === "sanitized_wire_payload") {
+      console.log(JSON.stringify(event.payload, null, 2));
+    }
+  }
+});
+```
+
+Native attachment traces cover input resolution, capability decisions and provenance, source selection, remote-file reuse, provider lowering, sanitized request headers and wire payload, response metadata where the transport exposes it, and stream completion. Attachment-free requests keep their existing payload and streaming path; enabling `onTrace` only adds diagnostic callbacks.
 
 ## Custom Providers
 

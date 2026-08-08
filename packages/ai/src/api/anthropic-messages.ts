@@ -2,12 +2,22 @@ import Anthropic from "@anthropic-ai/sdk";
 import type {
 	CacheControlEphemeral,
 	ContentBlockParam,
+	DocumentBlockParam,
 	MessageCreateParamsStreaming,
 	MessageParam,
 	RawMessageStreamEvent,
 	RefusalStopDetails,
+	ToolResultBlockParam,
 } from "@anthropic-ai/sdk/resources/messages.js";
 import { calculateCost } from "../models.ts";
+import {
+	createProviderTraceRecorder,
+	type ProviderTraceRecorder,
+	traceProviderCompletion,
+	traceProviderPayload,
+	traceProviderResponse,
+	traceRequestHeaders,
+} from "../provider-trace.ts";
 import type {
 	AnthropicMessagesCompat,
 	Api,
@@ -36,7 +46,7 @@ import { parseJsonWithRepair, parseStreamingJson } from "../utils/json-parse.ts"
 import { getProviderEnvValue } from "../utils/provider-env.ts";
 import { retryProviderRequest } from "../utils/provider-retry.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
-import { resolvePdfAttachments } from "./attachment-lowering.ts";
+import { recordProviderAttachmentLowering, resolvePdfAttachments } from "./attachment-lowering.ts";
 import { resolveJsonSchemaStrictSampling } from "./constrained-sampling.ts";
 import { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "./github-copilot-headers.ts";
 import { adjustMaxTokensForThinking, buildBaseOptions, clampMaxTokensToContext } from "./simple-options.ts";
@@ -510,6 +520,8 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 			stopReason: "pending",
 			timestamp: Date.now(),
 		};
+		const trace = createProviderTraceRecorder(model, options?.onTrace);
+		let completionTraced = false;
 
 		try {
 			let client: Anthropic;
@@ -548,11 +560,14 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 				client = created.client;
 				isOAuth = created.isOAuthToken;
 			}
-			let params = buildParams(model, context, isOAuth, options);
+			let params = buildParams(model, context, isOAuth, options, trace);
+			await trace?.flush(options?.onTrace);
 			const nextParams = await options?.onPayload?.(params, model);
 			if (nextParams !== undefined) {
 				params = nextParams as MessageCreateParamsStreaming;
 			}
+			await traceRequestHeaders(trace, options?.onTrace, { ...model.headers, ...options?.headers });
+			await traceProviderPayload(trace, options?.onTrace, params);
 			const requestOptions = {
 				...(options?.signal ? { signal: options.signal } : {}),
 				...(options?.timeoutMs !== undefined ? { timeout: options.timeoutMs } : {}),
@@ -566,7 +581,9 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 					signal: options?.signal,
 				},
 			);
-			await options?.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
+			const providerResponse = { status: response.status, headers: headersToRecord(response.headers) };
+			await options?.onResponse?.(providerResponse, model);
+			await traceProviderResponse(trace, options?.onTrace, providerResponse);
 			stream.push({ type: "start", partial: output });
 
 			type Block = (ThinkingContent | TextContent | (ToolCall & { partialJson: string })) & { index: number };
@@ -757,6 +774,8 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 				throw new Error(output.errorMessage || "An unknown error occurred");
 			}
 
+			await traceProviderCompletion(trace, options?.onTrace, output);
+			completionTraced = true;
 			stream.push({ type: "done", reason: output.stopReason, message: output });
 			stream.end();
 		} catch (error) {
@@ -767,6 +786,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 			}
 			output.stopReason = options?.signal?.aborted ? "aborted" : "error";
 			output.errorMessage = error instanceof Error ? error.message : JSON.stringify(error);
+			if (!completionTraced) await traceProviderCompletion(trace, options?.onTrace, output);
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();
 		}
@@ -970,6 +990,7 @@ function buildParams(
 	context: Context,
 	isOAuthToken: boolean,
 	options?: AnthropicOptions,
+	trace?: ProviderTraceRecorder,
 ): MessageCreateParamsStreaming {
 	const { cacheControl } = getCacheControl(model, options?.cacheRetention, options?.env);
 	const compat = getAnthropicCompat(model);
@@ -998,6 +1019,7 @@ function buildParams(
 			normalizeToolName,
 			context,
 			model,
+			trace,
 		),
 		max_tokens: options?.maxTokens ?? model.maxTokens,
 		stream: true,
@@ -1115,7 +1137,10 @@ function convertToolResult(
 	deferredToolNames: ReadonlySet<string>,
 	loadedToolNames: Set<string>,
 	normalizeToolName: (name: string) => string,
-): { toolResult: ContentBlockParam; siblingContent: ContentBlockParam[] } {
+	context?: Context,
+	model?: Model<"anthropic-messages">,
+	trace?: ProviderTraceRecorder,
+): { toolResult: ToolResultBlockParam; siblingContent: ContentBlockParam[] } {
 	const references: Array<{ type: "tool_reference"; tool_name: string }> = [];
 	for (const name of msg.addedToolNames ?? []) {
 		const normalizedName = normalizeToolName(name);
@@ -1126,7 +1151,45 @@ function convertToolResult(
 			tool_name: isOAuthToken ? toClaudeCodeName(name) : name,
 		});
 	}
-	const convertedContent = convertContentBlocks(msg.content);
+	const attachments = context && model ? resolvePdfAttachments(msg, context.attachmentRegistry, model, trace) : [];
+	const attachmentBlocks: DocumentBlockParam[] = attachments.map((attachment) => {
+		recordProviderAttachmentLowering(trace, attachment, "tool_result.document");
+		switch (attachment.source.type) {
+			case "base64":
+				return {
+					type: "document",
+					source: {
+						type: "base64",
+						media_type: "application/pdf",
+						data: attachment.source.data,
+					},
+					title: attachment.filename,
+				};
+			case "url":
+				return {
+					type: "document",
+					source: { type: "url", url: attachment.source.url },
+					title: attachment.filename,
+				};
+			case "provider-file":
+				return {
+					type: "document",
+					source: { type: "file", file_id: attachment.source.fileId },
+					title: attachment.filename,
+				} as unknown as DocumentBlockParam;
+		}
+		throw new Error("Unknown attachment source");
+	});
+	const legacyContent = convertContentBlocks(msg.content);
+	const convertedContent: ToolResultBlockParam["content"] =
+		attachmentBlocks.length === 0
+			? legacyContent
+			: [
+					...(typeof legacyContent === "string"
+						? [{ type: "text" as const, text: legacyContent }]
+						: legacyContent),
+					...attachmentBlocks,
+				];
 	// Anthropic rejects tool references mixed with ordinary tool-result content.
 	return {
 		toolResult: {
@@ -1140,7 +1203,7 @@ function convertToolResult(
 				? []
 				: typeof convertedContent === "string"
 					? [{ type: "text", text: convertedContent }]
-					: convertedContent,
+					: (convertedContent as ContentBlockParam[]),
 	};
 }
 
@@ -1153,6 +1216,7 @@ function convertMessages(
 	normalizeToolName: (name: string) => string = (name) => name,
 	context?: Context,
 	model?: Model<"anthropic-messages">,
+	trace?: ProviderTraceRecorder,
 ): MessageParam[] {
 	const params: MessageParam[] = [];
 	const loadedToolNames = new Set<string>();
@@ -1163,8 +1227,11 @@ function convertMessages(
 		if (msg.role === "user") {
 			const attachmentModel = model;
 			const attachments =
-				context && attachmentModel ? resolvePdfAttachments(msg, context.attachmentRegistry, attachmentModel) : [];
+				context && attachmentModel
+					? resolvePdfAttachments(msg, context.attachmentRegistry, attachmentModel, trace)
+					: [];
 			const attachmentBlocks: ContentBlockParam[] = attachments.map((attachment) => {
+				recordProviderAttachmentLowering(trace, attachment, "document");
 				switch (attachment.source.type) {
 					case "base64":
 						return {
@@ -1308,6 +1375,9 @@ function convertMessages(
 					deferredToolNames,
 					loadedToolNames,
 					normalizeToolName,
+					context,
+					model,
+					trace,
 				);
 				toolResults.push(converted.toolResult);
 				siblingContent.push(...converted.siblingContent);

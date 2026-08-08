@@ -15,6 +15,7 @@ import type {
 	ResponseToolSearchOutputItemParam,
 } from "openai/resources/responses/responses.js";
 import { calculateCost } from "../models.ts";
+import type { ProviderTraceRecorder } from "../provider-trace.ts";
 import type {
 	Api,
 	AssistantMessage,
@@ -33,7 +34,7 @@ import type { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { shortHash } from "../utils/hash.ts";
 import { parseStreamingJson } from "../utils/json-parse.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
-import { resolvePdfAttachments } from "./attachment-lowering.ts";
+import { recordProviderAttachmentLowering, resolvePdfAttachments } from "./attachment-lowering.ts";
 import {
 	appendGrammarToolInputJsonDelta,
 	type GrammarToolInputJsonBuffer,
@@ -73,11 +74,12 @@ function parseTextSignature(
 	return { id: signature };
 }
 
-type ToolResultOutputContent = Array<ResponseInputText | ResponseInputImage>;
+type ToolResultOutputContent = Array<ResponseInputText | ResponseInputImage | ResponseInputFile>;
 
 function convertToolResultOutput<TApi extends Api>(
 	model: Model<TApi>,
 	content: readonly (TextContent | ImageContent)[],
+	files: readonly ResponseInputFile[] = [],
 ): string | ToolResultOutputContent {
 	const textResult = content
 		.filter((c): c is TextContent => c.type === "text")
@@ -86,21 +88,24 @@ function convertToolResultOutput<TApi extends Api>(
 	const images = content.filter((c): c is ImageContent => c.type === "image");
 	const hasText = textResult.length > 0;
 
-	if (images.length === 0 || !model.input.includes("image")) {
+	if (files.length === 0 && (images.length === 0 || !model.input.includes("image"))) {
 		return sanitizeSurrogates(hasText ? textResult : images.length > 0 ? "(see attached image)" : "(no tool output)");
 	}
 
 	const output: ToolResultOutputContent = [];
 	if (hasText) {
 		output.push({ type: "input_text", text: sanitizeSurrogates(textResult) });
+	} else if (images.length > 0 && !model.input.includes("image")) {
+		output.push({ type: "input_text", text: "(see attached image)" });
 	}
-	for (const image of images) {
+	for (const image of model.input.includes("image") ? images : []) {
 		output.push({
 			type: "input_image",
 			detail: "auto",
 			image_url: `data:${image.mimeType};base64,${image.data}`,
 		});
 	}
+	output.push(...files);
 	return output;
 }
 
@@ -122,6 +127,7 @@ export interface ConvertResponsesMessagesOptions {
 	grammarToolInputProperties?: ReadonlyMap<string, string>;
 	deferredTools?: ReadonlyMap<string, Tool>;
 	toolOptions?: ConvertResponsesToolsOptions;
+	trace?: ProviderTraceRecorder;
 }
 
 export interface ConvertResponsesToolsOptions {
@@ -184,8 +190,9 @@ export function convertResponsesMessages<TApi extends Api>(
 	let msgIndex = 0;
 	for (const msg of transformedMessages) {
 		if (msg.role === "user") {
-			const attachments = resolvePdfAttachments(msg, context.attachmentRegistry, model);
+			const attachments = resolvePdfAttachments(msg, context.attachmentRegistry, model, options?.trace);
 			const attachmentContent: ResponseInputFile[] = attachments.map((attachment) => {
+				recordProviderAttachmentLowering(options?.trace, attachment, "input_file");
 				switch (attachment.source.type) {
 					case "base64":
 						return {
@@ -311,7 +318,24 @@ export function convertResponsesMessages<TApi extends Api>(
 			messages.push(...output);
 		} else if (msg.role === "toolResult") {
 			const [callId] = msg.toolCallId.split("|");
-			const output = convertToolResultOutput(model, msg.content);
+			const attachments = resolvePdfAttachments(msg, context.attachmentRegistry, model, options?.trace);
+			const attachmentContent: ResponseInputFile[] = attachments.map((attachment) => {
+				recordProviderAttachmentLowering(options?.trace, attachment, "function_call_output.input_file");
+				switch (attachment.source.type) {
+					case "base64":
+						return {
+							type: "input_file",
+							filename: attachment.filename,
+							file_data: `data:${attachment.mediaType};base64,${attachment.source.data}`,
+						};
+					case "url":
+						return { type: "input_file", file_url: attachment.source.url };
+					case "provider-file":
+						return { type: "input_file", file_id: attachment.source.fileId };
+				}
+				throw new Error("Unknown attachment source");
+			});
+			const output = convertToolResultOutput(model, msg.content, attachmentContent);
 
 			if (options?.grammarToolInputProperties?.has(msg.toolName)) {
 				messages.push({

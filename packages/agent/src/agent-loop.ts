@@ -735,6 +735,7 @@ async function finalizeExecutedToolCall(
 				result = {
 					...result,
 					content: afterResult.content ?? result.content,
+					attachments: afterResult.attachments ?? result.attachments,
 					details: afterResult.details ?? result.details,
 					usage: afterResult.usage ?? result.usage,
 					terminate: afterResult.terminate ?? result.terminate,
@@ -779,6 +780,14 @@ function createToolResultMessage(finalized: FinalizedToolCallOutcome): ToolResul
 		// Untyped tools (JS extensions) can return results without content; normalize
 		// so the null never enters session history or provider payloads.
 		content: finalized.result.content ?? [],
+		...(finalized.result.attachments?.length
+			? {
+					attachments: finalized.result.attachments.map((attachment) => ({
+						type: "attachment" as const,
+						attachmentId: attachment.id,
+					})),
+				}
+			: {}),
 		details: finalized.result.details,
 		usage: finalized.result.usage,
 		...(finalized.result.addedToolNames?.length ? { addedToolNames: finalized.result.addedToolNames } : {}),

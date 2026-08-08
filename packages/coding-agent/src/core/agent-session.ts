@@ -34,6 +34,7 @@ import type {
 	ImageContent,
 	Model,
 	ProviderHeaders,
+	ProviderTraceEvent,
 	TextContent,
 	Usage,
 	UserMessage,
@@ -142,6 +143,7 @@ export function parseSkillBlock(text: string): ParsedSkillBlock | null {
 /** Session-specific events that extend the core AgentEvent */
 export type AgentSessionEvent =
 	| Exclude<AgentEvent, { type: "agent_end" }>
+	| ProviderTraceEvent
 	| {
 			type: "agent_end";
 			messages: AgentMessage[];
@@ -331,6 +333,8 @@ export class AgentSession {
 	private _steeringMessages: string[] = [];
 	/** Tracks pending follow-up messages for UI display. Removed when delivered. */
 	private _followUpMessages: string[] = [];
+	/** Bounded, sanitized provider trace history for SDK, RPC, extensions, and TUI inspection. */
+	private readonly _providerTraceEvents: ProviderTraceEvent[] = [];
 	/** Provider-neutral records referenced by attachment sidecars in this session. */
 	private readonly _attachmentRecords = new Map<string, AttachmentRecord>();
 	private readonly _attachmentRegistry: AttachmentRegistry = {
@@ -413,6 +417,7 @@ export class AgentSession {
 		this._baseToolsOverride = config.baseToolsOverride;
 		this._sessionStartEvent = config.sessionStartEvent ?? { type: "session_start", reason: "startup" };
 		this._syncAttachmentsFromActiveBranch();
+		this._installProviderTraceBridge();
 
 		// Always subscribe to agent events for internal handling
 		// (session persistence, extensions, auto-compaction, retry logic)
@@ -424,6 +429,31 @@ export class AgentSession {
 			activeToolNames: this._initialActiveToolNames,
 			includeAllExtensionTools: true,
 		});
+	}
+
+	private _installProviderTraceBridge(): void {
+		const existingObserver = this.agent.onTrace;
+		this.agent.onTrace = async (event, model) => {
+			if (existingObserver) {
+				try {
+					await existingObserver(event, model);
+				} catch {
+					// Observability callbacks must not affect provider execution.
+				}
+			}
+
+			const trace = structuredClone(event);
+			this._providerTraceEvents.push(trace);
+			if (this._providerTraceEvents.length > 500) {
+				this._providerTraceEvents.splice(0, this._providerTraceEvents.length - 500);
+			}
+			this._emit(structuredClone(trace));
+
+			const runner = this._extensionRunnerRef?.current ?? this._extensionRunner;
+			if (runner?.hasHandlers("provider_trace")) {
+				await runner.emit(structuredClone(trace));
+			}
+		};
 	}
 
 	get modelRuntime(): ModelRuntime {
@@ -525,6 +555,7 @@ export class AgentSession {
 				toolCallId: toolCall.id,
 				input: args as Record<string, unknown>,
 				content: result.content,
+				attachments: result.attachments,
 				details: result.details,
 				isError,
 				usage: result.usage,
@@ -536,6 +567,7 @@ export class AgentSession {
 
 			return {
 				content: hookResult.content,
+				attachments: hookResult.attachments,
 				details: hookResult.details,
 				isError: hookResult.isError ?? isError,
 				usage: hookResult.usage,
@@ -641,6 +673,20 @@ export class AgentSession {
 			}
 		}
 
+		// Tool results carry lightweight references in the conversation, while the
+		// records themselves live once in the session attachment registry. Register
+		// and persist them before extensions, listeners, or the next provider turn
+		// can observe the finalized result.
+		if (event.type === "tool_execution_end" && event.result.attachments?.length) {
+			this._registerAttachments(event.result.attachments);
+			this._persistAttachmentReferences(
+				event.result.attachments.map((attachment: AttachmentRecord) => ({
+					type: "attachment" as const,
+					attachmentId: attachment.id,
+				})),
+			);
+		}
+
 		// Emit to extensions first
 		await this._emitExtensionEvent(event);
 
@@ -663,6 +709,9 @@ export class AgentSession {
 				event.message.role === "assistant" ||
 				event.message.role === "toolResult"
 			) {
+				if (event.message.role === "toolResult") {
+					this._assertAttachmentReferencesResolvable(event.message.attachments);
+				}
 				// Regular LLM message - persist as SessionMessageEntry
 				this.sessionManager.appendMessage(event.message);
 			}
@@ -833,6 +882,17 @@ export class AgentSession {
 				this._eventListeners.splice(index, 1);
 			}
 		};
+	}
+
+	/** Return the bounded, sanitized provider trace history for this process. */
+	getProviderTraceEvents(): ProviderTraceEvent[] {
+		return this._providerTraceEvents.map((event) => structuredClone(event));
+	}
+
+	/** Return the most recent sanitized provider trace event, if any. */
+	getLatestProviderTrace(): ProviderTraceEvent | undefined {
+		const event = this._providerTraceEvents[this._providerTraceEvents.length - 1];
+		return event ? structuredClone(event) : undefined;
 	}
 
 	/**

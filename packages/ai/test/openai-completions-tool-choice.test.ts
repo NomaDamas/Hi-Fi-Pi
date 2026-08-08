@@ -1,8 +1,15 @@
 import { Type } from "typebox";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { convertMessages } from "../src/api/openai-completions.ts";
-import { getModel, stream, streamSimple } from "../src/compat.ts";
-import type { AssistantMessage, Model, SimpleStreamOptions, Tool, ToolResultMessage } from "../src/types.ts";
+import { getModel, getModels, stream, streamSimple } from "../src/compat.ts";
+import type {
+	AssistantMessage,
+	Model,
+	OpenAICompletionsCompat,
+	SimpleStreamOptions,
+	Tool,
+	ToolResultMessage,
+} from "../src/types.ts";
 
 const mockState = vi.hoisted(() => ({
 	lastParams: undefined as unknown,
@@ -1434,11 +1441,22 @@ describe("openai-completions tool_choice", () => {
 	});
 
 	it("sends max_tokens for OpenCode completions models", async () => {
-		const cases = [getModel("opencode-go", "kimi-k2.6")!, getModel("opencode", "grok-build-0.1")!] as const;
+		const cases = (["opencode-go", "opencode"] as const).map((provider) =>
+			getModels(provider).find(
+				(model) =>
+					model.api === "openai-completions" &&
+					(model.compat as OpenAICompletionsCompat | undefined)?.maxTokensField === "max_tokens",
+			),
+		);
 
-		for (const model of cases) {
+		for (const candidate of cases) {
+			expect(candidate, "expected an OpenCode completions model using max_tokens").toBeDefined();
+			if (!candidate || candidate.api !== "openai-completions") {
+				throw new Error("Expected an OpenCode completions model using max_tokens");
+			}
+			const model = candidate as Model<"openai-completions">;
 			let payload: unknown;
-			expect(model.compat?.maxTokensField).toBe("max_tokens");
+			expect((model.compat as OpenAICompletionsCompat | undefined)?.maxTokensField).toBe("max_tokens");
 
 			await streamSimple(
 				model,

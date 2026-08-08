@@ -3,9 +3,10 @@
  */
 
 import { type Content, FinishReason, FunctionCallingConfigMode, type Part } from "@google/genai";
+import type { ProviderTraceRecorder } from "../provider-trace.ts";
 import type { Context, ImageContent, Model, StopReason, TextContent, Tool } from "../types.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
-import { resolvePdfAttachments } from "./attachment-lowering.ts";
+import { recordProviderAttachmentLowering, resolvePdfAttachments } from "./attachment-lowering.ts";
 import { resolveJsonSchemaStrictSampling } from "./constrained-sampling.ts";
 import { transformMessages } from "./transform-messages.ts";
 
@@ -90,7 +91,11 @@ function supportsMultimodalFunctionResponse(modelId: string): boolean {
 /**
  * Convert internal messages to Gemini Content[] format.
  */
-export function convertMessages<T extends GoogleApiType>(model: Model<T>, context: Context): Content[] {
+export function convertMessages<T extends GoogleApiType>(
+	model: Model<T>,
+	context: Context,
+	trace?: ProviderTraceRecorder,
+): Content[] {
 	const contents: Content[] = [];
 	const normalizeToolCallId = (id: string): string => {
 		if (!requiresToolCallId(model.id)) return id;
@@ -101,8 +106,10 @@ export function convertMessages<T extends GoogleApiType>(model: Model<T>, contex
 
 	for (const msg of transformedMessages) {
 		if (msg.role === "user") {
-			const attachments = resolvePdfAttachments(msg, context.attachmentRegistry, model);
+			const attachments = resolvePdfAttachments(msg, context.attachmentRegistry, model, trace);
 			const attachmentParts: Part[] = attachments.map((attachment) => {
+				const wireKind = attachment.source.type === "base64" ? "inlineData" : "fileData";
+				recordProviderAttachmentLowering(trace, attachment, wireKind);
 				switch (attachment.source.type) {
 					case "base64":
 						return {
@@ -219,11 +226,17 @@ export function convertMessages<T extends GoogleApiType>(model: Model<T>, contex
 
 			const hasText = textResult.length > 0;
 			const hasImages = imageContent.length > 0;
+			const attachments = resolvePdfAttachments(msg, context.attachmentRegistry, model, trace);
 
 			// Gemini 3+ models support multimodal function responses with images nested inside
 			// functionResponse.parts. Claude and other non-Gemini models behind Cloud Code Assist /
 			// Gemini < 3 still needs a separate user image turn.
 			const modelSupportsMultimodalFunctionResponse = supportsMultimodalFunctionResponse(model.id);
+			if (attachments.length > 0 && !modelSupportsMultimodalFunctionResponse) {
+				throw new Error(
+					`Gemini 3 or newer is required for tool-result PDF attachments; current model is ${model.id}`,
+				);
+			}
 
 			// Use "output" key for success, "error" key for errors as per SDK documentation
 			const responseValue = hasText ? sanitizeSurrogates(textResult) : hasImages ? "(see attached image)" : "";
@@ -234,13 +247,47 @@ export function convertMessages<T extends GoogleApiType>(model: Model<T>, contex
 					data: imageBlock.data,
 				},
 			}));
+			const attachmentParts = attachments.map((attachment) => {
+				const wireKind =
+					attachment.source.type === "base64" ? "functionResponse.inlineData" : "functionResponse.fileData";
+				recordProviderAttachmentLowering(trace, attachment, wireKind);
+				switch (attachment.source.type) {
+					case "base64":
+						return {
+							inlineData: {
+								mimeType: attachment.mediaType,
+								data: attachment.source.data,
+								displayName: attachment.filename,
+							},
+						};
+					case "url":
+						return {
+							fileData: {
+								mimeType: attachment.mediaType,
+								fileUri: attachment.source.url,
+								displayName: attachment.filename,
+							},
+						};
+					case "provider-file":
+						return {
+							fileData: {
+								mimeType: attachment.mediaType,
+								fileUri: attachment.source.uri ?? attachment.source.fileId,
+								displayName: attachment.filename,
+							},
+						};
+				}
+				throw new Error("Unknown attachment source");
+			});
 
 			const includeId = requiresToolCallId(model.id);
 			const functionResponsePart: Part = {
 				functionResponse: {
 					name: msg.toolName,
 					response: msg.isError ? { error: responseValue } : { output: responseValue },
-					...(hasImages && modelSupportsMultimodalFunctionResponse && { parts: imageParts }),
+					...((hasImages || attachmentParts.length > 0) && modelSupportsMultimodalFunctionResponse
+						? { parts: [...imageParts, ...attachmentParts] }
+						: {}),
 					...(includeId ? { id: msg.toolCallId } : {}),
 				},
 			};

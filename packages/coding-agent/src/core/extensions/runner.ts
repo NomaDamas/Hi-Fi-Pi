@@ -887,6 +887,10 @@ export class ExtensionRunner {
 						currentEvent.content = handlerResult.content;
 						modified = true;
 					}
+					if (handlerResult.attachments !== undefined) {
+						currentEvent.attachments = handlerResult.attachments;
+						modified = true;
+					}
 					if (handlerResult.details !== undefined) {
 						currentEvent.details = handlerResult.details;
 						modified = true;
@@ -918,6 +922,7 @@ export class ExtensionRunner {
 
 		return {
 			content: currentEvent.content,
+			attachments: currentEvent.attachments,
 			details: currentEvent.details,
 			isError: currentEvent.isError,
 			usage: currentEvent.usage,

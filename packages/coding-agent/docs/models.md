@@ -9,6 +9,7 @@ Add custom providers and models (Ollama, vLLM, LM Studio, proxies) via `~/.pi/ag
 - [Supported APIs](#supported-apis)
 - [Provider Configuration](#provider-configuration)
 - [Model Configuration](#model-configuration)
+- [Provider-Native Input Capabilities](#provider-native-input-capabilities)
 - [Overriding Built-in Providers](#overriding-built-in-providers)
 - [Per-model Overrides](#per-model-overrides)
 - [Anthropic Messages Compatibility](#anthropic-messages-compatibility)
@@ -141,6 +142,7 @@ Set `api` at provider level (default for all models) or model level (override pe
 | `authHeader` | Set `true` to add `Authorization: Bearer <apiKey>` automatically |
 | `models` | Array of model configurations |
 | `modelOverrides` | Per-model overrides for built-in or extension-registered models on this provider |
+| `nativeInputs` | Optional endpoint capability manifest for provider-native files and media |
 
 For providers with `models`, non-built-in provider configs need `baseUrl` and an `api` value at either provider or model level. `apiKey` is not required to load the file: models become available when auth is configured through `/login`/`auth.json`, CLI `--api-key`, or provider `apiKey`. If no auth is configured, the models load but stay unavailable in `/model` and `--list-models`.
 
@@ -208,6 +210,7 @@ If your command is slow, expensive, rate-limited, or should keep using a previou
 | `maxTokens` | No | `16384` | Maximum output tokens |
 | `cost` | No | all zeros | Per-million-token rates with optional request-wide input pricing tiers |
 | `compat` | No | provider `compat` | Provider compatibility overrides. Merged with provider-level `compat` when both are set. |
+| `nativeInputs` | No | provider `nativeInputs` | Additive provider-native input capability manifest |
 
 A cost tier supplies a complete alternate rate set and applies to the full request when total input usage (`input + cacheRead + cacheWrite`) exceeds `inputTokensAbove`. When multiple tiers match, the highest threshold wins.
 
@@ -277,6 +280,52 @@ Example for a model where thinking cannot be disabled:
 ```
 
 Migration: older configs that used `compat.reasoningEffortMap` should move that mapping to model-level `thinkingLevelMap`. Use `null` for levels that should not appear in the UI.
+
+## Provider-Native Input Capabilities
+
+The legacy `input` field remains limited to `text` and `image`. Hi-Fi Pi exposes files and other vendor-native inputs through a separate, additive `nativeInputs` manifest so existing Pi extensions and model definitions retain their original meaning.
+
+Official OpenAI, Anthropic, Gemini Developer API, and Vertex endpoints receive built-in transport profiles. A proxy or other compatible endpoint does not inherit those facts merely because it uses the same API dialect; it must opt in at the provider or model level.
+
+```json
+{
+  "providers": {
+    "myproxy": {
+      "baseUrl": "https://proxy.example.com/v1",
+      "apiKey": "$MYPROXY_API_KEY",
+      "api": "openai-responses",
+      "nativeInputs": {
+        "profile": "myproxy-files-v1",
+        "capabilities": [
+          {
+            "id": "office-files",
+            "supported": true,
+            "mediaTypes": [
+              "application/pdf",
+              "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            ],
+            "sources": ["inline", "provider-file"],
+            "wireKinds": {
+              "inline": "input_file",
+              "provider-file": "input_file"
+            },
+            "limits": {
+              "maximumBytes": 10485760,
+              "maximumCount": 4
+            },
+            "provenance": "configured"
+          }
+        ]
+      },
+      "models": [{ "id": "my-model" }]
+    }
+  }
+}
+```
+
+Capabilities are keyed by endpoint profile and may restrict model IDs with `modelAllowList` and `modelDenyList`. Each entry declares accepted MIME types, input sources (`inline`, `url`, `provider-file`, or `cloud-uri`), wire block names, transport limits, required headers, provider options, and provenance. These are transport facts only: a manifest never claims how a vendor parses, renders, or understands a file.
+
+Use `/capabilities` to inspect the selected model's resolved endpoint profile, source-to-wire mapping, and provenance. The older `nativeAttachments.pdf` setting remains supported as a compatibility bridge.
 
 ## Overriding Built-in Providers
 

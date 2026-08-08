@@ -1,6 +1,7 @@
 import {
 	type AssistantMessage,
 	type AssistantMessageEvent,
+	type AttachmentRecord,
 	EventStream,
 	type Message,
 	type Model,
@@ -366,6 +367,73 @@ describe("agentLoop with AgentMessage", () => {
 		const messages = await stream.result();
 		const toolResult = messages.find((message) => message.role === "toolResult");
 		expect(toolResult?.role === "toolResult" ? toolResult.usage : undefined).toEqual(patchedToolUsage);
+	});
+
+	it("preserves final and partial tool attachments through afterToolCall and tool-result messages", async () => {
+		const attachment: AttachmentRecord = {
+			id: "att_tool_pdf",
+			filename: "report.pdf",
+			mediaType: "application/pdf",
+			source: { type: "base64", data: "JVBERi0xLjQ=" },
+		};
+		const toolSchema = Type.Object({});
+		const tool: AgentTool<typeof toolSchema, Record<string, never>> = {
+			name: "make_report",
+			label: "Make report",
+			description: "Create a PDF report",
+			parameters: toolSchema,
+			async execute(_toolCallId, _params, _signal, onUpdate) {
+				onUpdate?.({
+					content: [{ type: "text", text: "building" }],
+					details: {},
+					attachments: [attachment],
+				});
+				return {
+					content: [{ type: "text", text: "created" }],
+					details: {},
+					attachments: [attachment],
+				};
+			},
+		};
+		const context: AgentContext = { systemPrompt: "", messages: [], tools: [tool] };
+		const config: AgentLoopConfig = {
+			model: createModel(),
+			convertToLlm: identityConverter,
+			afterToolCall: async () => ({ content: [{ type: "text", text: "hooked" }] }),
+		};
+		let callIndex = 0;
+		const stream = agentLoop([createUserMessage("create report")], context, config, undefined, () => {
+			const mockStream = new MockAssistantStream();
+			queueMicrotask(() => {
+				mockStream.push({
+					type: "done",
+					reason: callIndex++ === 0 ? "toolUse" : "stop",
+					message:
+						callIndex === 1
+							? createAssistantMessage(
+									[{ type: "toolCall", id: "call_123", name: "make_report", arguments: {} }],
+									"toolUse",
+								)
+							: createAssistantMessage([{ type: "text", text: "done" }]),
+				});
+			});
+			return mockStream;
+		});
+		const events: AgentEvent[] = [];
+		for await (const event of stream) events.push(event);
+
+		const update = events.find((event) => event.type === "tool_execution_update");
+		const end = events.find((event) => event.type === "tool_execution_end");
+		const message = events.find((event) => event.type === "message_end" && event.message.role === "toolResult");
+		expect(update?.partialResult.attachments).toEqual([attachment]);
+		expect(end?.result.attachments).toEqual([attachment]);
+		if (message?.type !== "message_end" || message.message.role !== "toolResult") {
+			throw new Error("tool result message missing");
+		}
+		expect(message.message).toMatchObject({
+			content: [{ type: "text", text: "hooked" }],
+			attachments: [{ type: "attachment", attachmentId: attachment.id }],
+		});
 	});
 
 	it("should not execute tool calls from a length-truncated assistant message", async () => {
