@@ -2,10 +2,12 @@ import Anthropic from "@anthropic-ai/sdk";
 import type {
 	CacheControlEphemeral,
 	ContentBlockParam,
+	DocumentBlockParam,
 	MessageCreateParamsStreaming,
 	MessageParam,
 	RawMessageStreamEvent,
 	RefusalStopDetails,
+	ToolResultBlockParam,
 } from "@anthropic-ai/sdk/resources/messages.js";
 import { calculateCost } from "../models.ts";
 import {
@@ -1135,7 +1137,10 @@ function convertToolResult(
 	deferredToolNames: ReadonlySet<string>,
 	loadedToolNames: Set<string>,
 	normalizeToolName: (name: string) => string,
-): { toolResult: ContentBlockParam; siblingContent: ContentBlockParam[] } {
+	context?: Context,
+	model?: Model<"anthropic-messages">,
+	trace?: ProviderTraceRecorder,
+): { toolResult: ToolResultBlockParam; siblingContent: ContentBlockParam[] } {
 	const references: Array<{ type: "tool_reference"; tool_name: string }> = [];
 	for (const name of msg.addedToolNames ?? []) {
 		const normalizedName = normalizeToolName(name);
@@ -1146,7 +1151,45 @@ function convertToolResult(
 			tool_name: isOAuthToken ? toClaudeCodeName(name) : name,
 		});
 	}
-	const convertedContent = convertContentBlocks(msg.content);
+	const attachments = context && model ? resolvePdfAttachments(msg, context.attachmentRegistry, model, trace) : [];
+	const attachmentBlocks: DocumentBlockParam[] = attachments.map((attachment) => {
+		recordProviderAttachmentLowering(trace, attachment, "tool_result.document");
+		switch (attachment.source.type) {
+			case "base64":
+				return {
+					type: "document",
+					source: {
+						type: "base64",
+						media_type: "application/pdf",
+						data: attachment.source.data,
+					},
+					title: attachment.filename,
+				};
+			case "url":
+				return {
+					type: "document",
+					source: { type: "url", url: attachment.source.url },
+					title: attachment.filename,
+				};
+			case "provider-file":
+				return {
+					type: "document",
+					source: { type: "file", file_id: attachment.source.fileId },
+					title: attachment.filename,
+				} as unknown as DocumentBlockParam;
+		}
+		throw new Error("Unknown attachment source");
+	});
+	const legacyContent = convertContentBlocks(msg.content);
+	const convertedContent: ToolResultBlockParam["content"] =
+		attachmentBlocks.length === 0
+			? legacyContent
+			: [
+					...(typeof legacyContent === "string"
+						? [{ type: "text" as const, text: legacyContent }]
+						: legacyContent),
+					...attachmentBlocks,
+				];
 	// Anthropic rejects tool references mixed with ordinary tool-result content.
 	return {
 		toolResult: {
@@ -1160,7 +1203,7 @@ function convertToolResult(
 				? []
 				: typeof convertedContent === "string"
 					? [{ type: "text", text: convertedContent }]
-					: convertedContent,
+					: (convertedContent as ContentBlockParam[]),
 	};
 }
 
@@ -1332,6 +1375,9 @@ function convertMessages(
 					deferredToolNames,
 					loadedToolNames,
 					normalizeToolName,
+					context,
+					model,
+					trace,
 				);
 				toolResults.push(converted.toolResult);
 				siblingContent.push(...converted.siblingContent);
