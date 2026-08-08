@@ -555,6 +555,7 @@ export class AgentSession {
 				toolCallId: toolCall.id,
 				input: args as Record<string, unknown>,
 				content: result.content,
+				attachments: result.attachments,
 				details: result.details,
 				isError,
 				usage: result.usage,
@@ -566,6 +567,7 @@ export class AgentSession {
 
 			return {
 				content: hookResult.content,
+				attachments: hookResult.attachments,
 				details: hookResult.details,
 				isError: hookResult.isError ?? isError,
 				usage: hookResult.usage,
@@ -671,6 +673,20 @@ export class AgentSession {
 			}
 		}
 
+		// Tool results carry lightweight references in the conversation, while the
+		// records themselves live once in the session attachment registry. Register
+		// and persist them before extensions, listeners, or the next provider turn
+		// can observe the finalized result.
+		if (event.type === "tool_execution_end" && event.result.attachments?.length) {
+			this._registerAttachments(event.result.attachments);
+			this._persistAttachmentReferences(
+				event.result.attachments.map((attachment: AttachmentRecord) => ({
+					type: "attachment" as const,
+					attachmentId: attachment.id,
+				})),
+			);
+		}
+
 		// Emit to extensions first
 		await this._emitExtensionEvent(event);
 
@@ -693,6 +709,9 @@ export class AgentSession {
 				event.message.role === "assistant" ||
 				event.message.role === "toolResult"
 			) {
+				if (event.message.role === "toolResult") {
+					this._assertAttachmentReferencesResolvable(event.message.attachments);
+				}
 				// Regular LLM message - persist as SessionMessageEntry
 				this.sessionManager.appendMessage(event.message);
 			}

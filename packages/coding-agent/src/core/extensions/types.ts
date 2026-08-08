@@ -923,6 +923,8 @@ interface ToolResultEventBase {
 	toolCallId: string;
 	input: Record<string, unknown>;
 	content: (TextContent | ImageContent)[];
+	/** Provider-neutral files or media returned by the tool. */
+	attachments?: AttachmentRecord[];
 	isError: boolean;
 	/** Usage from the tool execution itself, if available. */
 	usage?: Usage;
@@ -1092,6 +1094,8 @@ export interface UserBashEventResult {
 
 export interface ToolResultEventResult {
 	content?: (TextContent | ImageContent)[];
+	/** Full replacement for the tool result attachment records. */
+	attachments?: AttachmentRecord[];
 	details?: unknown;
 	isError?: boolean;
 	usage?: Usage;
