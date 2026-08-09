@@ -1,7 +1,16 @@
 // Core session management
 
+export {
+	AGENT_DEFINITION_SCHEMA_VERSION,
+	type AgentDefinition,
+	AgentDefinitionRegistry,
+	type AgentDefinitionV1,
+	AgentDefinitionValidationError,
+	type CreateDefinedAgentOptions,
+	type CreatedDefinedAgent,
+	parseAgentDefinition,
+} from "./agent-definition.ts";
 export { type Args, parseArgs } from "./cli/args.ts";
-
 // Config paths
 export {
 	type AgentDirResolution,
