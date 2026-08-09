@@ -7,6 +7,56 @@ import {
 } from "./provider-backend.ts";
 import type { Api, Model, StreamOptions } from "./types.ts";
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function validateOpenAITextFormat(value: unknown): true | string {
+	if (!isRecord(value) || value.type !== "json_schema") return "must be an OpenAI json_schema format object";
+	if (typeof value.name !== "string" || value.name.length === 0) return "must include a non-empty name";
+	if (!isRecord(value.schema)) return "must include a JSON Schema object";
+	if (value.strict !== undefined && typeof value.strict !== "boolean") return "strict must be a boolean";
+	return true;
+}
+
+const OPENAI_BUILT_IN_TOOL_TYPES = new Set([
+	"web_search",
+	"web_search_preview",
+	"file_search",
+	"code_interpreter",
+	"computer_use_preview",
+]);
+
+function validateOpenAIBuiltInTools(value: unknown): true | string {
+	if (!Array.isArray(value)) return "must be an array of OpenAI built-in tool definitions";
+	for (const tool of value) {
+		if (!isRecord(tool) || typeof tool.type !== "string" || !OPENAI_BUILT_IN_TOOL_TYPES.has(tool.type)) {
+			return "contains an unsupported built-in tool type";
+		}
+	}
+	return true;
+}
+
+const ANTHROPIC_SERVER_TOOL_TYPES = new Set([
+	"web_search_20250305",
+	"web_fetch_20250910",
+	"code_execution_20250825",
+	"code_execution_20260120",
+	"computer_20250124",
+	"computer_20251124",
+]);
+
+function validateAnthropicServerTools(value: unknown): true | string {
+	if (!Array.isArray(value)) return "must be an array of Anthropic server tool definitions";
+	for (const tool of value) {
+		if (!isRecord(tool) || typeof tool.type !== "string" || !ANTHROPIC_SERVER_TOOL_TYPES.has(tool.type)) {
+			return "contains an unsupported Anthropic server tool type";
+		}
+		if (typeof tool.name !== "string" || tool.name.length === 0) return "each server tool must include a name";
+	}
+	return true;
+}
+
 const OPENAI_OPTIONS: readonly ProviderOptionDefinition[] = [
 	{
 		key: "openai.responses.store",
@@ -19,6 +69,36 @@ const OPENAI_OPTIONS: readonly ProviderOptionDefinition[] = [
 		type: "enum",
 		description: "OpenAI Responses service tier.",
 		allowedValues: ["auto", "default", "flex", "priority"],
+	},
+	{
+		key: "openai.responses.previous_response_id",
+		type: "string",
+		description: "Continue from an explicit OpenAI Responses response ID.",
+		pattern: "^\\S+$",
+	},
+	{
+		key: "openai.responses.continue",
+		type: "boolean",
+		description: "Continue from the latest compatible response state in the conversation.",
+		default: false,
+	},
+	{
+		key: "openai.responses.text_format",
+		type: "structured",
+		description: "OpenAI Responses structured output format.",
+		validate: validateOpenAITextFormat,
+	},
+	{
+		key: "openai.responses.built_in_tools",
+		type: "structured",
+		description: "Official OpenAI built-in tools; remote MCP is intentionally excluded.",
+		validate: validateOpenAIBuiltInTools,
+	},
+	{
+		key: "openai.responses.background",
+		type: "boolean",
+		description: "Run the OpenAI response in background mode.",
+		default: false,
 	},
 ];
 
@@ -34,6 +114,17 @@ const ANTHROPIC_OPTIONS: readonly ProviderOptionDefinition[] = [
 		type: "enum",
 		description: "Anthropic prompt cache retention policy.",
 		allowedValues: ["none", "short", "long"],
+	},
+	{
+		key: "anthropic.server_tools",
+		type: "structured",
+		description: "Official Anthropic server-side tool definitions.",
+		validate: validateAnthropicServerTools,
+	},
+	{
+		key: "anthropic.context_management",
+		type: "structured",
+		description: "Anthropic context editing and management configuration.",
 	},
 ];
 
@@ -53,6 +144,30 @@ const GOOGLE_OPTIONS: readonly ProviderOptionDefinition[] = [
 		maximum: 1_000_000,
 		integer: true,
 		modelIds: /gemini/i,
+	},
+	{
+		key: "google.cached_content",
+		type: "string",
+		description: "Gemini or Vertex cached content resource name.",
+		pattern: "^(cachedContents/|projects/).+",
+	},
+	{
+		key: "google.google_search",
+		type: "boolean",
+		description: "Enable the official Google Search grounding tool.",
+		default: false,
+	},
+	{
+		key: "google.url_context",
+		type: "boolean",
+		description: "Enable the official Gemini URL context tool.",
+		default: false,
+	},
+	{
+		key: "google.code_execution",
+		type: "boolean",
+		description: "Enable the official Gemini code execution tool.",
+		default: false,
 	},
 ];
 

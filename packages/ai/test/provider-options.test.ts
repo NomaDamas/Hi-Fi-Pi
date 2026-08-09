@@ -61,14 +61,25 @@ describe("provider-native options", () => {
 		expect(getProviderOptionDefinitions(openAIModel).map((definition) => definition.key)).toEqual([
 			"openai.responses.store",
 			"openai.responses.service_tier",
+			"openai.responses.previous_response_id",
+			"openai.responses.continue",
+			"openai.responses.text_format",
+			"openai.responses.built_in_tools",
+			"openai.responses.background",
 		]);
 		expect(getProviderOptionDefinitions(anthropicModel).map((definition) => definition.key)).toEqual([
 			"anthropic.document.citations",
 			"anthropic.cache_retention",
+			"anthropic.server_tools",
+			"anthropic.context_management",
 		]);
 		expect(getProviderOptionDefinitions(googleModel).map((definition) => definition.key)).toEqual([
 			"google.video.fps",
 			"google.thinking_budget",
+			"google.cached_content",
+			"google.google_search",
+			"google.url_context",
+			"google.code_execution",
 		]);
 	});
 
@@ -76,6 +87,8 @@ describe("provider-native options", () => {
 		expect(resolveProviderOptions(openAIModel, { "openai.responses.service_tier": "flex" })).toEqual({
 			"openai.responses.store": false,
 			"openai.responses.service_tier": "flex",
+			"openai.responses.continue": false,
+			"openai.responses.background": false,
 		});
 		expect(() => resolveProviderOptions(googleModel, { "google.video.fps": 60 })).toThrow(/at most 24/);
 		expect(() => resolveProviderOptions(openAIModel, { "openai.responses.service_tier": "invalid" })).toThrow(
@@ -85,6 +98,87 @@ describe("provider-native options", () => {
 			ProviderOptionValidationError,
 		);
 		expect(() => resolveProviderOptions(openAIModel, { "openai.api_key": "secret" })).toThrow(/secret-bearing/);
+	});
+
+	it("validates provider-native structured controls before request construction", () => {
+		expect(() =>
+			resolveProviderOptions(openAIModel, {
+				"openai.responses.built_in_tools": [{ type: "mcp", server_url: "https://example.com" }],
+			}),
+		).toThrow(/unsupported built-in tool type/);
+		expect(() =>
+			resolveProviderOptions(openAIModel, {
+				"openai.responses.text_format": { type: "json_schema", schema: {} },
+			}),
+		).toThrow(/non-empty name/);
+		expect(() =>
+			resolveProviderOptions(anthropicModel, {
+				"anthropic.server_tools": [{ type: "client_tool", name: "not_server_side" }],
+			}),
+		).toThrow(/unsupported Anthropic server tool type/);
+	});
+
+	it("applies OpenAI continuation, structured output, background mode and built-in tools", async () => {
+		const context: Context = {
+			messages: [
+				{
+					role: "assistant",
+					content: [{ type: "text", text: "prior" }],
+					api: "openai-responses",
+					provider: "openai",
+					model: "gpt-5.6",
+					providerState: {
+						provider: "openai",
+						api: "openai-responses",
+						responseId: "resp_previous",
+						continuationId: "resp_previous",
+					},
+					usage: {
+						input: 0,
+						output: 0,
+						cacheRead: 0,
+						cacheWrite: 0,
+						totalTokens: 0,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+					},
+					stopReason: "stop",
+					timestamp: 1,
+				},
+				{ role: "user", content: "continue", timestamp: 2 },
+			],
+		};
+		const payload = (await capturePayload(({ onPayload }) =>
+			streamOpenAI(openAIModel, context, {
+				apiKey: "test-key",
+				providerOptions: resolveProviderOptions(openAIModel, {
+					"openai.responses.continue": true,
+					"openai.responses.background": true,
+					"openai.responses.text_format": {
+						type: "json_schema",
+						name: "answer",
+						schema: { type: "object", properties: { answer: { type: "string" } } },
+						strict: true,
+					},
+					"openai.responses.built_in_tools": [
+						{ type: "web_search" },
+						{ type: "code_interpreter", container: { type: "auto" } },
+					],
+				}),
+				onPayload,
+			}),
+		)) as Record<string, unknown>;
+		expect(payload).toMatchObject({
+			previous_response_id: "resp_previous",
+			background: true,
+			text: { format: { type: "json_schema", name: "answer", strict: true } },
+		});
+		expect(payload.tools).toEqual([
+			{ type: "web_search" },
+			{ type: "code_interpreter", container: { type: "auto" } },
+		]);
+		expect(payload.include).toEqual(
+			expect.arrayContaining(["web_search_call.action.sources", "code_interpreter_call.outputs"]),
+		);
 	});
 
 	it("lets one backend register multiple vendor namespaces without modifying common option unions", () => {
@@ -140,10 +234,10 @@ describe("provider-native options", () => {
 		expect(trace).toContainEqual(
 			expect.objectContaining({
 				stage: "provider_options",
-				options: {
+				options: expect.objectContaining({
 					"openai.responses.store": true,
 					"openai.responses.service_tier": "flex",
-				},
+				}),
 			}),
 		);
 	});
