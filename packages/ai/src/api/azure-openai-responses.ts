@@ -1,6 +1,16 @@
 import { AzureOpenAI } from "openai";
 import type { ResponseCreateParamsStreaming } from "openai/resources/responses/responses.js";
+import { prepareContextAttachmentUploads } from "../attachment-lifecycle.ts";
 import { clampThinkingLevel } from "../models.ts";
+import {
+	createProviderTraceRecorder,
+	type ProviderTraceRecorder,
+	traceProviderCompletion,
+	traceProviderOptions,
+	traceProviderPayload,
+	traceProviderResponse,
+	traceRequestHeaders,
+} from "../provider-trace.ts";
 import type {
 	Api,
 	AssistantMessage,
@@ -93,8 +103,14 @@ export const stream: StreamFunction<"azure-openai-responses", AzureOpenAIRespons
 			stopReason: "pending",
 			timestamp: Date.now(),
 		};
+		const trace = createProviderTraceRecorder(model, options?.onTrace);
+		let completionTraced = false;
 
 		try {
+			await traceProviderOptions(trace, options?.onTrace, options?.providerOptions);
+			const azureConfig = resolveAzureConfig(model, options);
+			const effectiveModel: Model<"azure-openai-responses"> = { ...model, baseUrl: azureConfig.baseUrl };
+			await prepareContextAttachmentUploads(effectiveModel, context, options, trace);
 			// Create Azure OpenAI client
 			const apiKey = options?.apiKey;
 			if (!apiKey) {
@@ -105,11 +121,14 @@ export const stream: StreamFunction<"azure-openai-responses", AzureOpenAIRespons
 				context.tools,
 				model.compat?.supportsOpenAIGrammarTools ?? false,
 			);
-			let params = buildParams(model, context, options, deploymentName, grammarToolInputProperties);
+			let params = buildParams(effectiveModel, context, options, deploymentName, grammarToolInputProperties, trace);
+			await trace?.flush(options?.onTrace);
 			const nextParams = await options?.onPayload?.(params, model);
 			if (nextParams !== undefined) {
 				params = nextParams as ResponseCreateParamsStreaming;
 			}
+			await traceRequestHeaders(trace, options?.onTrace, { ...model.headers, ...options?.headers });
+			await traceProviderPayload(trace, options?.onTrace, params);
 			const requestOptions = {
 				...(options?.signal ? { signal: options.signal } : {}),
 				...(options?.timeoutMs !== undefined ? { timeout: options.timeoutMs } : {}),
@@ -123,10 +142,12 @@ export const stream: StreamFunction<"azure-openai-responses", AzureOpenAIRespons
 					signal: options?.signal,
 				},
 			);
-			await options?.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
+			const providerResponse = { status: response.status, headers: headersToRecord(response.headers) };
+			await options?.onResponse?.(providerResponse, model);
+			await traceProviderResponse(trace, options?.onTrace, providerResponse);
 			stream.push({ type: "start", partial: output });
 
-			await processResponsesStream(openaiStream, output, stream, model, { grammarToolInputProperties });
+			await processResponsesStream(openaiStream, output, stream, effectiveModel, { grammarToolInputProperties });
 
 			if (options?.signal?.aborted) {
 				throw new Error("Request was aborted");
@@ -139,6 +160,8 @@ export const stream: StreamFunction<"azure-openai-responses", AzureOpenAIRespons
 				throw new Error("An unknown error occurred");
 			}
 
+			await traceProviderCompletion(trace, options?.onTrace, output);
+			completionTraced = true;
 			stream.push({ type: "done", reason: output.stopReason, message: output });
 			stream.end();
 		} catch (error) {
@@ -150,6 +173,7 @@ export const stream: StreamFunction<"azure-openai-responses", AzureOpenAIRespons
 			}
 			output.stopReason = options?.signal?.aborted ? "aborted" : "error";
 			output.errorMessage = formatAzureOpenAIError(error);
+			if (!completionTraced) await traceProviderCompletion(trace, options?.onTrace, output);
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();
 		}
@@ -221,6 +245,9 @@ function resolveAzureConfig(
 		options?.azureApiVersion ||
 		getProviderEnvValue("AZURE_OPENAI_API_VERSION", options?.env) ||
 		DEFAULT_AZURE_API_VERSION;
+	if (!/^(?:v1|preview|\d{4}-\d{2}-\d{2}(?:-preview)?)$/.test(apiVersion)) {
+		throw new Error(`Invalid Azure OpenAI API version: ${apiVersion}`);
+	}
 
 	const baseUrl =
 		options?.azureBaseUrl?.trim() || getProviderEnvValue("AZURE_OPENAI_BASE_URL", options?.env)?.trim() || undefined;
@@ -276,9 +303,11 @@ function buildParams(
 		context.tools,
 		model.compat?.supportsOpenAIGrammarTools ?? false,
 	),
+	trace?: ProviderTraceRecorder,
 ) {
 	const messages = convertResponsesMessages(model, context, AZURE_TOOL_CALL_PROVIDERS, {
 		grammarToolInputProperties,
+		trace,
 	});
 
 	const params: ResponseCreateParamsStreaming = {
@@ -286,8 +315,44 @@ function buildParams(
 		input: messages,
 		stream: true,
 		prompt_cache_key: clampOpenAIPromptCacheKey(options?.sessionId),
-		store: false,
+		store:
+			typeof options?.providerOptions?.["azure.responses.store"] === "boolean"
+				? options.providerOptions["azure.responses.store"]
+				: false,
 	};
+
+	const explicitPreviousResponseId = options?.providerOptions?.["azure.responses.previous_response_id"];
+	const continueFromConversation = options?.providerOptions?.["azure.responses.continue"] === true;
+	if (explicitPreviousResponseId !== undefined && continueFromConversation) {
+		throw new Error("Azure Responses continuation must use either previous_response_id or continue, not both");
+	}
+	if (typeof explicitPreviousResponseId === "string") {
+		params.previous_response_id = explicitPreviousResponseId;
+	} else if (continueFromConversation) {
+		const previous = [...context.messages]
+			.reverse()
+			.find(
+				(message) =>
+					message.role === "assistant" &&
+					message.providerState?.provider === model.provider &&
+					(message.providerState.api === undefined || message.providerState.api === model.api) &&
+					Boolean(message.providerState.continuationId ?? message.providerState.responseId),
+			);
+		if (previous?.role !== "assistant") {
+			throw new Error("Azure Responses continuation was requested but no compatible response state exists");
+		}
+		params.previous_response_id = previous.providerState?.continuationId ?? previous.providerState?.responseId;
+	}
+
+	const textFormat = options?.providerOptions?.["azure.responses.text_format"];
+	if (textFormat && typeof textFormat === "object") {
+		params.text = { format: structuredClone(textFormat) } as ResponseCreateParamsStreaming["text"];
+	}
+	const builtInTools = options?.providerOptions?.["azure.responses.built_in_tools"];
+	if (Array.isArray(builtInTools)) {
+		params.tools = structuredClone(builtInTools) as NonNullable<ResponseCreateParamsStreaming["tools"]>;
+	}
+	if (options?.providerOptions?.["azure.responses.background"] === true) params.background = true;
 
 	if (options?.maxTokens) {
 		params.max_output_tokens = Math.max(options.maxTokens, OPENAI_RESPONSES_MIN_OUTPUT_TOKENS);
@@ -298,10 +363,13 @@ function buildParams(
 	}
 
 	if (context.tools && context.tools.length > 0) {
-		params.tools = convertResponsesTools(context.tools, {
-			supportsStrictMode: model.compat?.supportsStrictMode ?? true,
-			supportsOpenAIGrammarTools: model.compat?.supportsOpenAIGrammarTools ?? false,
-		});
+		params.tools = [
+			...(params.tools ?? []),
+			...convertResponsesTools(context.tools, {
+				supportsStrictMode: model.compat?.supportsStrictMode ?? true,
+				supportsOpenAIGrammarTools: model.compat?.supportsOpenAIGrammarTools ?? false,
+			}),
+		];
 	}
 
 	if (model.reasoning) {

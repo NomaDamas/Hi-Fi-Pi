@@ -102,6 +102,45 @@ const OPENAI_OPTIONS: readonly ProviderOptionDefinition[] = [
 	},
 ];
 
+const AZURE_OPENAI_OPTIONS: readonly ProviderOptionDefinition[] = [
+	{
+		key: "azure.responses.store",
+		type: "boolean",
+		description: "Persist the response on the Azure OpenAI resource.",
+		default: false,
+	},
+	{
+		key: "azure.responses.previous_response_id",
+		type: "string",
+		description: "Continue from an explicit Azure OpenAI Responses response ID.",
+		pattern: "^\\S+$",
+	},
+	{
+		key: "azure.responses.continue",
+		type: "boolean",
+		description: "Continue from the latest compatible Azure response state.",
+		default: false,
+	},
+	{
+		key: "azure.responses.text_format",
+		type: "structured",
+		description: "Azure OpenAI Responses structured output format.",
+		validate: validateOpenAITextFormat,
+	},
+	{
+		key: "azure.responses.built_in_tools",
+		type: "structured",
+		description: "Azure OpenAI built-in tools supported by the selected deployment.",
+		validate: validateOpenAIBuiltInTools,
+	},
+	{
+		key: "azure.responses.background",
+		type: "boolean",
+		description: "Run the Azure OpenAI response in background mode.",
+		default: false,
+	},
+];
+
 const ANTHROPIC_OPTIONS: readonly ProviderOptionDefinition[] = [
 	{
 		key: "anthropic.document.citations",
@@ -204,13 +243,19 @@ function compatibilityDefinitions(context: ProviderBackendContext): readonly Pro
 	switch (context.endpointProfile) {
 		case "openai-official":
 			return context.api === "openai-responses" ? OPENAI_OPTIONS : [];
+		case "azure-openai-official":
+			return context.api === "azure-openai-responses" ? AZURE_OPENAI_OPTIONS : [];
 		case "anthropic-official":
 			return ANTHROPIC_OPTIONS;
 		case "gemini-developer-api":
 		case "vertex-official":
 			return GOOGLE_OPTIONS;
 		default:
-			return [];
+			return context.provider === "azure-openai-responses" &&
+				context.api === "azure-openai-responses" &&
+				context.baseUrl.length === 0
+				? AZURE_OPENAI_OPTIONS
+				: [];
 	}
 }
 

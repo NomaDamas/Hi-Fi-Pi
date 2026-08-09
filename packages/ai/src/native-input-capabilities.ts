@@ -220,6 +220,33 @@ const builtInResolvers: NativeInputCapabilityResolver[] = [
 		}),
 	},
 	{
+		id: "azure-openai-official",
+		matches: (context) => {
+			const host = hostname(context.baseUrl);
+			return (
+				context.provider === "azure-openai-responses" &&
+				context.api === "azure-openai-responses" &&
+				Boolean(
+					host?.endsWith(".openai.azure.com") ||
+						host?.endsWith(".cognitiveservices.azure.com") ||
+						host?.endsWith(".ai.azure.com"),
+				)
+			);
+		},
+		resolve: () => ({
+			profile: "azure-openai-official",
+			capabilities: [
+				nativeCapability(
+					"azure-openai-responses-input-file",
+					OPENAI_INPUT_FILE_MEDIA_TYPES,
+					["inline", "url", "provider-file"],
+					{ inline: "input_file", url: "input_file", "provider-file": "input_file" },
+					{ maximumBytes: OPENAI_FILE_LIMIT_BYTES, maximumRequestBytes: OPENAI_FILE_LIMIT_BYTES },
+				),
+			],
+		}),
+	},
+	{
 		id: "anthropic-official",
 		matches: (context) =>
 			context.provider === "anthropic" &&
@@ -361,7 +388,7 @@ const builtInResolvers: NativeInputCapabilityResolver[] = [
 ];
 
 function methodForApi(api: string, source: NativeInputTransportSource): string | undefined {
-	if (api === "openai-responses") return "input_file";
+	if (api === "openai-responses" || api === "azure-openai-responses") return "input_file";
 	if (api === "anthropic-messages") return "document";
 	if (api === "google-generative-ai" || api === "google-vertex") {
 		return source === "inline" ? "inlineData" : "fileData";
