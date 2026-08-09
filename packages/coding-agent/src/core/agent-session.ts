@@ -346,6 +346,14 @@ export class AgentSession {
 			return new Uint8Array(readFileSync(attachment.source.path));
 		},
 		list: () => Array.from(this._attachmentRecords.values()),
+		update: (attachment) => {
+			this._validateAttachmentRecord(attachment);
+			if (!this._attachmentRecords.has(attachment.id)) {
+				throw new Error(`Cannot update unknown attachment ID "${attachment.id}".`);
+			}
+			this.sessionManager.updateAttachment(attachment);
+			this._attachmentRecords.set(attachment.id, attachment);
+		},
 	};
 	/** Messages queued to be included with the next user prompt as context ("asides"). */
 	private _pendingNextTurnMessages: CustomMessage[] = [];

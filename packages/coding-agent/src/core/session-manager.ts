@@ -66,6 +66,7 @@ export interface SessionMessageEntry extends SessionEntryBase {
 export interface AttachmentEntry extends SessionEntryBase {
 	type: "attachment";
 	attachment: AttachmentRecord;
+	operation?: "update";
 }
 
 export interface ThinkingLevelChangeEntry extends SessionEntryBase {
@@ -1136,14 +1137,36 @@ export class SessionManager {
 		return entry.id;
 	}
 
+	/** Append a new audited version of attachment metadata without replacing session history. */
+	updateAttachment(attachment: AttachmentRecord): string {
+		const existingOnBranch = this._getAttachmentEntryOnBranch(attachment.id);
+		if (!existingOnBranch) throw new Error(`Cannot update unknown attachment ID "${attachment.id}".`);
+		if (JSON.stringify(existingOnBranch.attachment) === JSON.stringify(attachment)) return existingOnBranch.id;
+		const entry: AttachmentEntry = {
+			type: "attachment",
+			id: generateId(this.byId),
+			parentId: this.leafId,
+			timestamp: new Date().toISOString(),
+			attachment,
+			operation: "update",
+		};
+		const storedEntries = this.attachmentEntriesByAttachmentId.get(attachment.id) ?? [];
+		storedEntries.push(entry);
+		this.attachmentEntriesByAttachmentId.set(attachment.id, storedEntries);
+		this._appendEntry(entry);
+		return entry.id;
+	}
+
 	getAttachment(id: string): AttachmentRecord | undefined {
 		return this._getAttachmentEntryOnBranch(id)?.attachment;
 	}
 
 	getAttachments(): AttachmentRecord[] {
-		return this.getBranch()
-			.filter((entry): entry is AttachmentEntry => entry.type === "attachment")
-			.map((entry) => entry.attachment);
+		const attachments = new Map<string, AttachmentRecord>();
+		for (const entry of this.getBranch()) {
+			if (entry.type === "attachment") attachments.set(entry.attachment.id, entry.attachment);
+		}
+		return Array.from(attachments.values());
 	}
 
 	findDanglingAttachmentReferences(): Array<{ attachmentId: string; messageEntryId: string }> {

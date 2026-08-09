@@ -26,6 +26,7 @@ const attachment: AttachmentRecord = {
 
 type AttachmentSessionManager = SessionManager & {
 	appendAttachment(record: AttachmentRecord): string;
+	updateAttachment(record: AttachmentRecord): string;
 	getAttachment(id: string): AttachmentRecord | undefined;
 	getAttachments(): AttachmentRecord[];
 	findDanglingAttachmentReferences(): Array<{ attachmentId: string; messageEntryId: string }>;
@@ -87,6 +88,38 @@ describe("Issue 5 attachment persistence", () => {
 		expect(attachmentEntry).toMatchObject({ type: "attachment", attachment });
 		expect(messageEntry.message.attachments).toEqual([{ type: "attachment", attachmentId: attachment.id }]);
 		expect(JSON.stringify(messageEntry)).not.toContain("file_openai_123");
+	});
+
+	it("persists audited remote lifecycle updates while resolving one current attachment", () => {
+		const manager = createPersistentManager();
+		manager.appendAttachment(attachment);
+		manager.appendMessage(userMessage("Analyze", attachment.id));
+		const updated: AttachmentRecord = {
+			...attachment,
+			remotes: {
+				...attachment.remotes,
+				"anthropic:anthropic-messages:https://api.anthropic.com": {
+					provider: "anthropic",
+					api: "anthropic-messages",
+					fileId: "file_anthropic_123",
+					endpoint: "https://api.anthropic.com",
+					uploadedAt: 1_700_000_000_100,
+					state: "ready",
+				},
+			},
+		};
+		manager.updateAttachment(updated);
+		flushTurn(manager);
+
+		expect(manager.getAttachments()).toEqual([updated]);
+		const attachmentEntries = manager.getEntries().filter((entry) => entry.type === "attachment");
+		expect(attachmentEntries).toHaveLength(2);
+		expect(attachmentEntries[0]).not.toHaveProperty("operation");
+		expect(attachmentEntries[1]).toMatchObject({ operation: "update", attachment: updated });
+
+		const resumed = withAttachmentApi(SessionManager.open(manager.getSessionFile()!));
+		expect(resumed.getAttachment(updated.id)).toEqual(updated);
+		expect(resumed.getAttachments()).toEqual([updated]);
 	});
 
 	it("restores attachment metadata, missing local sources, and provider remotes on resume", () => {
