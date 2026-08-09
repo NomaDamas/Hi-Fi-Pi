@@ -25,6 +25,7 @@ import type {
 	Api,
 	AssistantMessage,
 	CacheRetention,
+	CitationPart,
 	Context,
 	ImageContent,
 	Message,
@@ -191,6 +192,49 @@ export type AnthropicThinkingDisplay = "summarized" | "omitted";
 const FINE_GRAINED_TOOL_STREAMING_BETA = "fine-grained-tool-streaming-2025-05-14";
 const INTERLEAVED_THINKING_BETA = "interleaved-thinking-2025-05-14";
 const FILES_API_BETA = "files-api-2025-04-14";
+const CONTEXT_MANAGEMENT_BETA = "context-management-2025-06-27";
+const COMPUTER_USE_BETA = "computer-use-2025-01-24";
+
+function requestedAnthropicBetas(options?: AnthropicOptions): string[] {
+	const betas: string[] = [];
+	if (options?.providerOptions?.["anthropic.context_management"] !== undefined) {
+		betas.push(CONTEXT_MANAGEMENT_BETA);
+	}
+	const serverTools = options?.providerOptions?.["anthropic.server_tools"];
+	if (
+		Array.isArray(serverTools) &&
+		serverTools.some(
+			(tool) =>
+				Boolean(tool) &&
+				typeof tool === "object" &&
+				"type" in tool &&
+				(tool.type === "computer_20250124" || tool.type === "computer_20251124"),
+		)
+	) {
+		betas.push(COMPUTER_USE_BETA);
+	}
+	return betas;
+}
+
+function citationPart(citation: Record<string, unknown>, provider: string): CitationPart {
+	return {
+		type: "citation",
+		...(typeof citation.file_id === "string" ? { sourceId: citation.file_id } : {}),
+		...(typeof citation.document_title === "string"
+			? { title: citation.document_title }
+			: typeof citation.title === "string"
+				? { title: citation.title }
+				: {}),
+		...(typeof citation.url === "string"
+			? { url: citation.url }
+			: typeof citation.source === "string" && /^https?:\/\//.test(citation.source)
+				? { url: citation.source }
+				: {}),
+		...(typeof citation.cited_text === "string" ? { quotedText: citation.cited_text } : {}),
+		provider,
+		raw: structuredClone(citation),
+	};
+}
 
 function getAnthropicCompat(
 	model: Model<"anthropic-messages">,
@@ -565,6 +609,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 					options?.interleavedThinking ?? true,
 					shouldUseFineGrainedToolStreamingBeta(model, context),
 					hasProviderFileAttachment(model, context),
+					requestedAnthropicBetas(options),
 					options?.headers,
 					options?.fetch,
 					copilotDynamicHeaders,
@@ -601,10 +646,22 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 
 			type Block = (ThinkingContent | TextContent | (ToolCall & { partialJson: string })) & { index: number };
 			const blocks = output.content as Block[];
+			const nativeBlocks = new Map<number, { payload: Record<string, unknown>; partialJson: string }>();
 
 			for await (const event of iterateAnthropicEvents(response, options?.signal)) {
 				if (event.type === "message_start") {
 					output.responseId = event.message.id;
+					output.providerState = {
+						provider: model.provider,
+						api: model.api,
+						modelId: model.id,
+						responseId: event.message.id,
+						continuationId: event.message.id,
+						metadata: {
+							type: event.message.type,
+							...(event.message.container ? { containerId: event.message.container.id } : {}),
+						},
+					};
 					// Capture initial token usage from message_start event
 					// This ensures we have input token counts even if the stream is aborted early
 					output.usage.input = event.message.usage.input_tokens || 0;
@@ -657,6 +714,11 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 						};
 						output.content.push(block);
 						stream.push({ type: "toolcall_start", contentIndex: output.content.length - 1, partial: output });
+					} else {
+						nativeBlocks.set(event.index, {
+							payload: structuredClone(event.content_block) as unknown as Record<string, unknown>,
+							partialJson: "",
+						});
 					}
 				} else if (event.type === "content_block_delta") {
 					if (event.delta.type === "text_delta") {
@@ -703,8 +765,45 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 							block.thinkingSignature = block.thinkingSignature || "";
 							block.thinkingSignature += event.delta.signature;
 						}
+					} else if (event.delta.type === "citations_delta") {
+						output.citations = [
+							...(output.citations ?? []),
+							citationPart(
+								structuredClone(event.delta.citation) as unknown as Record<string, unknown>,
+								model.provider,
+							),
+						];
+					}
+					const nativeBlock = nativeBlocks.get(event.index);
+					if (nativeBlock && event.delta.type === "input_json_delta") {
+						nativeBlock.partialJson += event.delta.partial_json;
 					}
 				} else if (event.type === "content_block_stop") {
+					const nativeBlock = nativeBlocks.get(event.index);
+					if (nativeBlock) {
+						if (nativeBlock.partialJson.length > 0) {
+							nativeBlock.payload.input = parseStreamingJson(nativeBlock.partialJson);
+						}
+						const stateId = [
+							nativeBlock.payload.id,
+							nativeBlock.payload.tool_use_id,
+							nativeBlock.payload.file_id,
+						].find((value): value is string => typeof value === "string");
+						output.nativeParts = [
+							...(output.nativeParts ?? []),
+							{
+								type: "provider-native",
+								provider: model.provider,
+								api: model.api,
+								modelId: model.id,
+								kind: "anthropic.content_block",
+								payload: nativeBlock.payload,
+								portability: "provider-locked",
+								...(stateId ? { stateId } : {}),
+							},
+						];
+						nativeBlocks.delete(event.index);
+					}
 					const index = blocks.findIndex((b) => b.index === event.index);
 					const block = blocks[index];
 					if (block) {
@@ -717,6 +816,16 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 								partial: output,
 							});
 						} else if (block.type === "thinking") {
+							output.reasoningState = [
+								...(output.reasoningState ?? []),
+								{
+									provider: model.provider,
+									api: model.api,
+									modelId: model.id,
+									signature: block.thinkingSignature,
+									...(block.redacted ? { encrypted: block.thinkingSignature } : {}),
+								},
+							];
 							stream.push({
 								type: "thinking_end",
 								contentIndex: index,
@@ -767,6 +876,12 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 							.output_tokens_details?.thinking_tokens;
 						if (thinkingTokens != null) {
 							output.usage.reasoning = thinkingTokens;
+						}
+						if (event.usage.server_tool_use && output.providerState) {
+							output.providerState.metadata = {
+								...(output.providerState.metadata ?? {}),
+								serverToolUse: structuredClone(event.usage.server_tool_use),
+							};
 						}
 					}
 					// Anthropic doesn't provide total_tokens, compute from components
@@ -908,6 +1023,7 @@ function createClient(
 	interleavedThinking: boolean,
 	useFineGrainedToolStreamingBeta: boolean,
 	useFilesApiBeta: boolean,
+	requestedBetas: readonly string[] = [],
 	optionsHeaders?: ProviderHeaders,
 	fetch?: typeof globalThis.fetch,
 	dynamicHeaders?: Record<string, string>,
@@ -924,6 +1040,9 @@ function createClient(
 	}
 	if (useFilesApiBeta) {
 		betaFeatures.push(FILES_API_BETA);
+	}
+	for (const beta of requestedBetas) {
+		if (!betaFeatures.includes(beta)) betaFeatures.push(beta);
 	}
 
 	// Copilot: Bearer auth, selective betas.
@@ -1038,6 +1157,17 @@ function buildParams(
 		max_tokens: options?.maxTokens ?? model.maxTokens,
 		stream: true,
 	};
+	const priorContainerId = [...transformedMessages]
+		.reverse()
+		.flatMap((message) =>
+			message.role === "assistant" &&
+			message.providerState?.provider === model.provider &&
+			(message.providerState.api === undefined || message.providerState.api === model.api) &&
+			typeof message.providerState.metadata?.containerId === "string"
+				? [message.providerState.metadata.containerId]
+				: [],
+		)[0];
+	if (priorContainerId) params.container = priorContainerId;
 
 	// For OAuth tokens, we MUST include Claude Code identity
 	if (isOAuthToken) {
@@ -1089,6 +1219,23 @@ function buildParams(
 				true,
 			),
 		];
+	}
+
+	const serverTools = options?.providerOptions?.["anthropic.server_tools"];
+	if (Array.isArray(serverTools)) {
+		params.tools = [
+			...(params.tools ?? []),
+			...(structuredClone(serverTools) as NonNullable<MessageCreateParamsStreaming["tools"]>),
+		];
+	}
+
+	const contextManagement = options?.providerOptions?.["anthropic.context_management"];
+	if (contextManagement && typeof contextManagement === "object") {
+		(
+			params as MessageCreateParamsStreaming & {
+				context_management?: unknown;
+			}
+		).context_management = structuredClone(contextManagement);
 	}
 
 	// Configure thinking mode: adaptive, budget-based, or explicitly disabled.
@@ -1257,6 +1404,24 @@ function convertToolResult(
 	};
 }
 
+function matchingAnthropicNativeBlocks(
+	message: Message,
+	model: Model<"anthropic-messages"> | undefined,
+): ContentBlockParam[] {
+	if (!model) return [];
+	return (message.nativeParts ?? []).flatMap((part) => {
+		if (
+			part.provider !== model.provider ||
+			(part.api !== undefined && part.api !== model.api) ||
+			part.kind !== "anthropic.content_block" ||
+			!part.payload ||
+			typeof part.payload !== "object"
+		)
+			return [];
+		return [structuredClone(part.payload) as ContentBlockParam];
+	});
+}
+
 function convertMessages(
 	transformedMessages: Message[],
 	isOAuthToken: boolean,
@@ -1276,6 +1441,7 @@ function convertMessages(
 		const msg = transformedMessages[i];
 
 		if (msg.role === "user") {
+			const nativeBlocks = matchingAnthropicNativeBlocks(msg, model);
 			const attachmentModel = model;
 			const attachments =
 				context && attachmentModel
@@ -1293,19 +1459,20 @@ function convertMessages(
 			});
 			if (typeof msg.content === "string") {
 				const text = sanitizeSurrogates(msg.content);
-				if (text.trim().length > 0 || attachmentBlocks.length > 0) {
+				if (text.trim().length > 0 || attachmentBlocks.length > 0 || nativeBlocks.length > 0) {
 					params.push({
 						role: "user",
 						content:
-							attachmentBlocks.length > 0
+							attachmentBlocks.length > 0 || nativeBlocks.length > 0
 								? text.trim().length > 0
-									? [...attachmentBlocks, { type: "text", text }]
-									: attachmentBlocks
+									? [...nativeBlocks, ...attachmentBlocks, { type: "text", text }]
+									: [...nativeBlocks, ...attachmentBlocks]
 								: text,
 					});
 				}
 			} else {
 				const blocks: ContentBlockParam[] = [
+					...nativeBlocks,
 					...attachmentBlocks,
 					...msg.content.map((item): ContentBlockParam => {
 						if (item.type === "text") {
@@ -1338,7 +1505,7 @@ function convertMessages(
 				});
 			}
 		} else if (msg.role === "assistant") {
-			const blocks: ContentBlockParam[] = [];
+			const blocks: ContentBlockParam[] = matchingAnthropicNativeBlocks(msg, model);
 
 			for (const block of msg.content) {
 				if (block.type === "text") {
@@ -1402,8 +1569,9 @@ function convertMessages(
 			const siblingContent: ContentBlockParam[] = [];
 			let j = i;
 			while (j < transformedMessages.length && transformedMessages[j].role === "toolResult") {
+				const toolResultMessage = transformedMessages[j] as ToolResultMessage;
 				const converted = convertToolResult(
-					transformedMessages[j] as ToolResultMessage,
+					toolResultMessage,
 					isOAuthToken,
 					deferredToolNames,
 					loadedToolNames,
@@ -1414,6 +1582,7 @@ function convertMessages(
 					citationsEnabled,
 				);
 				toolResults.push(converted.toolResult);
+				siblingContent.push(...matchingAnthropicNativeBlocks(toolResultMessage, model));
 				siblingContent.push(...converted.siblingContent);
 				j++;
 			}
