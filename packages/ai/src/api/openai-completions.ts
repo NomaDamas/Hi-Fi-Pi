@@ -4,6 +4,7 @@ import type {
 	ChatCompletionChunk,
 	ChatCompletionContentPart,
 	ChatCompletionContentPartImage,
+	ChatCompletionContentPartInputAudio,
 	ChatCompletionContentPartText,
 	ChatCompletionDeveloperMessageParam,
 	ChatCompletionMessageParam,
@@ -41,6 +42,7 @@ import { parseStreamingJson } from "../utils/json-parse.ts";
 import { getProviderEnvValue } from "../utils/provider-env.ts";
 import { retryProviderRequest } from "../utils/provider-retry.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
+import { resolveNativeAttachments } from "./attachment-lowering.ts";
 import {
 	appendGrammarToolInputJsonDelta,
 	createGrammarToolInputProperties,
@@ -1048,27 +1050,53 @@ export function convertMessages(
 		}
 
 		if (msg.role === "user") {
+			const attachments = resolveNativeAttachments(
+				msg,
+				context.attachmentRegistry,
+				model,
+				undefined,
+				context.attachmentSourcePolicy,
+			);
+			const attachmentContent: ChatCompletionContentPartInputAudio[] = attachments.map((attachment) => {
+				if (attachment.source.type !== "base64") {
+					throw new Error("OpenAI Chat Completions input_audio requires inline base64 data");
+				}
+				const format = attachment.mediaType === "audio/wav" ? "wav" : "mp3";
+				return {
+					type: "input_audio",
+					input_audio: { data: attachment.source.data, format },
+				};
+			});
 			if (typeof msg.content === "string") {
-				params.push({
-					role: "user",
-					content: sanitizeSurrogates(msg.content),
-				});
+				if (attachmentContent.length === 0) {
+					params.push({
+						role: "user",
+						content: sanitizeSurrogates(msg.content),
+					});
+				} else {
+					const textContent: ChatCompletionContentPartText[] =
+						msg.content.length === 0 ? [] : [{ type: "text", text: sanitizeSurrogates(msg.content) }];
+					params.push({ role: "user", content: [...attachmentContent, ...textContent] });
+				}
 			} else {
-				const content: ChatCompletionContentPart[] = msg.content.map((item): ChatCompletionContentPart => {
-					if (item.type === "text") {
-						return {
-							type: "text",
-							text: sanitizeSurrogates(item.text),
-						} satisfies ChatCompletionContentPartText;
-					} else {
-						return {
-							type: "image_url",
-							image_url: {
-								url: `data:${item.mimeType};base64,${item.data}`,
-							},
-						} satisfies ChatCompletionContentPartImage;
-					}
-				});
+				const content: ChatCompletionContentPart[] = [
+					...attachmentContent,
+					...msg.content.map((item): ChatCompletionContentPart => {
+						if (item.type === "text") {
+							return {
+								type: "text",
+								text: sanitizeSurrogates(item.text),
+							} satisfies ChatCompletionContentPartText;
+						} else {
+							return {
+								type: "image_url",
+								image_url: {
+									url: `data:${item.mimeType};base64,${item.data}`,
+								},
+							} satisfies ChatCompletionContentPartImage;
+						}
+					}),
+				];
 				if (content.length === 0) continue;
 				params.push({
 					role: "user",

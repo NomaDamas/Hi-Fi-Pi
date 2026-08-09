@@ -459,6 +459,15 @@ export type AttachmentSource =
 	| {
 			type: "url";
 			url: string;
+			expiresAt?: number;
+	  }
+	| {
+			type: "cloud-uri";
+			uri: string;
+			provider?: ProviderId;
+			api?: Api;
+			endpoint?: string;
+			expiresAt?: number;
 	  }
 	| {
 			type: "provider-file";
@@ -518,6 +527,17 @@ export interface AttachmentRegistry {
 	list?(): readonly AttachmentRecord[];
 	/** Persist a new version of an existing attachment record. */
 	update?(attachment: AttachmentRecord): void | Promise<void>;
+}
+
+export interface AttachmentSourcePolicy {
+	allowedUrlProtocols?: string[];
+	allowedCloudProtocols?: string[];
+	allowedHosts?: string[];
+	deniedHosts?: string[];
+	denyPrivateNetwork?: boolean;
+	allowRedirects?: boolean;
+	maximumRedirects?: number;
+	maximumBytes?: number;
 }
 
 export interface ToolCall {
@@ -654,6 +674,8 @@ export interface Context {
 	messages: Message[];
 	tools?: Tool[];
 	attachmentRegistry?: AttachmentRegistry;
+	/** Optional request boundary for remote attachment sources. No source is fetched during lowering. */
+	attachmentSourcePolicy?: AttachmentSourcePolicy;
 }
 
 /**
@@ -921,9 +943,10 @@ export interface ModelCost extends ModelCostRates {
 	tiers?: ModelCostTier[];
 }
 
-export type NativeAttachmentTransportSource = "inline" | "url" | "provider-file";
+export type NativeInputTransportSource = "inline" | "url" | "provider-file" | "cloud-uri";
 
-export type NativeInputTransportSource = NativeAttachmentTransportSource | "cloud-uri";
+/** @deprecated Use NativeInputTransportSource. Retained for additive API compatibility. */
+export type NativeAttachmentTransportSource = NativeInputTransportSource;
 
 export type NativeInputCapabilityProvenance = "official-default" | "configured" | "live-verified";
 

@@ -1207,12 +1207,14 @@ export class AgentSession {
 			path?: unknown;
 			data?: unknown;
 			url?: unknown;
+			uri?: unknown;
 			provider?: unknown;
 			fileId?: unknown;
 		};
 		if (source.type === "path" && typeof source.path === "string" && source.path.length > 0) return;
 		if (source.type === "base64" && typeof source.data === "string" && source.data.length > 0) return;
 		if (source.type === "url" && typeof source.url === "string" && source.url.length > 0) return;
+		if (source.type === "cloud-uri" && typeof source.uri === "string" && source.uri.length > 0) return;
 		if (
 			source.type === "provider-file" &&
 			typeof source.provider === "string" &&

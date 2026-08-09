@@ -342,6 +342,8 @@ function formatAttachmentSource(attachment: AttachmentRecord): string {
 			return fs.existsSync(attachment.source.path) ? attachment.source.path : `${attachment.source.path} (missing)`;
 		case "url":
 			return attachment.source.url;
+		case "cloud-uri":
+			return attachment.source.uri;
 		case "base64":
 			return "inline base64 (data redacted)";
 		case "provider-file":

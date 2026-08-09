@@ -9,7 +9,11 @@ import chalk from "chalk";
 import { basename, resolve } from "path";
 import { resolveReadPath } from "../core/tools/path-utils.ts";
 import { processImage } from "../utils/image-process.ts";
-import { detectAttachmentMimeTypeFromFile, detectSupportedImageMimeTypeFromFile } from "../utils/mime.ts";
+import {
+	detectAttachmentMimeTypeFromFile,
+	detectNativeAttachmentMimeTypeFromFile,
+	detectSupportedImageMimeTypeFromFile,
+} from "../utils/mime.ts";
 
 export interface ProcessedFiles {
 	text: string;
@@ -33,6 +37,12 @@ interface PromptFileReferenceCandidate {
 	path: string;
 	start: number;
 	end: number;
+}
+
+function parseNativeFileOverride(value: string): { path: string; forceNative: boolean } {
+	return value.startsWith("file:")
+		? { path: value.slice("file:".length), forceNative: true }
+		: { path: value, forceNative: false };
 }
 
 function isPathLikeFileReference(value: string): boolean {
@@ -138,7 +148,8 @@ export async function processPromptFileReferences(
 }
 
 async function resolveNativePromptAttachment(fileArg: string): Promise<AttachmentRecord | undefined> {
-	const absolutePath = resolve(resolveReadPath(fileArg, process.cwd()));
+	const requested = parseNativeFileOverride(fileArg);
+	const absolutePath = resolve(resolveReadPath(requested.path, process.cwd()));
 
 	try {
 		const stats = await stat(absolutePath);
@@ -146,8 +157,10 @@ async function resolveNativePromptAttachment(fileArg: string): Promise<Attachmen
 
 		// Text and image references retain stock interactive Pi semantics. Only
 		// binary/native input types are promoted into the Hi-Fi attachment sidecar.
-		if (await detectSupportedImageMimeTypeFromFile(absolutePath)) return undefined;
-		const mediaType = await detectAttachmentMimeTypeFromFile(absolutePath);
+		if (!requested.forceNative && (await detectSupportedImageMimeTypeFromFile(absolutePath))) return undefined;
+		const mediaType = requested.forceNative
+			? await detectNativeAttachmentMimeTypeFromFile(absolutePath)
+			: await detectAttachmentMimeTypeFromFile(absolutePath);
 		if (!mediaType) return undefined;
 
 		return {
@@ -179,8 +192,9 @@ export async function processFileArguments(fileArgs: string[], options?: Process
 	const attachments: AttachmentRecord[] = [];
 
 	for (const fileArg of fileArgs) {
+		const requested = parseNativeFileOverride(fileArg);
 		// Expand and resolve path (handles ~ expansion and macOS screenshot Unicode spaces)
-		const absolutePath = resolve(resolveReadPath(fileArg, process.cwd()));
+		const absolutePath = resolve(resolveReadPath(requested.path, process.cwd()));
 
 		// Check if file exists
 		try {
@@ -196,7 +210,7 @@ export async function processFileArguments(fileArgs: string[], options?: Process
 			continue;
 		}
 
-		const mimeType = await detectSupportedImageMimeTypeFromFile(absolutePath);
+		const mimeType = requested.forceNative ? null : await detectSupportedImageMimeTypeFromFile(absolutePath);
 
 		if (mimeType) {
 			// Handle image file
@@ -222,7 +236,9 @@ export async function processFileArguments(fileArgs: string[], options?: Process
 				text += `<file name="${absolutePath}"></file>\n`;
 			}
 		} else {
-			const attachmentMimeType = await detectAttachmentMimeTypeFromFile(absolutePath);
+			const attachmentMimeType = requested.forceNative
+				? await detectNativeAttachmentMimeTypeFromFile(absolutePath)
+				: await detectAttachmentMimeTypeFromFile(absolutePath);
 			if (attachmentMimeType) {
 				attachments.push({
 					id: `att_${randomUUID()}`,

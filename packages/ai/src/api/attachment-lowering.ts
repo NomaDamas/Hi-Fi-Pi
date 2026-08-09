@@ -1,3 +1,4 @@
+import { validateAttachmentSource } from "../attachment-sources.ts";
 import { resolveNativeInputCapability } from "../native-input-capabilities.ts";
 import {
 	type ProviderTraceRecorder,
@@ -8,6 +9,7 @@ import type {
 	Api,
 	AttachmentRecord,
 	AttachmentRegistry,
+	AttachmentSourcePolicy,
 	Model,
 	NativeAttachmentTransportSource,
 	NativeInputCapabilityProvenance,
@@ -18,12 +20,16 @@ import type {
 
 type AttachmentMessage = UserMessage | ToolResultMessage;
 
-export type ResolvedPdfAttachment = Omit<AttachmentRecord, "source"> & {
+export type ResolvedNativeAttachment = Omit<AttachmentRecord, "source"> & {
 	source:
 		| { type: "base64"; data: string }
 		| { type: "url"; url: string }
+		| { type: "cloud-uri"; uri: string }
 		| { type: "provider-file"; fileId: string; uri?: string };
 };
+
+/** @deprecated Use ResolvedNativeAttachment. */
+export type ResolvedPdfAttachment = ResolvedNativeAttachment;
 
 export class UnsupportedInputError extends Error {
 	constructor(model: Pick<Model<string>, "provider" | "api" | "id">, mediaType: string, reason: string) {
@@ -80,13 +86,7 @@ export function getNativeAttachmentCapability(
 	return {
 		supported: capability.supported,
 		...(capability.wireKind ? { method: capability.wireKind } : {}),
-		...(capability.sources
-			? {
-					sources: capability.sources.filter(
-						(candidate): candidate is NativeAttachmentTransportSource => candidate !== "cloud-uri",
-					),
-				}
-			: {}),
+		...(capability.sources ? { sources: capability.sources } : {}),
 		...(capability.limits?.maximumBytes !== undefined ? { maximumInlineBytes: capability.limits.maximumBytes } : {}),
 		...(capability.limits?.maximumRequestBytes !== undefined
 			? { maximumRequestBytes: capability.limits.maximumRequestBytes }
@@ -193,7 +193,7 @@ function traceCapability(capability: NativeAttachmentCapability, source?: Native
 
 export function recordProviderAttachmentLowering(
 	trace: ProviderTraceRecorder | undefined,
-	attachment: ResolvedPdfAttachment,
+	attachment: ResolvedNativeAttachment,
 	wireKind: string,
 ): void {
 	if (!trace) return;
@@ -207,23 +207,30 @@ export function recordProviderAttachmentLowering(
 	});
 }
 
-export function resolvePdfAttachments(
+export function resolveNativeAttachments(
 	message: AttachmentMessage,
 	registry: AttachmentRegistry | undefined,
 	model: AttachmentCapabilityModel,
 	trace?: ProviderTraceRecorder,
-): ResolvedPdfAttachment[] {
+	sourcePolicy?: AttachmentSourcePolicy,
+): ResolvedNativeAttachment[] {
 	if (!message.attachments || message.attachments.length === 0) return [];
 	if (!registry) {
 		throw new AttachmentRegistryUnavailableError();
 	}
 
-	const resolved = message.attachments.map<ResolvedPdfAttachment>(({ attachmentId }) => {
+	const resolved = message.attachments.map<ResolvedNativeAttachment>(({ attachmentId }) => {
 		const attachment = registry.resolve(attachmentId);
 		if (!attachment) {
 			throw new Error(`Attachment not found: ${attachmentId}`);
 		}
 		trace?.record({ stage: "input_resolution", attachment: traceAttachment(attachment) });
+		const validatedSource = validateAttachmentSource(
+			attachment,
+			{ provider: model.provider, api: model.api as Api, baseUrl: model.baseUrl },
+			sourcePolicy,
+		);
+		const validatedAttachment: AttachmentRecord = { ...attachment, source: validatedSource };
 		const capability = getNativeAttachmentCapability(model, attachment.mediaType);
 		trace?.record({
 			stage: "capability_decision",
@@ -235,7 +242,7 @@ export function resolvePdfAttachments(
 			throw new UnsupportedInputError(model, attachment.mediaType, capability.reason ?? "unsupported input");
 		}
 
-		const remote = findRemote(attachment, model);
+		const remote = findRemote(validatedAttachment, model);
 		const remoteCapability = getNativeAttachmentCapability(model, attachment.mediaType, "provider-file");
 		if (remote && remoteCapability.supported) {
 			trace?.record({
@@ -261,9 +268,9 @@ export function resolvePdfAttachments(
 			};
 		}
 
-		switch (attachment.source.type) {
+		switch (validatedAttachment.source.type) {
 			case "base64": {
-				if (attachment.source.data === "[omitted from export]") {
+				if (validatedAttachment.source.data === "[omitted from export]") {
 					throw new AttachmentSourceUnavailableError(attachment, "inline bytes were redacted from an export");
 				}
 				const sourceCapability = getNativeAttachmentCapability(model, attachment.mediaType, "base64");
@@ -274,13 +281,13 @@ export function resolvePdfAttachments(
 						sourceCapability.reason ?? "base64 source is unsupported",
 					);
 				}
-				assertInlineSize(model, attachment, sourceCapability, base64ByteLength(attachment.source.data));
+				assertInlineSize(model, attachment, sourceCapability, base64ByteLength(validatedAttachment.source.data));
 				trace?.record({
 					stage: "source_selection",
 					attachment: traceAttachment(attachment),
 					source: { form: "inline" },
 				});
-				return { ...attachment, source: attachment.source };
+				return { ...validatedAttachment, source: validatedAttachment.source };
 			}
 			case "url": {
 				const sourceCapability = getNativeAttachmentCapability(model, attachment.mediaType, "url");
@@ -296,14 +303,62 @@ export function resolvePdfAttachments(
 					attachment: traceAttachment(attachment),
 					source: { form: "url" },
 				});
-				return { ...attachment, source: attachment.source };
+				return { ...validatedAttachment, source: validatedAttachment.source };
 			}
-			case "provider-file": {
-				if (attachment.source.provider !== model.provider) {
+			case "cloud-uri": {
+				if (validatedAttachment.source.provider && validatedAttachment.source.provider !== model.provider) {
 					throw new UnsupportedInputError(
 						model,
 						attachment.mediaType,
-						`provider file belongs to ${attachment.source.provider}`,
+						`cloud URI belongs to ${validatedAttachment.source.provider}`,
+					);
+				}
+				if (validatedAttachment.source.api && validatedAttachment.source.api !== model.api) {
+					throw new UnsupportedInputError(
+						model,
+						attachment.mediaType,
+						`cloud URI belongs to ${validatedAttachment.source.api}`,
+					);
+				}
+				const sourceCapability = getNativeAttachmentCapability(model, attachment.mediaType, "cloud-uri");
+				if (!sourceCapability.supported) {
+					throw new UnsupportedInputError(
+						model,
+						attachment.mediaType,
+						sourceCapability.reason ?? "cloud URI source is unsupported",
+					);
+				}
+				trace?.record({
+					stage: "source_selection",
+					attachment: traceAttachment(attachment),
+					source: { form: "cloud-uri" },
+				});
+				return { ...validatedAttachment, source: validatedAttachment.source };
+			}
+			case "provider-file": {
+				if (validatedAttachment.source.provider !== model.provider) {
+					throw new UnsupportedInputError(
+						model,
+						attachment.mediaType,
+						`provider file belongs to ${validatedAttachment.source.provider}`,
+					);
+				}
+				if (validatedAttachment.source.api && validatedAttachment.source.api !== model.api) {
+					throw new UnsupportedInputError(
+						model,
+						attachment.mediaType,
+						`provider file belongs to ${validatedAttachment.source.api}`,
+					);
+				}
+				const endpoint = model.baseUrl.replace(/\/+$/, "");
+				if (
+					validatedAttachment.source.endpoint &&
+					validatedAttachment.source.endpoint.replace(/\/+$/, "") !== endpoint
+				) {
+					throw new UnsupportedInputError(
+						model,
+						attachment.mediaType,
+						`provider file belongs to endpoint ${validatedAttachment.source.endpoint}`,
 					);
 				}
 				const providerFileCapability = getNativeAttachmentCapability(model, attachment.mediaType, "provider-file");
@@ -324,12 +379,12 @@ export function resolvePdfAttachments(
 					attachment: traceAttachment(attachment),
 					remote: {
 						state: "provided",
-						provider: attachment.source.provider,
-						fileId: attachment.source.fileId,
-						...(attachment.source.uri ? { uri: attachment.source.uri } : {}),
+						provider: validatedAttachment.source.provider,
+						fileId: validatedAttachment.source.fileId,
+						...(validatedAttachment.source.uri ? { uri: validatedAttachment.source.uri } : {}),
 					},
 				});
-				return { ...attachment, source: attachment.source };
+				return { ...validatedAttachment, source: validatedAttachment.source };
 			}
 			case "path": {
 				const sourceCapability = getNativeAttachmentCapability(model, attachment.mediaType, "path");
@@ -374,19 +429,34 @@ export function resolvePdfAttachments(
 		throw new UnsupportedInputError(model, attachment.mediaType, "unknown attachment source");
 	});
 
-	const capability = getNativeAttachmentCapability(model, "application/pdf", "base64");
-	if (capability.maximumRequestBytes !== undefined) {
-		const requestBytes = resolved.reduce((total, attachment) => {
-			if (attachment.source.type !== "base64") return total;
-			return total + base64ByteLength(attachment.source.data);
-		}, 0);
-		if (requestBytes > capability.maximumRequestBytes) {
+	const inlineAttachments = resolved.filter(
+		(attachment): attachment is ResolvedNativeAttachment & { source: { type: "base64"; data: string } } =>
+			attachment.source.type === "base64",
+	);
+	const requestLimits = inlineAttachments.flatMap((attachment) => {
+		const maximumRequestBytes = getNativeAttachmentCapability(
+			model,
+			attachment.mediaType,
+			"base64",
+		).maximumRequestBytes;
+		return maximumRequestBytes === undefined ? [] : [maximumRequestBytes];
+	});
+	if (requestLimits.length > 0) {
+		const requestBytes = inlineAttachments.reduce(
+			(total, attachment) => total + base64ByteLength(attachment.source.data),
+			0,
+		);
+		const requestLimit = Math.min(...requestLimits);
+		if (requestBytes > requestLimit) {
 			throw new UnsupportedInputError(
 				model,
-				"application/pdf",
-				`combined inline attachments are ${requestBytes} bytes; request limit is ${capability.maximumRequestBytes} bytes`,
+				"native attachments",
+				`combined inline attachments are ${requestBytes} bytes; request limit is ${requestLimit} bytes`,
 			);
 		}
 	}
 	return resolved;
 }
+
+/** @deprecated Use resolveNativeAttachments. */
+export const resolvePdfAttachments = resolveNativeAttachments;

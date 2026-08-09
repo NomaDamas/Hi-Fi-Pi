@@ -47,7 +47,11 @@ import { parseJsonWithRepair, parseStreamingJson } from "../utils/json-parse.ts"
 import { getProviderEnvValue } from "../utils/provider-env.ts";
 import { retryProviderRequest } from "../utils/provider-retry.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
-import { recordProviderAttachmentLowering, resolvePdfAttachments } from "./attachment-lowering.ts";
+import {
+	type ResolvedNativeAttachment,
+	recordProviderAttachmentLowering,
+	resolveNativeAttachments,
+} from "./attachment-lowering.ts";
 import { resolveJsonSchemaStrictSampling } from "./constrained-sampling.ts";
 import { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "./github-copilot-headers.ts";
 import { adjustMaxTokensForThinking, buildBaseOptions, clampMaxTokensToContext } from "./simple-options.ts";
@@ -1133,6 +1137,57 @@ function normalizeToolCallId(id: string): string {
 	return id.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 64);
 }
 
+function decodeBase64Text(data: string, filename: string): string {
+	try {
+		const bytes = Uint8Array.from(atob(data), (character) => character.charCodeAt(0));
+		return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+	} catch (error) {
+		throw new Error(
+			`Anthropic text document ${filename} is not valid UTF-8: ${error instanceof Error ? error.message : String(error)}`,
+		);
+	}
+}
+
+function convertAnthropicDocument(attachment: ResolvedNativeAttachment): ContentBlockParam {
+	switch (attachment.source.type) {
+		case "base64":
+			if (attachment.mediaType === "text/plain") {
+				return {
+					type: "document",
+					source: {
+						type: "text",
+						media_type: "text/plain",
+						data: decodeBase64Text(attachment.source.data, attachment.filename),
+					},
+					title: attachment.filename,
+				} as unknown as ContentBlockParam;
+			}
+			return {
+				type: "document",
+				source: {
+					type: "base64",
+					media_type: "application/pdf",
+					data: attachment.source.data,
+				},
+				title: attachment.filename,
+			};
+		case "url":
+			return {
+				type: "document",
+				source: { type: "url", url: attachment.source.url },
+				title: attachment.filename,
+			};
+		case "provider-file":
+			return {
+				type: "document",
+				source: { type: "file", file_id: attachment.source.fileId },
+				title: attachment.filename,
+			} as unknown as ContentBlockParam;
+		case "cloud-uri":
+			throw new Error("Anthropic Messages does not accept cloud URI attachment sources");
+	}
+}
+
 function convertToolResult(
 	msg: ToolResultMessage,
 	isOAuthToken: boolean,
@@ -1153,34 +1208,13 @@ function convertToolResult(
 			tool_name: isOAuthToken ? toClaudeCodeName(name) : name,
 		});
 	}
-	const attachments = context && model ? resolvePdfAttachments(msg, context.attachmentRegistry, model, trace) : [];
+	const attachments =
+		context && model
+			? resolveNativeAttachments(msg, context.attachmentRegistry, model, trace, context.attachmentSourcePolicy)
+			: [];
 	const attachmentBlocks: DocumentBlockParam[] = attachments.map((attachment) => {
 		recordProviderAttachmentLowering(trace, attachment, "tool_result.document");
-		switch (attachment.source.type) {
-			case "base64":
-				return {
-					type: "document",
-					source: {
-						type: "base64",
-						media_type: "application/pdf",
-						data: attachment.source.data,
-					},
-					title: attachment.filename,
-				};
-			case "url":
-				return {
-					type: "document",
-					source: { type: "url", url: attachment.source.url },
-					title: attachment.filename,
-				};
-			case "provider-file":
-				return {
-					type: "document",
-					source: { type: "file", file_id: attachment.source.fileId },
-					title: attachment.filename,
-				} as unknown as DocumentBlockParam;
-		}
-		throw new Error("Unknown attachment source");
+		return convertAnthropicDocument(attachment) as DocumentBlockParam;
 	});
 	const legacyContent = convertContentBlocks(msg.content);
 	const convertedContent: ToolResultBlockParam["content"] =
@@ -1230,35 +1264,17 @@ function convertMessages(
 			const attachmentModel = model;
 			const attachments =
 				context && attachmentModel
-					? resolvePdfAttachments(msg, context.attachmentRegistry, attachmentModel, trace)
+					? resolveNativeAttachments(
+							msg,
+							context.attachmentRegistry,
+							attachmentModel,
+							trace,
+							context.attachmentSourcePolicy,
+						)
 					: [];
 			const attachmentBlocks: ContentBlockParam[] = attachments.map((attachment) => {
 				recordProviderAttachmentLowering(trace, attachment, "document");
-				switch (attachment.source.type) {
-					case "base64":
-						return {
-							type: "document",
-							source: {
-								type: "base64",
-								media_type: "application/pdf",
-								data: attachment.source.data,
-							},
-							title: attachment.filename,
-						};
-					case "url":
-						return {
-							type: "document",
-							source: { type: "url", url: attachment.source.url },
-							title: attachment.filename,
-						};
-					case "provider-file":
-						return {
-							type: "document",
-							source: { type: "file", file_id: attachment.source.fileId },
-							title: attachment.filename,
-						} as unknown as ContentBlockParam;
-				}
-				throw new Error("Unknown attachment source");
+				return convertAnthropicDocument(attachment);
 			});
 			if (typeof msg.content === "string") {
 				const text = sanitizeSurrogates(msg.content);

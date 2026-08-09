@@ -34,7 +34,7 @@ import type { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { shortHash } from "../utils/hash.ts";
 import { parseStreamingJson } from "../utils/json-parse.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
-import { recordProviderAttachmentLowering, resolvePdfAttachments } from "./attachment-lowering.ts";
+import { recordProviderAttachmentLowering, resolveNativeAttachments } from "./attachment-lowering.ts";
 import {
 	appendGrammarToolInputJsonDelta,
 	type GrammarToolInputJsonBuffer,
@@ -190,7 +190,13 @@ export function convertResponsesMessages<TApi extends Api>(
 	let msgIndex = 0;
 	for (const msg of transformedMessages) {
 		if (msg.role === "user") {
-			const attachments = resolvePdfAttachments(msg, context.attachmentRegistry, model, options?.trace);
+			const attachments = resolveNativeAttachments(
+				msg,
+				context.attachmentRegistry,
+				model,
+				options?.trace,
+				context.attachmentSourcePolicy,
+			);
 			const attachmentContent: ResponseInputFile[] = attachments.map((attachment) => {
 				recordProviderAttachmentLowering(options?.trace, attachment, "input_file");
 				switch (attachment.source.type) {
@@ -204,6 +210,8 @@ export function convertResponsesMessages<TApi extends Api>(
 						return { type: "input_file", file_url: attachment.source.url };
 					case "provider-file":
 						return { type: "input_file", file_id: attachment.source.fileId };
+					case "cloud-uri":
+						throw new Error("OpenAI Responses does not accept cloud URI attachment sources");
 				}
 				throw new Error("Unknown attachment source");
 			});
@@ -318,7 +326,13 @@ export function convertResponsesMessages<TApi extends Api>(
 			messages.push(...output);
 		} else if (msg.role === "toolResult") {
 			const [callId] = msg.toolCallId.split("|");
-			const attachments = resolvePdfAttachments(msg, context.attachmentRegistry, model, options?.trace);
+			const attachments = resolveNativeAttachments(
+				msg,
+				context.attachmentRegistry,
+				model,
+				options?.trace,
+				context.attachmentSourcePolicy,
+			);
 			const attachmentContent: ResponseInputFile[] = attachments.map((attachment) => {
 				recordProviderAttachmentLowering(options?.trace, attachment, "function_call_output.input_file");
 				switch (attachment.source.type) {
@@ -332,6 +346,8 @@ export function convertResponsesMessages<TApi extends Api>(
 						return { type: "input_file", file_url: attachment.source.url };
 					case "provider-file":
 						return { type: "input_file", file_id: attachment.source.fileId };
+					case "cloud-uri":
+						throw new Error("OpenAI Responses does not accept cloud URI attachment sources");
 				}
 				throw new Error("Unknown attachment source");
 			});

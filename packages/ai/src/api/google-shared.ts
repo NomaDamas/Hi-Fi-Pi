@@ -6,7 +6,7 @@ import { type Content, FinishReason, FunctionCallingConfigMode, type Part } from
 import type { ProviderTraceRecorder } from "../provider-trace.ts";
 import type { Context, ImageContent, Model, StopReason, TextContent, Tool } from "../types.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
-import { recordProviderAttachmentLowering, resolvePdfAttachments } from "./attachment-lowering.ts";
+import { recordProviderAttachmentLowering, resolveNativeAttachments } from "./attachment-lowering.ts";
 import { resolveJsonSchemaStrictSampling } from "./constrained-sampling.ts";
 import { transformMessages } from "./transform-messages.ts";
 
@@ -106,7 +106,13 @@ export function convertMessages<T extends GoogleApiType>(
 
 	for (const msg of transformedMessages) {
 		if (msg.role === "user") {
-			const attachments = resolvePdfAttachments(msg, context.attachmentRegistry, model, trace);
+			const attachments = resolveNativeAttachments(
+				msg,
+				context.attachmentRegistry,
+				model,
+				trace,
+				context.attachmentSourcePolicy,
+			);
 			const attachmentParts: Part[] = attachments.map((attachment) => {
 				const wireKind = attachment.source.type === "base64" ? "inlineData" : "fileData";
 				recordProviderAttachmentLowering(trace, attachment, wireKind);
@@ -130,6 +136,13 @@ export function convertMessages<T extends GoogleApiType>(
 							fileData: {
 								mimeType: attachment.mediaType,
 								fileUri: attachment.source.uri ?? attachment.source.fileId,
+							},
+						};
+					case "cloud-uri":
+						return {
+							fileData: {
+								mimeType: attachment.mediaType,
+								fileUri: attachment.source.uri,
 							},
 						};
 				}
@@ -226,7 +239,13 @@ export function convertMessages<T extends GoogleApiType>(
 
 			const hasText = textResult.length > 0;
 			const hasImages = imageContent.length > 0;
-			const attachments = resolvePdfAttachments(msg, context.attachmentRegistry, model, trace);
+			const attachments = resolveNativeAttachments(
+				msg,
+				context.attachmentRegistry,
+				model,
+				trace,
+				context.attachmentSourcePolicy,
+			);
 
 			// Gemini 3+ models support multimodal function responses with images nested inside
 			// functionResponse.parts. Claude and other non-Gemini models behind Cloud Code Assist /
@@ -273,6 +292,14 @@ export function convertMessages<T extends GoogleApiType>(
 							fileData: {
 								mimeType: attachment.mediaType,
 								fileUri: attachment.source.uri ?? attachment.source.fileId,
+								displayName: attachment.filename,
+							},
+						};
+					case "cloud-uri":
+						return {
+							fileData: {
+								mimeType: attachment.mediaType,
+								fileUri: attachment.source.uri,
 								displayName: attachment.filename,
 							},
 						};

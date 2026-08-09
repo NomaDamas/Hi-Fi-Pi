@@ -4,7 +4,7 @@ import { extname } from "node:path";
 const IMAGE_TYPE_SNIFF_BYTES = 4100;
 const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 
-const ATTACHMENT_MIME_TYPES = new Map<string, string>([
+export const ATTACHMENT_MIME_TYPES = new Map<string, string>([
 	[".pdf", "application/pdf"],
 	[".doc", "application/msword"],
 	[".docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
@@ -20,6 +20,36 @@ const ATTACHMENT_MIME_TYPES = new Map<string, string>([
 	[".mp4", "video/mp4"],
 	[".mov", "video/quicktime"],
 	[".webm", "video/webm"],
+]);
+
+const NATIVE_TEXT_MIME_TYPES = new Map<string, string>([
+	[".txt", "text/plain"],
+	[".text", "text/plain"],
+	[".md", "text/markdown"],
+	[".markdown", "text/markdown"],
+	[".csv", "text/csv"],
+	[".tsv", "text/tsv"],
+	[".json", "application/json"],
+	[".html", "text/html"],
+	[".htm", "text/html"],
+	[".xml", "text/xml"],
+	[".css", "text/css"],
+	[".js", "text/javascript"],
+	[".mjs", "text/javascript"],
+	[".ts", "text/x-typescript"],
+	[".tsx", "text/tsx"],
+	[".py", "text/x-python"],
+	[".rs", "text/x-rust"],
+	[".go", "text/x-go"],
+	[".java", "text/x-java"],
+	[".c", "text/x-c"],
+	[".cc", "text/x-c++"],
+	[".cpp", "text/x-c++"],
+	[".h", "text/x-c"],
+	[".sh", "text/x-sh"],
+	[".yaml", "text/x-yaml"],
+	[".yml", "text/x-yaml"],
+	[".toml", "application/toml"],
 ]);
 
 export function detectSupportedImageMimeType(buffer: Uint8Array): string | null {
@@ -53,6 +83,15 @@ export async function detectSupportedImageMimeTypeFromFile(filePath: string): Pr
 }
 
 export async function detectAttachmentMimeTypeFromFile(filePath: string): Promise<string | null> {
+	return detectNativeMimeTypeFromFile(filePath, false);
+}
+
+/** Detect native attachment MIME types, including text files explicitly requested as files. */
+export async function detectNativeAttachmentMimeTypeFromFile(filePath: string): Promise<string | null> {
+	return detectNativeMimeTypeFromFile(filePath, true);
+}
+
+async function detectNativeMimeTypeFromFile(filePath: string, includeText: boolean): Promise<string | null> {
 	const fileHandle = await open(filePath, "r");
 	try {
 		const buffer = Buffer.alloc(IMAGE_TYPE_SNIFF_BYTES);
@@ -63,6 +102,10 @@ export async function detectAttachmentMimeTypeFromFile(filePath: string): Promis
 
 		const extensionMimeType = ATTACHMENT_MIME_TYPES.get(extname(filePath).toLowerCase());
 		if (extensionMimeType) return extensionMimeType;
+		if (includeText) {
+			const textMimeType = NATIVE_TEXT_MIME_TYPES.get(extname(filePath).toLowerCase());
+			if (textMimeType && isProbablyText(bytes)) return textMimeType;
+		}
 		return isProbablyText(bytes) ? null : "application/octet-stream";
 	} finally {
 		await fileHandle.close();
