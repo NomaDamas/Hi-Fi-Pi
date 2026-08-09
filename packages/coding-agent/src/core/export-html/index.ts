@@ -1,5 +1,10 @@
 import type { AgentState } from "@earendil-works/pi-agent-core";
-import type { AttachmentSource } from "@earendil-works/pi-ai";
+import {
+	type AssistantMessage,
+	type AttachmentSource,
+	type Message,
+	sanitizeProviderTraceValue,
+} from "@earendil-works/pi-ai";
 import { existsSync, readFileSync, writeFileSync } from "fs";
 import { basename, join } from "path";
 import { APP_NAME, getExportTemplateDir } from "../../config.ts";
@@ -158,8 +163,57 @@ function sanitizeExportAttachmentSource(source: AttachmentSource): AttachmentSou
 	}
 }
 
+function sanitizeProviderNativeMessageForExport(message: Message): Message {
+	const sanitized = structuredClone(message);
+	if (sanitized.nativeParts) {
+		sanitized.nativeParts = sanitized.nativeParts.map((part) => ({
+			...part,
+			payload: sanitizeProviderTraceValue(part.payload),
+		}));
+	}
+	if (sanitized.role === "assistant") {
+		const assistant = sanitized as AssistantMessage;
+		assistant.content = assistant.content.map((part) =>
+			part.type === "toolCall" && part.providerMetadata
+				? {
+						...part,
+						providerMetadata: sanitizeProviderTraceValue(part.providerMetadata) as Record<string, unknown>,
+					}
+				: part,
+		);
+		assistant.citations = assistant.citations?.map((citation) => ({
+			...citation,
+			...(citation.url ? { url: sanitizeProviderTraceValue(citation.url, "url") as string } : {}),
+			...(citation.raw ? { raw: sanitizeProviderTraceValue(citation.raw) } : {}),
+		}));
+		assistant.reasoningState = assistant.reasoningState?.map((state) => ({
+			...state,
+			...(state.encrypted ? { encrypted: "[redacted]" } : {}),
+			...(state.signature ? { signature: "[redacted]" } : {}),
+			...(state.metadata ? { metadata: sanitizeProviderTraceValue(state.metadata) as Record<string, unknown> } : {}),
+		}));
+		if (assistant.providerState?.metadata) {
+			assistant.providerState = {
+				...assistant.providerState,
+				metadata: sanitizeProviderTraceValue(assistant.providerState.metadata) as Record<string, unknown>,
+			};
+		}
+	}
+	if (sanitized.role === "toolResult" && sanitized.providerMetadata) {
+		sanitized.providerMetadata = sanitizeProviderTraceValue(sanitized.providerMetadata) as Record<string, unknown>;
+	}
+	return sanitized;
+}
+
 export function sanitizeSessionEntriesForExport(entries: SessionEntry[]): SessionEntry[] {
 	return entries.map((entry) => {
+		if (entry.type === "message") {
+			const message = entry.message;
+			if (message.role === "user" || message.role === "assistant" || message.role === "toolResult") {
+				return { ...entry, message: sanitizeProviderNativeMessageForExport(message) };
+			}
+			return entry;
+		}
 		if (entry.type !== "attachment") return entry;
 		const sourceAvailable =
 			entry.attachment.source.type === "base64"

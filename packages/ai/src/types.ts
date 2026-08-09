@@ -546,6 +546,51 @@ export interface ToolCall {
 	name: string;
 	arguments: Record<string, any>;
 	thoughtSignature?: string; // Google-specific: opaque signature for reusing thought context
+	/** Opaque provider tool-call metadata retained for same-provider replay. */
+	providerMetadata?: Record<string, unknown>;
+}
+
+export type ProviderNativePortability = "portable" | "reconstructable" | "provider-locked";
+
+/** Formal escape hatch for vendor state that cannot be represented by Pi's portable content blocks. */
+export interface ProviderNativePart {
+	type: "provider-native";
+	provider: ProviderId;
+	api?: Api;
+	modelId?: string;
+	kind: string;
+	payload: unknown;
+	portability?: ProviderNativePortability;
+	stateId?: string;
+}
+
+export interface CitationPart {
+	type: "citation";
+	sourceId?: string;
+	title?: string;
+	url?: string;
+	quotedText?: string;
+	provider?: ProviderId;
+	raw?: unknown;
+}
+
+export interface ProviderReasoningState {
+	provider: ProviderId;
+	api?: Api;
+	modelId?: string;
+	encrypted?: string;
+	signature?: string;
+	metadata?: Record<string, unknown>;
+}
+
+export interface ProviderConversationState {
+	provider: ProviderId;
+	api?: Api;
+	modelId?: string;
+	responseId?: string;
+	continuationId?: string;
+	cachedContentId?: string;
+	metadata?: Record<string, unknown>;
 }
 
 export interface Usage {
@@ -577,6 +622,7 @@ export interface UserMessage {
 	role: "user";
 	content: string | (TextContent | ImageContent)[];
 	attachments?: AttachmentReference[];
+	nativeParts?: ProviderNativePart[];
 	timestamp: number; // Unix timestamp in milliseconds
 }
 
@@ -588,6 +634,10 @@ export interface AssistantMessage {
 	model: string;
 	responseModel?: string; // Concrete `chunk.model` when different from the requested `model` (e.g. OpenRouter `auto` -> `anthropic/...`)
 	responseId?: string; // Provider-specific response/message identifier when the upstream API exposes one
+	nativeParts?: ProviderNativePart[];
+	citations?: CitationPart[];
+	reasoningState?: ProviderReasoningState[];
+	providerState?: ProviderConversationState;
 	diagnostics?: AssistantMessageDiagnostic[]; // Redacted provider/runtime diagnostics for failures and recoveries.
 	usage: Usage;
 	stopReason: StopReason;
@@ -602,6 +652,8 @@ export interface ToolResultMessage<TDetails = any> {
 	toolName: string;
 	content: (TextContent | ImageContent)[]; // Supports text and images
 	attachments?: AttachmentReference[];
+	nativeParts?: ProviderNativePart[];
+	providerMetadata?: Record<string, unknown>;
 	details?: TDetails;
 	/** Usage from the tool execution itself, if available. Not part of main LLM context accounting. */
 	usage?: Usage;

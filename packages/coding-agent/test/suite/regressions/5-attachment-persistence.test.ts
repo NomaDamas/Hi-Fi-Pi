@@ -402,6 +402,97 @@ describe("Issue 5 attachment persistence", () => {
 		expect(exported).not.toContain("secret");
 	});
 
+	it("round-trips provider-native conversation state through session persistence", () => {
+		const manager = createPersistentManager();
+		const message = {
+			...fauxAssistantMessage("native answer"),
+			content: [
+				{
+					type: "toolCall" as const,
+					id: "call_1",
+					name: "web_search",
+					arguments: { query: "Pi" },
+					providerMetadata: { serverToolUseId: "srv_1" },
+				},
+			],
+			nativeParts: [
+				{
+					type: "provider-native" as const,
+					provider: "faux",
+					api: "openai-completions" as const,
+					kind: "server-tool-state",
+					payload: { id: "srv_1" },
+				},
+			],
+			citations: [{ type: "citation" as const, title: "Reference", url: "https://example.com/ref" }],
+			reasoningState: [{ provider: "faux", encrypted: "opaque", signature: "signature" }],
+			providerState: { provider: "faux", responseId: "response_1" },
+		};
+		manager.appendMessage(message);
+
+		const resumed = SessionManager.open(manager.getSessionFile()!);
+		const restored = resumed.getEntries().find((entry) => entry.type === "message");
+		expect(restored).toMatchObject({
+			type: "message",
+			message: JSON.parse(JSON.stringify(message)),
+		});
+	});
+
+	it("redacts provider-native secrets only at the export boundary", async () => {
+		const manager = createPersistentManager();
+		manager.appendMessage({
+			...fauxAssistantMessage("native answer"),
+			content: [
+				{
+					type: "toolCall",
+					id: "call_1",
+					name: "computer",
+					arguments: {},
+					providerMetadata: { access_token: "tool-secret" },
+				},
+			],
+			nativeParts: [
+				{
+					type: "provider-native",
+					provider: "faux",
+					kind: "state",
+					payload: { api_key: "native-secret", data: "UERG" },
+				},
+			],
+			citations: [
+				{
+					type: "citation",
+					url: "https://example.com/ref?signature=citation-secret",
+					raw: { authorization: "citation-token" },
+				},
+			],
+			reasoningState: [
+				{
+					provider: "faux",
+					encrypted: "reasoning-secret",
+					signature: "reasoning-signature",
+					metadata: { token: "metadata-secret" },
+				},
+			],
+			providerState: { provider: "faux", metadata: { password: "state-secret" } },
+		});
+		const harness = await createHarness({ sessionManager: manager });
+		harnesses.push(harness);
+		const outputPath = join(manager.getCwd(), "safe-native-export.jsonl");
+
+		harness.session.exportToJsonl(outputPath);
+		const persisted = readFileSync(manager.getSessionFile()!, "utf8");
+		const exported = readFileSync(outputPath, "utf8");
+
+		expect(persisted).toContain("reasoning-secret");
+		expect(exported).not.toContain("native-secret");
+		expect(exported).not.toContain("tool-secret");
+		expect(exported).not.toContain("citation-secret");
+		expect(exported).not.toContain("reasoning-secret");
+		expect(exported).not.toContain("state-secret");
+		expect(exported).toContain("[redacted]");
+	});
+
 	it("stores inline attachment bytes once even when multiple messages reference them", () => {
 		const manager = createPersistentManager();
 		const inlineAttachment: AttachmentRecord = {

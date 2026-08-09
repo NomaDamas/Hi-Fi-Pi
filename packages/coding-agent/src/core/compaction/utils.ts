@@ -113,6 +113,11 @@ export function serializeConversation(messages: Message[]): string {
 		if (msg.role === "user") {
 			const content = contentText(msg.content, "");
 			if (content) parts.push(`[User]: ${content}`);
+			if (msg.nativeParts?.length) {
+				parts.push(
+					`[Provider-native state]: ${msg.nativeParts.map((part) => `${part.provider}/${part.kind}`).join(", ")}`,
+				);
+			}
 		} else if (msg.role === "assistant") {
 			const thinkingParts: string[] = [];
 			const toolCalls: string[] = [];
@@ -138,10 +143,26 @@ export function serializeConversation(messages: Message[]): string {
 			if (toolCalls.length > 0) {
 				parts.push(`[Assistant tool calls]: ${toolCalls.join("; ")}`);
 			}
+			if (msg.citations?.length) {
+				parts.push(
+					`[Assistant citations]: ${msg.citations.map((citation) => citation.title ?? citation.url ?? citation.sourceId ?? "citation").join("; ")}`,
+				);
+			}
+			const nativeState = [
+				...(msg.nativeParts?.map((part) => `${part.provider}/${part.kind}`) ?? []),
+				...(msg.reasoningState?.map((state) => `${state.provider}/reasoning`) ?? []),
+				...(msg.providerState ? [`${msg.providerState.provider}/conversation-state`] : []),
+			];
+			if (nativeState.length > 0) parts.push(`[Provider-native state]: ${nativeState.join(", ")}`);
 		} else if (msg.role === "toolResult") {
 			const content = contentText(msg.content, "");
 			if (content) {
 				parts.push(`[Tool result]: ${truncateForSummary(content, TOOL_RESULT_MAX_CHARS)}`);
+			}
+			if (msg.nativeParts?.length) {
+				parts.push(
+					`[Provider-native state]: ${msg.nativeParts.map((part) => `${part.provider}/${part.kind}`).join(", ")}`,
+				);
 			}
 		}
 	}
