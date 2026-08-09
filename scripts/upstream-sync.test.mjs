@@ -19,17 +19,22 @@ test("upstream rehearsal is report-only and leaves tracked state untouched", () 
 	try {
 		const output = join(root, "report.json");
 		const before = gitStatus();
-		execFileSync(process.execPath, [script.pathname, "report", "--head", baseline.baseCommit, "--output", output], {
-			cwd: repoRoot,
-			stdio: "pipe",
-		});
+		const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repoRoot, encoding: "utf8" }).trim();
+		execFileSync(
+			process.execPath,
+			[script.pathname, "report", "--base", head, "--head", head, "--output", output],
+			{
+				cwd: repoRoot,
+				stdio: "pipe",
+			},
+		);
 		const after = gitStatus();
 		const report = JSON.parse(readFileSync(output, "utf8"));
 
 		assert.equal(after, before);
 		assert.equal(report.schemaVersion, 1);
-		assert.equal(report.baselineCommit, baseline.baseCommit);
-		assert.equal(report.upstreamHead, baseline.baseCommit);
+		assert.equal(report.baselineCommit, head);
+		assert.equal(report.upstreamHead, head);
 		assert.equal(report.upstreamCommitsSinceBaseline, 0);
 		assert.deepEqual(report.changedFiles, []);
 		assert.deepEqual(report.policy, {

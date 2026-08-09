@@ -112,8 +112,9 @@ if (command === "setup") {
 	if (process.argv.includes("--fetch")) {
 		git(["fetch", "--no-tags", "upstream", baseline.branch]);
 	}
+	const reportBaseline = option("--base") ? { ...baseline, baseCommit: option("--base") } : baseline;
 	const upstreamHead = option("--head") ?? `refs/remotes/upstream/${baseline.branch}`;
-	const report = createReport(baseline, upstreamHead);
+	const report = createReport(reportBaseline, upstreamHead);
 	writeReport(report, option("--output") ?? ".artifacts/upstream-delta.json");
 	if (process.argv.includes("--fail-on-conflict") && report.conflicts.length > 0) process.exitCode = 2;
 } else if (command === "baseline") {
