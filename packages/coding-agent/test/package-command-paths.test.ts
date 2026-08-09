@@ -21,6 +21,7 @@ describe("package commands", () => {
 	let originalAgentDir: string | undefined;
 	let originalPiPackageDir: string | undefined;
 	let originalPath: string | undefined;
+	let originalSelfUpdateUrl: string | undefined;
 	let originalExitCode: typeof process.exitCode;
 	let originalExecPath: string;
 
@@ -65,6 +66,7 @@ describe("package commands", () => {
 		originalAgentDir = process.env[ENV_AGENT_DIR];
 		originalPiPackageDir = process.env.PI_PACKAGE_DIR;
 		originalPath = process.env.PATH;
+		originalSelfUpdateUrl = process.env.HIFI_PI_SELF_UPDATE_URL;
 		originalExitCode = process.exitCode;
 		originalExecPath = process.execPath;
 		process.exitCode = undefined;
@@ -77,6 +79,7 @@ describe("package commands", () => {
 			return undefined as never;
 		}) as typeof process.exit);
 		process.env[ENV_AGENT_DIR] = agentDir;
+		process.env.HIFI_PI_SELF_UPDATE_URL = "https://pi.dev/api/latest-version";
 		process.chdir(projectDir);
 	});
 
@@ -99,6 +102,11 @@ describe("package commands", () => {
 			delete process.env.PATH;
 		} else {
 			process.env.PATH = originalPath;
+		}
+		if (originalSelfUpdateUrl === undefined) {
+			delete process.env.HIFI_PI_SELF_UPDATE_URL;
+		} else {
+			process.env.HIFI_PI_SELF_UPDATE_URL = originalSelfUpdateUrl;
 		}
 		Object.defineProperty(process, "execPath", { value: originalExecPath, configurable: true });
 		rmSync(tempDir, { recursive: true, force: true });
@@ -497,6 +505,25 @@ describe("package commands", () => {
 			} else {
 				process.env.PI_SKIP_VERSION_CHECK = previousSkipVersionCheck;
 			}
+		}
+	});
+
+	it("refuses self-update when no Hi-Fi release channel is explicitly configured", async () => {
+		delete process.env.HIFI_PI_SELF_UPDATE_URL;
+		const fetchMock = vi.fn();
+		vi.stubGlobal("fetch", fetchMock);
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+		try {
+			await expect(runPackageCommandDirectly(["update", "--self"])).resolves.toBeUndefined();
+
+			expect(fetchMock).not.toHaveBeenCalled();
+			expect(errorSpy.mock.calls.map(([message]) => String(message)).join("\n")).toContain(
+				"self-update is disabled because no Hi-Fi release channel is configured",
+			);
+			expect(process.exitCode).toBe(1);
+		} finally {
+			errorSpy.mockRestore();
 		}
 	});
 

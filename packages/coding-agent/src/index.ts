@@ -14,9 +14,13 @@ export {
 	getExamplesPath,
 	getPackageDir,
 	getReadmePath,
+	getSelfUpdateUrl,
+	getVersionString,
 	LEGACY_ENV_AGENT_DIR,
 	LEGACY_ENV_SESSION_DIR,
 	resolveAgentDir,
+	SELF_UPDATE_ENABLED,
+	SOURCE_REVISION,
 	USER_CONFIG_DIR_NAME,
 	VERSION,
 } from "./config.ts";

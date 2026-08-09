@@ -31,8 +31,8 @@ import {
 	expandTildePath,
 	getAgentDir,
 	getPackageDir,
+	getVersionString,
 	LEGACY_ENV_SESSION_DIR,
-	VERSION,
 } from "./config.ts";
 import { type CreateAgentSessionRuntimeFactory, createAgentSessionRuntime } from "./core/agent-session-runtime.ts";
 import {
@@ -597,7 +597,7 @@ export async function main(args: string[], options?: MainOptions) {
 	time("parseArgs");
 
 	if (parsed.version) {
-		console.log(VERSION);
+		console.log(getVersionString());
 		process.exit(0);
 	}
 

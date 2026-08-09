@@ -9,9 +9,11 @@ import {
 import { allowNetwork } from "./test-network-env.ts";
 
 const originalSkipVersionCheck = process.env.PI_SKIP_VERSION_CHECK;
+const originalHiFiSelfUpdateUrl = process.env.HIFI_PI_SELF_UPDATE_URL;
 
 beforeEach(() => {
 	allowNetwork();
+	process.env.HIFI_PI_SELF_UPDATE_URL = "https://pi.dev/api/latest-version";
 });
 
 afterEach(() => {
@@ -20,6 +22,11 @@ afterEach(() => {
 		delete process.env.PI_SKIP_VERSION_CHECK;
 	} else {
 		process.env.PI_SKIP_VERSION_CHECK = originalSkipVersionCheck;
+	}
+	if (originalHiFiSelfUpdateUrl === undefined) {
+		delete process.env.HIFI_PI_SELF_UPDATE_URL;
+	} else {
+		process.env.HIFI_PI_SELF_UPDATE_URL = originalHiFiSelfUpdateUrl;
 	}
 });
 

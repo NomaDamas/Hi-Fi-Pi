@@ -11,6 +11,7 @@ import {
 	getPackageDir,
 	getSelfUpdateCommand,
 	getSelfUpdateUnavailableInstruction,
+	getSelfUpdateUrl,
 	PACKAGE_NAME,
 	type SelfUpdateCommand,
 	type SelfUpdatePackageTarget,
@@ -474,9 +475,15 @@ interface SelfUpdatePlan {
 }
 
 async function getSelfUpdatePlan(force: boolean): Promise<SelfUpdatePlan> {
+	const selfUpdateUrl = getSelfUpdateUrl();
+	if (!selfUpdateUrl) {
+		throw new Error(
+			`${APP_NAME} self-update is disabled because no Hi-Fi release channel is configured. Install a signed Hi-Fi release explicitly.`,
+		);
+	}
 	let latestRelease: Awaited<ReturnType<typeof getLatestPiRelease>>;
 	try {
-		latestRelease = await getLatestPiRelease(VERSION);
+		latestRelease = await getLatestPiRelease(VERSION, { url: selfUpdateUrl });
 	} catch (error: unknown) {
 		const message = error instanceof Error ? error.message : String(error);
 		throw new Error(`Could not determine latest ${APP_NAME} version: ${message}`);

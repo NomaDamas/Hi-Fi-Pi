@@ -470,14 +470,18 @@ export function getBundledInteractiveAssetPath(name: string): string {
 interface PackageJson {
 	name?: string;
 	version?: string;
+	gitHead?: string;
 	piConfig?: {
 		name?: string;
 		configDir?: string;
 		userConfigDir?: string;
 		envAgentDir?: string;
 		envSessionDir?: string;
+		selfUpdate?: boolean;
 	};
 }
+
+declare const HIFI_PI_BUILD_REVISION: string | undefined;
 
 let pkg: PackageJson = {};
 try {
@@ -496,6 +500,29 @@ export const CONFIG_DIR_NAME: string = pkg.piConfig?.configDir || ".pi";
 /** Distribution-owned user state directory. Kept separate from project-local `.pi`. */
 export const USER_CONFIG_DIR_NAME: string = pkg.piConfig?.userConfigDir || CONFIG_DIR_NAME;
 export const VERSION: string = pkg.version || "0.0.0";
+export const SELF_UPDATE_ENABLED = pkg.piConfig?.selfUpdate ?? true;
+
+/** Return an explicitly configured Hi-Fi release channel, if any. */
+export function getSelfUpdateUrl(env: NodeJS.ProcessEnv = process.env): string | undefined {
+	const configured = env.HIFI_PI_SELF_UPDATE_URL?.trim();
+	if (configured) return configured;
+	return SELF_UPDATE_ENABLED ? "https://pi.dev/api/latest-version" : undefined;
+}
+
+function getSourceRevision(): string {
+	if (typeof HIFI_PI_BUILD_REVISION !== "undefined" && HIFI_PI_BUILD_REVISION) {
+		return HIFI_PI_BUILD_REVISION;
+	}
+	const configured = process.env.HIFI_PI_SOURCE_REVISION || pkg.gitHead;
+	if (configured) return configured;
+	return readCommandOutput("git", ["-C", getPackageDir(), "rev-parse", "--short=12", "HEAD"]) ?? "unknown";
+}
+
+export const SOURCE_REVISION = getSourceRevision();
+
+export function getVersionString(): string {
+	return `${APP_NAME} ${VERSION} (${SOURCE_REVISION})`;
+}
 
 // Explicit names avoid invalid shell identifiers for branded names containing `-`.
 export const ENV_AGENT_DIR = pkg.piConfig?.envAgentDir || `${APP_NAME.toUpperCase().replaceAll("-", "_")}_AGENT_DIR`;
