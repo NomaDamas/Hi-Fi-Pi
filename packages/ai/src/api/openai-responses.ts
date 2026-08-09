@@ -1,5 +1,6 @@
 import OpenAI from "openai";
 import type { ResponseCreateParamsStreaming } from "openai/resources/responses/responses.js";
+import { prepareContextAttachmentUploads } from "../attachment-lifecycle.ts";
 import { clampThinkingLevel } from "../models.ts";
 import {
 	createProviderTraceRecorder,
@@ -136,6 +137,7 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 		let completionTraced = false;
 
 		try {
+			await prepareContextAttachmentUploads(model, context, options, trace);
 			// Create OpenAI client
 			const apiKey = getClientApiKey(model.provider, options?.apiKey, options?.headers);
 			const cacheRetention = resolveCacheRetention(options?.cacheRetention, options?.env);

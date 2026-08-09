@@ -117,6 +117,11 @@ export type ProviderTraceStage =
 	| "input_resolution"
 	| "capability_decision"
 	| "source_selection"
+	| "upload_start"
+	| "upload_progress"
+	| "upload_complete"
+	| "upload_error"
+	| "remote_delete"
 	| "remote_reuse"
 	| "provider_lowering"
 	| "request_headers"
@@ -159,13 +164,14 @@ export interface ProviderTraceEvent {
 		form: NativeInputTransportSource;
 	};
 	remote?: {
-		state: "provided" | "reused";
+		state: "uploading" | "provided" | "reused" | "ready" | "deleted" | "failed";
 		provider: ProviderId;
 		api?: Api;
 		fileId: string;
 		uri?: string;
 		expiresAt?: number;
 	};
+	progress?: { loadedBytes: number; totalBytes?: number };
 	wire?: {
 		kind: string;
 		source: NativeInputTransportSource;
@@ -227,6 +233,8 @@ export interface StreamOptions {
 	onResponse?: (response: ProviderResponse, model: Model<Api>) => void | Promise<void>;
 	/** Observe factual, credential-safe provider request lifecycle records without mutating the request. */
 	onTrace?: ProviderTraceCallback;
+	/** Explicit native-file upload policy. Omitted requests retain the existing inline path. */
+	attachmentUpload?: AttachmentUploadOptions;
 	/**
 	 * Optional custom HTTP headers to include in API requests.
 	 * Merged with provider defaults; caller values override default headers.
@@ -457,15 +465,39 @@ export type AttachmentSource =
 			provider: ProviderId;
 			fileId: string;
 			uri?: string;
+			api?: Api;
+			endpoint?: string;
 	  };
+
+export interface AttachmentUploadProgress {
+	attachmentId: string;
+	provider: ProviderId;
+	api: Api;
+	state: "starting" | "uploading" | "complete" | "failed" | "cancelled";
+	loadedBytes: number;
+	totalBytes?: number;
+	error?: string;
+}
+
+export interface AttachmentUploadOptions {
+	mode: "inline" | "upload" | "auto";
+	allowInlineFallback?: boolean;
+	expiresAfterSeconds?: number;
+	onProgress?: (progress: AttachmentUploadProgress) => void | Promise<void>;
+}
 
 export interface ProviderFileReference {
 	provider: ProviderId;
 	api: Api;
 	fileId: string;
 	uri?: string;
+	endpoint?: string;
+	endpointProfile?: string;
+	sourceSha256?: string;
 	uploadedAt: number;
 	expiresAt?: number;
+	state?: "ready" | "deleted" | "failed";
+	deletedAt?: number;
 	metadata?: Record<string, unknown>;
 }
 
@@ -484,6 +516,8 @@ export interface AttachmentRegistry {
 	resolve(id: string): AttachmentRecord | undefined;
 	read?(attachment: AttachmentRecord): Uint8Array;
 	list?(): readonly AttachmentRecord[];
+	/** Persist a new version of an existing attachment record. */
+	update?(attachment: AttachmentRecord): void | Promise<void>;
 }
 
 export interface ToolCall {

@@ -4,6 +4,7 @@ import {
 	GoogleGenAI,
 	type ThinkingConfig,
 } from "@google/genai";
+import { prepareContextAttachmentUploads } from "../attachment-lifecycle.ts";
 import { calculateCost, clampThinkingLevel } from "../models.ts";
 import {
 	createProviderTraceRecorder,
@@ -84,6 +85,7 @@ export const stream: StreamFunction<"google-generative-ai", GoogleOptions> = (
 		let completionTraced = false;
 
 		try {
+			await prepareContextAttachmentUploads(model, context, options, trace);
 			if (options?.fetch && options.fetch !== globalThis.fetch) {
 				throw new Error("Custom fetch is not supported by the Google Generative AI adapter");
 			}

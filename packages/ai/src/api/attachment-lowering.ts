@@ -111,13 +111,19 @@ function encodeBase64(bytes: Uint8Array): string {
 
 function findRemote(
 	attachment: AttachmentRecord,
-	model: Pick<Model<string>, "provider" | "api">,
+	model: Pick<Model<string>, "provider" | "api" | "baseUrl">,
 ): ProviderFileReference | undefined {
 	const now = Date.now();
+	const endpoint = model.baseUrl.replace(/\/+$/, "");
 	return Object.values(attachment.remotes ?? {}).find(
 		(remote) =>
 			remote.provider === model.provider &&
 			remote.api === (model.api as Api) &&
+			(remote.endpoint === undefined || remote.endpoint.replace(/\/+$/, "") === endpoint) &&
+			(remote.sourceSha256 === undefined ||
+				attachment.sha256 === undefined ||
+				remote.sourceSha256 === attachment.sha256) &&
+			remote.state !== "deleted" &&
 			(remote.expiresAt === undefined || remote.expiresAt > now),
 	);
 }

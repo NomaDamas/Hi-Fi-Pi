@@ -9,6 +9,7 @@ import type {
 	RefusalStopDetails,
 	ToolResultBlockParam,
 } from "@anthropic-ai/sdk/resources/messages.js";
+import { prepareContextAttachmentUploads } from "../attachment-lifecycle.ts";
 import { calculateCost } from "../models.ts";
 import {
 	createProviderTraceRecorder,
@@ -524,6 +525,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 		let completionTraced = false;
 
 		try {
+			await prepareContextAttachmentUploads(model, context, options, trace);
 			let client: Anthropic;
 			let isOAuth: boolean;
 
