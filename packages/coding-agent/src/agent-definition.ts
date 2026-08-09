@@ -43,6 +43,11 @@ interface RegisteredAgentDefinition {
 	baseDirectory: string;
 }
 
+export interface AgentDefinitionSelection {
+	definition: AgentDefinition;
+	baseDirectory: string;
+}
+
 export interface CreateDefinedAgentOptions {
 	agentId: string;
 	version?: string;
@@ -185,6 +190,64 @@ export function parseAgentDefinition(value: unknown): AgentDefinition {
 	};
 }
 
+function readAgentDefinitionValues(path: string): { values: unknown[]; baseDirectory: string } {
+	const resolvedPath = resolve(path);
+	if (!existsSync(resolvedPath) || !statSync(resolvedPath).isFile()) {
+		throw new AgentDefinitionValidationError(`definition file does not exist: ${resolvedPath}`);
+	}
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(readFileSync(resolvedPath, "utf8")) as unknown;
+	} catch (error) {
+		throw new AgentDefinitionValidationError(
+			`cannot parse ${resolvedPath}: ${error instanceof Error ? error.message : String(error)}`,
+		);
+	}
+	const values = Array.isArray(parsed)
+		? parsed
+		: isRecord(parsed) && Array.isArray(parsed.definitions)
+			? parsed.definitions
+			: [parsed];
+	return { values, baseDirectory: dirname(resolvedPath) };
+}
+
+export function loadAgentDefinitionSelection(path: string, id: string, version?: string): AgentDefinitionSelection {
+	const { values, baseDirectory } = readAgentDefinitionValues(path);
+	const definitions = values.map(parseAgentDefinition);
+	for (const definition of definitions) assertResourcesExist(definition, baseDirectory);
+	const candidates = definitions.filter((definition) => definition.id === id);
+	const selectedVersion =
+		version ??
+		candidates
+			.map((definition) => definition.version)
+			.sort(versionCompare)
+			.at(-1);
+	const definition = candidates.find((candidate) => candidate.version === selectedVersion);
+	if (!definition) {
+		throw new AgentDefinitionValidationError(`unknown agent definition: ${id}${version ? `@${version}` : ""}`);
+	}
+	return { definition: structuredClone(definition), baseDirectory };
+}
+
+export function resolveAgentDefinitionResources(selection: AgentDefinitionSelection): {
+	extensions: ProductExtensionDescriptor[];
+	skills: string[];
+	prompts: string[];
+} {
+	return {
+		extensions:
+			selection.definition.resources?.extensions?.map((extension) =>
+				resolveExtensionDescriptor(extension, selection.baseDirectory),
+			) ?? [],
+		skills:
+			selection.definition.resources?.skills?.map((path) => resolveDefinitionPath(path, selection.baseDirectory)) ??
+			[],
+		prompts:
+			selection.definition.resources?.prompts?.map((path) => resolveDefinitionPath(path, selection.baseDirectory)) ??
+			[],
+	};
+}
+
 function resolveDefinitionPath(path: string, baseDirectory: string): string {
 	return isAbsolute(path) ? resolve(path) : resolve(baseDirectory, path);
 }
@@ -251,24 +314,8 @@ export class AgentDefinitionRegistry {
 	}
 
 	loadFile(path: string): AgentDefinition[] {
-		const resolvedPath = resolve(path);
-		if (!existsSync(resolvedPath) || !statSync(resolvedPath).isFile()) {
-			throw new AgentDefinitionValidationError(`definition file does not exist: ${resolvedPath}`);
-		}
-		let parsed: unknown;
-		try {
-			parsed = JSON.parse(readFileSync(resolvedPath, "utf8")) as unknown;
-		} catch (error) {
-			throw new AgentDefinitionValidationError(
-				`cannot parse ${resolvedPath}: ${error instanceof Error ? error.message : String(error)}`,
-			);
-		}
-		const values = Array.isArray(parsed)
-			? parsed
-			: isRecord(parsed) && Array.isArray(parsed.definitions)
-				? parsed.definitions
-				: [parsed];
-		return values.map((definition) => this.register(definition, { baseDirectory: dirname(resolvedPath) }));
+		const { values, baseDirectory } = readAgentDefinitionValues(path);
+		return values.map((definition) => this.register(definition, { baseDirectory }));
 	}
 
 	resolve(id: string, version?: string): AgentDefinition | undefined {
