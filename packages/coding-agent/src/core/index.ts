@@ -3,6 +3,11 @@
  */
 
 export {
+	type CreateHeadlessAgentHostOptions,
+	createHeadlessAgentHost,
+	HeadlessAgentHost,
+} from "../headless.ts";
+export {
 	AgentSession,
 	type AgentSessionConfig,
 	type AgentSessionEvent,

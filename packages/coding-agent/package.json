@@ -23,6 +23,10 @@
 		},
 		"./rpc-entry": {
 			"import": "./dist/rpc-entry.js"
+		},
+		"./headless": {
+			"types": "./dist/headless.d.ts",
+			"import": "./dist/headless.js"
 		}
 	},
 	"files": [
