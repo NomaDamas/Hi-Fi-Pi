@@ -7,7 +7,16 @@ import {
 	type ThinkingConfig,
 	ThinkingLevel,
 } from "@google/genai";
+import { prepareContextAttachmentUploads } from "../attachment-lifecycle.ts";
 import { calculateCost, clampThinkingLevel } from "../models.ts";
+import {
+	createProviderTraceRecorder,
+	type ProviderTraceRecorder,
+	traceProviderCompletion,
+	traceProviderOptions,
+	traceProviderPayload,
+	traceRequestHeaders,
+} from "../provider-trace.ts";
 import type {
 	Api,
 	AssistantMessage,
@@ -29,6 +38,12 @@ import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { providerHeadersToRecord } from "../utils/headers.ts";
 import { getProviderEnvValue } from "../utils/provider-env.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
+import {
+	finalizeGoogleReasoningState,
+	preserveGoogleCandidateState,
+	preserveGooglePart,
+	updateGoogleProviderState,
+} from "./google-native-state.ts";
 import type { GoogleThinkingLevel } from "./google-shared.ts";
 import {
 	convertMessages,
@@ -91,8 +106,12 @@ export const stream: StreamFunction<"google-vertex", GoogleVertexOptions> = (
 			stopReason: "pending",
 			timestamp: Date.now(),
 		};
+		const trace = createProviderTraceRecorder(model, options?.onTrace);
+		let completionTraced = false;
 
 		try {
+			await traceProviderOptions(trace, options?.onTrace, options?.providerOptions);
+			await prepareContextAttachmentUploads(model, context, options, trace);
 			if (options?.fetch && options.fetch !== globalThis.fetch) {
 				throw new Error("Custom fetch is not supported by the Google Vertex adapter");
 			}
@@ -101,11 +120,14 @@ export const stream: StreamFunction<"google-vertex", GoogleVertexOptions> = (
 			const client = apiKey
 				? createClientWithApiKey(model, apiKey, options?.headers)
 				: createClient(model, resolveProject(options), resolveLocation(options), options?.headers, options?.env);
-			let params = buildParams(model, context, options);
+			let params = buildParams(model, context, options, trace);
+			await trace?.flush(options?.onTrace);
 			const nextParams = await options?.onPayload?.(params, model);
 			if (nextParams !== undefined) {
 				params = nextParams as GenerateContentParameters;
 			}
+			await traceRequestHeaders(trace, options?.onTrace, { ...model.headers, ...options?.headers });
+			await traceProviderPayload(trace, options?.onTrace, params);
 			const googleStream = await client.models.generateContentStream(params);
 
 			stream.push({ type: "start", partial: output });
@@ -116,7 +138,16 @@ export const stream: StreamFunction<"google-vertex", GoogleVertexOptions> = (
 				// Vertex uses the same @google/genai GenerateContentResponse type as Gemini.
 				// responseId is documented there as an output-only identifier for each response.
 				output.responseId ||= chunk.responseId;
+				updateGoogleProviderState(
+					output,
+					model,
+					output.responseId,
+					typeof options?.providerOptions?.["google.cached_content"] === "string"
+						? options.providerOptions["google.cached_content"]
+						: undefined,
+				);
 				const candidate = chunk.candidates?.[0];
+				if (candidate) preserveGoogleCandidateState(output, model, candidate);
 				if (candidate?.content?.parts) {
 					for (const part of candidate.content.parts) {
 						if (part.text !== undefined) {
@@ -225,6 +256,7 @@ export const stream: StreamFunction<"google-vertex", GoogleVertexOptions> = (
 							});
 							stream.push({ type: "toolcall_end", contentIndex: blockIndex(), toolCall, partial: output });
 						}
+						preserveGooglePart(output, model, part);
 					}
 				}
 
@@ -257,6 +289,7 @@ export const stream: StreamFunction<"google-vertex", GoogleVertexOptions> = (
 					calculateCost(model, output.usage);
 				}
 			}
+			finalizeGoogleReasoningState(output, model);
 
 			if (currentBlock) {
 				if (currentBlock.type === "text") {
@@ -290,6 +323,8 @@ export const stream: StreamFunction<"google-vertex", GoogleVertexOptions> = (
 				throw new Error(errorMessage);
 			}
 
+			await traceProviderCompletion(trace, options?.onTrace, output);
+			completionTraced = true;
 			stream.push({ type: "done", reason: output.stopReason, message: output });
 			stream.end();
 		} catch (error) {
@@ -301,6 +336,7 @@ export const stream: StreamFunction<"google-vertex", GoogleVertexOptions> = (
 			}
 			output.stopReason = options?.signal?.aborted ? "aborted" : "error";
 			output.errorMessage = formatProviderError(normalizeProviderError(error));
+			if (!completionTraced) await traceProviderCompletion(trace, options?.onTrace, output);
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();
 		}
@@ -439,6 +475,9 @@ function resolveProject(options?: GoogleVertexOptions): string {
 			"Vertex AI requires a project ID. Set GOOGLE_CLOUD_PROJECT/GCLOUD_PROJECT or pass project in options.",
 		);
 	}
+	if (!/^[a-zA-Z0-9][a-zA-Z0-9:._-]*$/.test(project)) {
+		throw new Error(`Invalid Vertex AI project identifier: ${project}`);
+	}
 	return project;
 }
 
@@ -447,6 +486,9 @@ function resolveLocation(options?: GoogleVertexOptions): string {
 	if (!location) {
 		throw new Error("Vertex AI requires a location. Set GOOGLE_CLOUD_LOCATION or pass location in options.");
 	}
+	if (!/^(?:global|[a-z][a-z0-9-]*)$/.test(location)) {
+		throw new Error(`Invalid Vertex AI location: ${location}`);
+	}
 	return location;
 }
 
@@ -454,9 +496,10 @@ function buildParams(
 	model: Model<"google-vertex">,
 	context: Context,
 	options: GoogleVertexOptions = {},
+	trace?: ProviderTraceRecorder,
 ): GenerateContentParameters {
 	const videoFps = options.providerOptions?.["google.video.fps"];
-	const contents = convertMessages(model, context, undefined, {
+	const contents = convertMessages(model, context, trace, {
 		...(typeof videoFps === "number" ? { videoFps } : {}),
 	});
 
@@ -471,14 +514,21 @@ function buildParams(
 	const functionCallingMode = context.tools?.length
 		? resolveGoogleFunctionCallingMode(context.tools, options.toolChoice, supportsGoogleStrictToolSampling(model.id))
 		: undefined;
+	const providerTools: NonNullable<GenerateContentConfig["tools"]> = [];
+	if (options.providerOptions?.["google.google_search"] === true) providerTools.push({ googleSearch: {} });
+	if (options.providerOptions?.["google.url_context"] === true) providerTools.push({ urlContext: {} });
+	if (options.providerOptions?.["google.code_execution"] === true) providerTools.push({ codeExecution: {} });
+	const clientTools = context.tools && context.tools.length > 0 ? convertTools(context.tools) : undefined;
 	const config: GenerateContentConfig = {
 		...(Object.keys(generationConfig).length > 0 && generationConfig),
 		...(context.systemPrompt && { systemInstruction: sanitizeSurrogates(context.systemPrompt) }),
-		...(context.tools && context.tools.length > 0 && { tools: convertTools(context.tools) }),
+		...((clientTools?.length || providerTools.length > 0) && { tools: [...(clientTools ?? []), ...providerTools] }),
 		...(functionCallingMode !== undefined && {
 			toolConfig: { functionCallingConfig: { mode: functionCallingMode } },
 		}),
 	};
+	const cachedContent = options.providerOptions?.["google.cached_content"];
+	if (typeof cachedContent === "string") config.cachedContent = cachedContent;
 
 	if (options.thinking?.enabled && model.reasoning) {
 		const thinkingConfig: ThinkingConfig = { includeThoughts: true };

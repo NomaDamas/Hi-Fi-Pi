@@ -82,6 +82,21 @@ function matchingGoogleNativeParts<T extends GoogleApiType>(message: Message, mo
 	});
 }
 
+function assertGoogleCloudUri<T extends GoogleApiType>(model: Model<T>, uri: string): void {
+	if (model.api === "google-vertex") {
+		if (!uri.startsWith("gs://")) throw new Error(`Vertex AI cloud attachment URI must use gs://: ${uri}`);
+		return;
+	}
+	if (uri.startsWith("gs://")) return;
+	try {
+		const host = new URL(uri).hostname.toLowerCase();
+		if (host === "youtu.be" || host === "youtube.com" || host.endsWith(".youtube.com")) return;
+	} catch {
+		// Report the provider-native URI requirement below.
+	}
+	throw new Error(`Gemini cloud attachment URI must use gs:// or an official YouTube URL: ${uri}`);
+}
+
 /**
  * Models via Google APIs that require explicit tool call IDs in function calls/responses.
  */
@@ -163,6 +178,7 @@ export function convertMessages<T extends GoogleApiType>(
 							...videoMetadata,
 						};
 					case "cloud-uri":
+						assertGoogleCloudUri(model, attachment.source.uri);
 						return {
 							fileData: {
 								mimeType: attachment.mediaType,
@@ -330,6 +346,7 @@ export function convertMessages<T extends GoogleApiType>(
 							...videoMetadata,
 						};
 					case "cloud-uri":
+						assertGoogleCloudUri(model, attachment.source.uri);
 						return {
 							fileData: {
 								mimeType: attachment.mediaType,

@@ -357,7 +357,10 @@ const builtInResolvers: NativeInputCapabilityResolver[] = [
 		matches: (context) =>
 			context.provider === "google-vertex" &&
 			context.api === "google-vertex" &&
-			hostname(context.baseUrl)?.endsWith(".aiplatform.googleapis.com") === true,
+			Boolean(
+				hostname(context.baseUrl)?.endsWith("-aiplatform.googleapis.com") ||
+					hostname(context.baseUrl)?.endsWith(".aiplatform.googleapis.com"),
+			),
 		resolve: () => ({
 			profile: "vertex-official",
 			capabilities: [
