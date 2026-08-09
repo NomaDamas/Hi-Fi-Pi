@@ -1,4 +1,5 @@
 import type { AgentState } from "@earendil-works/pi-agent-core";
+import type { AttachmentSource } from "@earendil-works/pi-ai";
 import { existsSync, readFileSync, writeFileSync } from "fs";
 import { basename, join } from "path";
 import { APP_NAME, getExportTemplateDir } from "../../config.ts";
@@ -137,6 +138,26 @@ interface SessionData {
 	renderedTools?: Record<string, RenderedToolHtml>;
 }
 
+function sanitizeExportAttachmentSource(source: AttachmentSource): AttachmentSource {
+	if (source.type !== "url" && source.type !== "cloud-uri") return structuredClone(source);
+	const value = source.type === "url" ? source.url : source.uri;
+	if (!/^https?:\/\//i.test(value)) return structuredClone(source);
+	try {
+		const url = new URL(value);
+		if ([...url.searchParams.keys()].length > 0) {
+			url.search = "";
+			url.searchParams.set("redacted", "true");
+		}
+		url.username = "";
+		url.password = "";
+		return source.type === "url" ? { ...source, url: url.toString() } : { ...source, uri: url.toString() };
+	} catch {
+		return source.type === "url"
+			? { ...source, url: "[redacted invalid URL]" }
+			: { ...source, uri: "[redacted invalid URL]" };
+	}
+}
+
 export function sanitizeSessionEntriesForExport(entries: SessionEntry[]): SessionEntry[] {
 	return entries.map((entry) => {
 		if (entry.type !== "attachment") return entry;
@@ -149,8 +170,29 @@ export function sanitizeSessionEntriesForExport(entries: SessionEntry[]): Sessio
 			attachment: {
 				...entry.attachment,
 				metadata: { ...entry.attachment.metadata, sourceAvailable },
-				...(entry.attachment.source.type === "base64"
-					? { source: { type: "base64" as const, data: "[omitted from export]" } }
+				source:
+					entry.attachment.source.type === "base64"
+						? { type: "base64" as const, data: "[omitted from export]" }
+						: sanitizeExportAttachmentSource(entry.attachment.source),
+				...(entry.attachment.remotes
+					? {
+							remotes: Object.fromEntries(
+								Object.entries(entry.attachment.remotes).map(([key, remote]) => [
+									key,
+									remote.uri
+										? {
+												...remote,
+												uri: (
+													sanitizeExportAttachmentSource({ type: "url", url: remote.uri }) as {
+														type: "url";
+														url: string;
+													}
+												).url,
+											}
+										: remote,
+								]),
+							),
+						}
 					: {}),
 			},
 		};

@@ -370,6 +370,38 @@ describe("Issue 5 attachment persistence", () => {
 		expect(exported).not.toContain("JVBERi0xLjQ=SECRET");
 	});
 
+	it("redacts signed remote URLs from JSONL exports", async () => {
+		const manager = createPersistentManager();
+		const remoteAttachment: AttachmentRecord = {
+			...attachment,
+			id: "att_signed_url",
+			source: {
+				type: "url",
+				url: "https://files.example.com/paper.pdf?X-Amz-Signature=secret&download=1",
+			},
+			remotes: {
+				openai: {
+					provider: "openai",
+					api: "openai-responses",
+					fileId: "file_123",
+					uri: "https://files.example.com/file_123?token=remote-secret",
+					uploadedAt: 1,
+				},
+			},
+		};
+		manager.appendAttachment(remoteAttachment);
+		manager.appendMessage(userMessage("Analyze", remoteAttachment.id));
+		flushTurn(manager);
+		const harness = await createHarness({ sessionManager: manager });
+		harnesses.push(harness);
+		const outputPath = join(manager.getCwd(), "safe-remote-export.jsonl");
+
+		harness.session.exportToJsonl(outputPath);
+		const exported = readFileSync(outputPath, "utf8");
+		expect(exported).toContain("redacted=true");
+		expect(exported).not.toContain("secret");
+	});
+
 	it("stores inline attachment bytes once even when multiple messages reference them", () => {
 		const manager = createPersistentManager();
 		const inlineAttachment: AttachmentRecord = {
