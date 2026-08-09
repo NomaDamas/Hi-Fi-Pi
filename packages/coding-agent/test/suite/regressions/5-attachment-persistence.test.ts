@@ -1,6 +1,6 @@
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { type AttachmentRecord, fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it } from "vitest";
 import { exportFromFile } from "../../../src/core/export-html/index.ts";
@@ -295,7 +295,9 @@ describe("Issue 5 attachment persistence", () => {
 		manager.appendMessage(userMessage("Analyze", inlineAttachment.id));
 		flushTurn(manager);
 
-		const outputPath = await exportFromFile(manager.getSessionFile()!);
+		const outputPath = await exportFromFile(manager.getSessionFile()!, {
+			outputPath: join(dirname(manager.getSessionFile()!), "attachment-export.html"),
+		});
 		const html = readFileSync(outputPath, "utf8");
 		const sessionData = decodeExportedSessionData(html);
 		const exportedAttachment = sessionData.entries.find((entry) => entry.type === "attachment");

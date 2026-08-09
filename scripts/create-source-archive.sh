@@ -108,12 +108,13 @@ GIT_INDEX_FILE="$temporary_index" git add -f -- "${model_data_files[@]}"
 archive_tree="$(GIT_INDEX_FILE="$temporary_index" git write-tree)"
 archive_mtime="$(git show -s --format=%ct "$commit")"
 
-archive_root="pi-${version}"
+archive_root="hifi-pi-${version}"
 git archive --format=tar --prefix="${archive_root}/" --mtime="@${archive_mtime}" "$archive_tree" \
     | gzip -n -9 > "$temporary_archive"
 tar -tzf "$temporary_archive" > "$manifest"
 
 required_paths=(
+    ".github/upstream-baseline.json"
     "package.json"
     "package-lock.json"
     "scripts/build-binaries.sh"

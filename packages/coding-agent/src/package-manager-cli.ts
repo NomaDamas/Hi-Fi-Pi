@@ -11,9 +11,11 @@ import {
 	getPackageDir,
 	getSelfUpdateCommand,
 	getSelfUpdateUnavailableInstruction,
+	getSelfUpdateUrl,
 	PACKAGE_NAME,
 	type SelfUpdateCommand,
 	type SelfUpdatePackageTarget,
+	USER_CONFIG_DIR_NAME,
 	VERSION,
 } from "./config.ts";
 import type { InlineExtension } from "./core/extensions/types.ts";
@@ -96,7 +98,7 @@ function printConfigCommandHelp(): void {
   ${CONFIG_COMMAND_USAGE}
 
 Open the resource configuration TUI to enable or disable package resources.
-Without -l, starts in global settings (~/${CONFIG_DIR_NAME}/agent/settings.json).
+Without -l, starts in global settings (~/${USER_CONFIG_DIR_NAME}/agent/settings.json).
 Press Tab in the TUI to switch between global and project-local modes.
 
 Options:
@@ -473,9 +475,15 @@ interface SelfUpdatePlan {
 }
 
 async function getSelfUpdatePlan(force: boolean): Promise<SelfUpdatePlan> {
+	const selfUpdateUrl = getSelfUpdateUrl();
+	if (!selfUpdateUrl) {
+		throw new Error(
+			`${APP_NAME} self-update is disabled because no Hi-Fi release channel is configured. Install a signed Hi-Fi release explicitly.`,
+		);
+	}
 	let latestRelease: Awaited<ReturnType<typeof getLatestPiRelease>>;
 	try {
-		latestRelease = await getLatestPiRelease(VERSION);
+		latestRelease = await getLatestPiRelease(VERSION, { url: selfUpdateUrl });
 	} catch (error: unknown) {
 		const message = error instanceof Error ? error.message : String(error);
 		throw new Error(`Could not determine latest ${APP_NAME} version: ${message}`);

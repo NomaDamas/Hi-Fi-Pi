@@ -61,7 +61,7 @@ jobs:
           ./scripts/create-source-archive.sh \
             --version "${VERSION}" \
             --ref HEAD \
-            --out "release-assets/pi-${VERSION}-source.tar.gz"
+            --out "release-assets/hifi-pi-${VERSION}-source.tar.gz"
 
       - name: Build binaries from source archive
         run: |
@@ -70,10 +70,17 @@ jobs:
           VERSION="${RELEASE_TAG#v}"
           build_root="$(mktemp -d)"
           trap 'rm -rf "${build_root}"' EXIT
-          tar -xzf "release-assets/pi-${VERSION}-source.tar.gz" -C "${build_root}"
-          "${build_root}/pi-${VERSION}/scripts/build-binaries.sh" \
+          tar -xzf "release-assets/hifi-pi-${VERSION}-source.tar.gz" -C "${build_root}"
+          source_root="${build_root}/hifi-pi-${VERSION}"
+          "${source_root}/scripts/build-binaries.sh" \
             --offline-model-data \
             --out "${GITHUB_WORKSPACE}/packages/coding-agent/binaries"
+          cd "${source_root}"
+          npm run test:pi-compat
+          npm --prefix packages/ai run test:native-input-contracts
+          HIFI_PI_SOURCE_REVISION="${GITHUB_SHA}" node scripts/pack-hifi-sdk.mjs \
+            --out "${GITHUB_WORKSPACE}/release-assets"
+          node scripts/smoke-hifi-sdk.mjs --sdk-dir "${GITHUB_WORKSPACE}/release-assets"
 
       - name: Prepare GitHub release payload
         run: |
@@ -85,18 +92,18 @@ jobs:
           VERSION="${VERSION#v}"  # Remove 'v' prefix
           node scripts/release-notes.mjs extract --version "${VERSION}" --tag "${RELEASE_TAG}" --out release-assets/RELEASE_NOTES.md
           node scripts/generate-coding-agent-install-lock.mjs --check
-          cp packages/coding-agent/install-lock/package.json release-assets/pi-coding-agent-install-package.json
-          cp packages/coding-agent/install-lock/package-lock.json release-assets/pi-coding-agent-install-package-lock.json
+          cp packages/coding-agent/install-lock/package.json release-assets/hifi-pi-coding-agent-install-package.json
+          cp packages/coding-agent/install-lock/package-lock.json release-assets/hifi-pi-coding-agent-install-package-lock.json
 
           cd packages/coding-agent/binaries
 
           binary_assets=(
-            pi-darwin-arm64.tar.gz
-            pi-darwin-x64.tar.gz
-            pi-linux-x64.tar.gz
-            pi-linux-arm64.tar.gz
-            pi-windows-x64.zip
-            pi-windows-arm64.zip
+            hifi-pi-darwin-arm64.tar.gz
+            hifi-pi-darwin-x64.tar.gz
+            hifi-pi-linux-x64.tar.gz
+            hifi-pi-linux-arm64.tar.gz
+            hifi-pi-windows-x64.zip
+            hifi-pi-windows-arm64.zip
           )
 
           for asset in "${binary_assets[@]}"; do
@@ -106,17 +113,24 @@ jobs:
           cp "${binary_assets[@]}" "${GITHUB_WORKSPACE}/release-assets/"
 
           cd "${GITHUB_WORKSPACE}/release-assets"
-          source_asset="pi-${VERSION}-source.tar.gz"
+          source_asset="hifi-pi-${VERSION}-source.tar.gz"
           release_assets=(
             "${source_asset}"
-            pi-darwin-arm64.tar.gz
-            pi-darwin-x64.tar.gz
-            pi-linux-x64.tar.gz
-            pi-linux-arm64.tar.gz
-            pi-windows-x64.zip
-            pi-windows-arm64.zip
-            pi-coding-agent-install-package.json
-            pi-coding-agent-install-package-lock.json
+            hifi-pi-darwin-arm64.tar.gz
+            hifi-pi-darwin-x64.tar.gz
+            hifi-pi-linux-x64.tar.gz
+            hifi-pi-linux-arm64.tar.gz
+            hifi-pi-windows-x64.zip
+            hifi-pi-windows-arm64.zip
+            hifi-pi-coding-agent-install-package.json
+            hifi-pi-coding-agent-install-package-lock.json
+            hifi-pi-ai-${VERSION}.tgz
+            hifi-pi-agent-core-${VERSION}.tgz
+            hifi-pi-tui-${VERSION}.tgz
+            hifi-pi-coding-agent-${VERSION}.tgz
+            hifi-pi-server-${VERSION}.tgz
+            hifi-pi-storage-sqlite-node-${VERSION}.tgz
+            hifi-pi-sdk-manifest.json
           )
           sha256sum "${release_assets[@]}" > SHA256SUMS
 
@@ -151,17 +165,24 @@ jobs:
           cd release-assets
 
           VERSION="${RELEASE_TAG#v}"
-          source_asset="pi-${VERSION}-source.tar.gz"
+          source_asset="hifi-pi-${VERSION}-source.tar.gz"
           expected_assets=(
             "${source_asset}"
-            pi-darwin-arm64.tar.gz
-            pi-darwin-x64.tar.gz
-            pi-linux-x64.tar.gz
-            pi-linux-arm64.tar.gz
-            pi-windows-x64.zip
-            pi-windows-arm64.zip
-            pi-coding-agent-install-package.json
-            pi-coding-agent-install-package-lock.json
+            hifi-pi-darwin-arm64.tar.gz
+            hifi-pi-darwin-x64.tar.gz
+            hifi-pi-linux-x64.tar.gz
+            hifi-pi-linux-arm64.tar.gz
+            hifi-pi-windows-x64.zip
+            hifi-pi-windows-arm64.zip
+            hifi-pi-coding-agent-install-package.json
+            hifi-pi-coding-agent-install-package-lock.json
+            hifi-pi-ai-${VERSION}.tgz
+            hifi-pi-agent-core-${VERSION}.tgz
+            hifi-pi-tui-${VERSION}.tgz
+            hifi-pi-coding-agent-${VERSION}.tgz
+            hifi-pi-server-${VERSION}.tgz
+            hifi-pi-storage-sqlite-node-${VERSION}.tgz
+            hifi-pi-sdk-manifest.json
             SHA256SUMS
             RELEASE_NOTES.md
           )
@@ -181,17 +202,24 @@ jobs:
           cd release-assets
 
           VERSION="${RELEASE_TAG#v}"
-          source_asset="pi-${VERSION}-source.tar.gz"
+          source_asset="hifi-pi-${VERSION}-source.tar.gz"
           release_assets=(
             "${source_asset}"
-            pi-darwin-arm64.tar.gz
-            pi-darwin-x64.tar.gz
-            pi-linux-x64.tar.gz
-            pi-linux-arm64.tar.gz
-            pi-windows-x64.zip
-            pi-windows-arm64.zip
-            pi-coding-agent-install-package.json
-            pi-coding-agent-install-package-lock.json
+            hifi-pi-darwin-arm64.tar.gz
+            hifi-pi-darwin-x64.tar.gz
+            hifi-pi-linux-x64.tar.gz
+            hifi-pi-linux-arm64.tar.gz
+            hifi-pi-windows-x64.zip
+            hifi-pi-windows-arm64.zip
+            hifi-pi-coding-agent-install-package.json
+            hifi-pi-coding-agent-install-package-lock.json
+            hifi-pi-ai-${VERSION}.tgz
+            hifi-pi-agent-core-${VERSION}.tgz
+            hifi-pi-tui-${VERSION}.tgz
+            hifi-pi-coding-agent-${VERSION}.tgz
+            hifi-pi-server-${VERSION}.tgz
+            hifi-pi-storage-sqlite-node-${VERSION}.tgz
+            hifi-pi-sdk-manifest.json
             SHA256SUMS
           )
 
@@ -220,61 +248,9 @@ jobs:
             exit 1
           fi
 
-  publish-npm:
-    runs-on: ubuntu-latest
-    needs: stage-github-release
-    environment: npm-publish
-    permissions:
-      contents: read
-      id-token: write
-    env:
-      RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
-      SOURCE_REF: ${{ github.event.inputs.source_ref || github.event.inputs.tag || github.ref_name }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ env.SOURCE_REF }}
-          persist-credentials: false
-
-      - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '22'
-          registry-url: 'https://registry.npmjs.org'
-          cache: npm
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libcairo2-dev libpango1.0-dev libjpeg-dev libgif-dev librsvg2-dev fd-find ripgrep
-          sudo ln -s $(which fdfind) /usr/local/bin/fd
-
-      - name: Install dependencies
-        run: npm ci --ignore-scripts
-
-      - name: Build
-        run: npm run build
-
-      - name: Check
-        run: npm run check
-
-      - name: Test
-        run: npm test
-
-      - name: Upgrade npm for trusted publishing
-        run: |
-          npm install -g npm@11.16.0 --ignore-scripts
-          npm --version
-
-      - name: Publish npm packages
-        run: node scripts/publish.mjs
-
   publish-github-release:
     runs-on: ubuntu-latest
-    needs:
-      - stage-github-release
-      - publish-npm
+    needs: stage-github-release
     permissions:
       contents: write
     env:
@@ -304,9 +280,8 @@ jobs:
     needs:
       - build
       - stage-github-release
-      - publish-npm
       - publish-github-release
-    if: ${{ always() && needs.stage-github-release.result != 'skipped' && (needs.stage-github-release.result != 'success' || needs.publish-npm.result != 'success' || needs.publish-github-release.result != 'success') }}
+    if: ${{ always() && needs.stage-github-release.result != 'skipped' && (needs.stage-github-release.result != 'success' || needs.publish-github-release.result != 'success') }}
     permissions:
       contents: write
     env:

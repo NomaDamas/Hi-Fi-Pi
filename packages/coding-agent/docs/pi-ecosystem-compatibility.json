@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "manifest": "package.json#pi",
+  "moduleIds": [
+    "@earendil-works/pi-ai",
+    "@earendil-works/pi-agent-core",
+    "@earendil-works/pi-coding-agent",
+    "@earendil-works/pi-tui"
+  ],
+  "surfaces": {
+    "extensions": {
+      "interactive": "supported",
+      "headless": "supported",
+      "contractTest": "test/pi-ecosystem-compatibility.test.ts"
+    },
+    "skills": {
+      "interactive": "supported",
+      "headless": "supported",
+      "contractTest": "test/pi-ecosystem-compatibility.test.ts"
+    },
+    "prompts": {
+      "interactive": "supported",
+      "headless": "supported",
+      "contractTest": "test/pi-ecosystem-compatibility.test.ts"
+    },
+    "themes": {
+      "interactive": "supported",
+      "headless": "not-applicable",
+      "contractTest": "test/pi-ecosystem-compatibility.test.ts"
+    },
+    "packageSources": {
+      "npm": "supported",
+      "gitHttps": "supported",
+      "gitSsh": "supported",
+      "local": "supported",
+      "contractTests": [
+        "test/package-manager.test.ts",
+        "test/package-manager-ssh.test.ts",
+        "test/git-update.test.ts",
+        "test/pi-ecosystem-compatibility.test.ts"
+      ]
+    }
+  }
+}

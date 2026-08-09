@@ -8,7 +8,7 @@
 import { createInterface } from "node:readline";
 import { type AttachmentRecord, type ImageContent, modelsAreEqual } from "@earendil-works/pi-ai";
 import chalk from "chalk";
-import { type Args, type Mode, parseArgs, printHelp } from "./cli/args.ts";
+import { type Args, extractAgentDirOverride, type Mode, parseArgs, printHelp } from "./cli/args.ts";
 import {
 	type CredentialPrintCommand,
 	CredentialPrintError,
@@ -18,13 +18,22 @@ import {
 	resolveCredentialForPrint,
 	validateCredentialPrintArgs,
 } from "./cli/credential-print.ts";
+import { handleDistributionStateCommand } from "./cli/distribution-state.ts";
 import { processFileArguments } from "./cli/file-processor.ts";
 import { buildInitialMessage } from "./cli/initial-message.ts";
 import { listModels } from "./cli/list-models.ts";
 import { createProjectTrustContext } from "./cli/project-trust.ts";
 import { selectSession } from "./cli/session-picker.ts";
 import { shouldRunFirstTimeSetup, showFirstTimeSetup, showStartupSelector } from "./cli/startup-ui.ts";
-import { ENV_SESSION_DIR, expandTildePath, getAgentDir, getPackageDir, VERSION } from "./config.ts";
+import {
+	ENV_AGENT_DIR,
+	ENV_SESSION_DIR,
+	expandTildePath,
+	getAgentDir,
+	getPackageDir,
+	getVersionString,
+	LEGACY_ENV_SESSION_DIR,
+} from "./config.ts";
 import { type CreateAgentSessionRuntimeFactory, createAgentSessionRuntime } from "./core/agent-session-runtime.ts";
 import {
 	type AgentSessionRuntimeDiagnostic,
@@ -522,6 +531,18 @@ export interface MainOptions {
 
 export async function main(args: string[], options?: MainOptions) {
 	resetTimings();
+	const agentDirOverride = extractAgentDirOverride(args);
+	if (agentDirOverride.diagnostics.length > 0) {
+		for (const diagnostic of agentDirOverride.diagnostics) {
+			console.error(chalk.red(`Error: ${diagnostic.message}`));
+		}
+		process.exit(1);
+		return;
+	}
+	args = agentDirOverride.args;
+	if (agentDirOverride.agentDir) {
+		process.env[ENV_AGENT_DIR] = agentDirOverride.agentDir;
+	}
 	const extensionFactories = [...builtInExtensions, ...(options?.extensionFactories ?? [])];
 	const offlineMode = args.includes("--offline") || isTruthyEnvFlag(process.env.PI_OFFLINE);
 	if (offlineMode) {
@@ -538,6 +559,9 @@ export async function main(args: string[], options?: MainOptions) {
 	const bootstrapSettingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: false });
 	applyHttpProxySettings(bootstrapSettingsManager.getGlobalSettings().httpProxy);
 	configureHttpDispatcher();
+	if (await handleDistributionStateCommand(args)) {
+		return;
+	}
 
 	if (await handlePackageCommand(args, { extensionFactories })) {
 		const exitCode = process.exitCode ?? 0;
@@ -573,7 +597,7 @@ export async function main(args: string[], options?: MainOptions) {
 	time("parseArgs");
 
 	if (parsed.version) {
-		console.log(VERSION);
+		console.log(getVersionString());
 		process.exit(0);
 	}
 
@@ -624,7 +648,7 @@ export async function main(args: string[], options?: MainOptions) {
 	// settings, resources, provider registrations, and models must be resolved only after
 	// the target session cwd is known. The startup-cwd settings manager is used only for
 	// sessionDir lookup during session selection.
-	const envSessionDir = process.env[ENV_SESSION_DIR];
+	const envSessionDir = process.env[ENV_SESSION_DIR] ?? process.env[LEGACY_ENV_SESSION_DIR];
 	const sessionDir =
 		(parsed.sessionDir ? normalizePath(parsed.sessionDir) : undefined) ??
 		(envSessionDir ? expandTildePath(envSessionDir) : undefined) ??

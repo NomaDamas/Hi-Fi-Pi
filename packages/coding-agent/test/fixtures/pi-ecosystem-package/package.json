@@ -1,0 +1,11 @@
+{
+  "name": "pi-ecosystem-compatibility-fixture",
+  "version": "1.0.0",
+  "type": "module",
+  "pi": {
+    "extensions": ["./extensions/index.ts"],
+    "skills": ["./skills"],
+    "prompts": ["./prompts"],
+    "themes": ["./themes"]
+  }
+}

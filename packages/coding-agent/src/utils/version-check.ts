@@ -1,4 +1,5 @@
 import { compare, valid } from "semver";
+import { getSelfUpdateUrl } from "../config.ts";
 import { getPiUserAgent } from "./pi-user-agent.ts";
 
 const LATEST_VERSION_URL = "https://pi.dev/api/latest-version";
@@ -29,11 +30,11 @@ export function isNewerPackageVersion(candidateVersion: string, currentVersion: 
 
 export async function getLatestPiRelease(
 	currentVersion: string,
-	options: { timeoutMs?: number } = {},
+	options: { timeoutMs?: number; url?: string } = {},
 ): Promise<LatestPiRelease | undefined> {
 	if (process.env.PI_OFFLINE) return undefined;
 
-	const response = await fetch(LATEST_VERSION_URL, {
+	const response = await fetch(options.url ?? LATEST_VERSION_URL, {
 		headers: {
 			"User-Agent": getPiUserAgent(currentVersion),
 			accept: "application/json",
@@ -69,9 +70,11 @@ export async function getLatestPiVersion(
 
 export async function checkForNewPiVersion(currentVersion: string): Promise<LatestPiRelease | undefined> {
 	if (process.env.PI_SKIP_VERSION_CHECK) return undefined;
+	const url = getSelfUpdateUrl();
+	if (!url) return undefined;
 
 	try {
-		const latestRelease = await getLatestPiRelease(currentVersion);
+		const latestRelease = await getLatestPiRelease(currentVersion, { url });
 		if (latestRelease && isNewerPackageVersion(latestRelease.version, currentVersion)) {
 			return latestRelease;
 		}
