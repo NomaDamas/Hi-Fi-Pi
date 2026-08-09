@@ -68,6 +68,23 @@ export class ProviderOptionValidationError extends Error {
 	}
 }
 
+/** Stable persistence scope for controls whose validity depends on model and transport. */
+export function getProviderOptionScope(model: Model<Api>): string {
+	const context = getProviderBackendContext(model);
+	let endpoint = context.baseUrl;
+	try {
+		const url = new URL(context.baseUrl);
+		url.username = "";
+		url.password = "";
+		url.search = "";
+		url.hash = "";
+		endpoint = url.toString().replace(/\/$/, "");
+	} catch {
+		// Custom runtimes may use a non-URL endpoint identifier. It remains part of the scope.
+	}
+	return `${context.provider}/${context.api}/${context.modelId}@${context.endpointProfile}:${endpoint}`;
+}
+
 function compatibilityDefinitions(context: ProviderBackendContext): readonly ProviderOptionDefinition[] {
 	switch (context.endpointProfile) {
 		case "openai-official":

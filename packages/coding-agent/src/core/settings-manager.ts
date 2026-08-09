@@ -126,6 +126,8 @@ export interface Settings {
 	httpProxy?: string; // Proxy URL applied as HTTP_PROXY and HTTPS_PROXY for Pi-managed HTTP clients
 	httpIdleTimeoutMs?: number; // HTTP header/body idle timeout in milliseconds; 0 disables it
 	websocketConnectTimeoutMs?: number; // WebSocket connect/open handshake timeout in milliseconds; 0 disables it
+	/** Non-secret, namespaced provider controls keyed by a stable model/transport scope. */
+	providerOptions?: Record<string, Record<string, unknown>>;
 }
 
 /** Deep merge settings: project/overrides take precedence, nested objects merge recursively */
@@ -697,6 +699,22 @@ export class SettingsManager {
 		this.globalSettings.defaultModel = modelId;
 		this.markModified("defaultProvider");
 		this.markModified("defaultModel");
+		this.save();
+	}
+
+	getProviderOptions(scope: string): Record<string, unknown> {
+		return structuredClone(this.settings.providerOptions?.[scope] ?? {});
+	}
+
+	setProviderOptions(scope: string, values: Readonly<Record<string, unknown>>): void {
+		const next = structuredClone(values);
+		this.globalSettings.providerOptions ??= {};
+		if (Object.keys(next).length === 0) {
+			delete this.globalSettings.providerOptions[scope];
+		} else {
+			this.globalSettings.providerOptions[scope] = next;
+		}
+		this.markModified("providerOptions", scope);
 		this.save();
 	}
 

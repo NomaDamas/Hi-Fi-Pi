@@ -119,6 +119,8 @@ export interface AgentOptions {
 	thinkingBudgets?: ThinkingBudgets;
 	transport?: Transport;
 	maxRetryDelayMs?: number;
+	/** Namespaced, model-scoped provider controls forwarded unchanged to the stream function. */
+	providerOptions?: Record<string, unknown>;
 	toolExecution?: ToolExecutionMode;
 }
 
@@ -207,6 +209,8 @@ export class Agent {
 	public transport: Transport;
 	/** Optional cap for provider-requested retry delays. */
 	public maxRetryDelayMs?: number;
+	/** Namespaced, model-scoped provider controls forwarded to provider option validation. */
+	public providerOptions?: Record<string, unknown>;
 	/** Optional attachment registry forwarded to provider request contexts. */
 	public attachmentRegistry?: AttachmentRegistry;
 	/** Tool execution strategy for assistant messages that contain multiple tool calls. */
@@ -233,6 +237,9 @@ export class Agent {
 		this.thinkingBudgets = runtimeOptions.thinkingBudgets;
 		this.transport = runtimeOptions.transport ?? "auto";
 		this.maxRetryDelayMs = runtimeOptions.maxRetryDelayMs;
+		this.providerOptions = runtimeOptions.providerOptions
+			? structuredClone(runtimeOptions.providerOptions)
+			: undefined;
 		this.toolExecution = runtimeOptions.toolExecution ?? "parallel";
 	}
 
@@ -451,6 +458,7 @@ export class Agent {
 			transport: this.transport,
 			thinkingBudgets: this.thinkingBudgets,
 			maxRetryDelayMs: this.maxRetryDelayMs,
+			providerOptions: this.providerOptions ? structuredClone(this.providerOptions) : undefined,
 			toolExecution: this.toolExecution,
 			beforeToolCall: this.beforeToolCall,
 			afterToolCall: this.afterToolCall,

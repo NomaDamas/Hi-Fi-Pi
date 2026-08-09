@@ -24,11 +24,14 @@ import type {
 	PrepareNextTurnContext,
 	ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
-import type { PortabilityReport } from "@earendil-works/pi-ai";
+import type { PortabilityReport, ProviderOptionDefinition } from "@earendil-works/pi-ai";
 import {
 	analyzeConversationPortability,
 	contentText,
+	getProviderOptionDefinitions,
+	getProviderOptionScope,
 	PortabilityConfirmationRequiredError,
+	resolveProviderOptions,
 } from "@earendil-works/pi-ai";
 import type {
 	AssistantMessage,
@@ -235,6 +238,8 @@ export interface AgentSessionConfig {
 	extensionRunnerRef?: { current?: ExtensionRunner };
 	/** Session start event metadata emitted when extensions bind to this runtime. */
 	sessionStartEvent?: SessionStartEvent;
+	/** Initial namespaced provider controls supplied by an SDK caller. */
+	providerOptions?: Record<string, unknown>;
 }
 
 export interface ExtensionBindings {
@@ -436,6 +441,7 @@ export class AgentSession {
 		this._baseToolsOverride = config.baseToolsOverride;
 		this._sessionStartEvent = config.sessionStartEvent ?? { type: "session_start", reason: "startup" };
 		this._syncAttachmentsFromActiveBranch();
+		this._restoreProviderOptions(config.providerOptions);
 		this._installProviderTraceBridge();
 
 		// Always subscribe to agent events for internal handling
@@ -912,6 +918,86 @@ export class AgentSession {
 	getLatestProviderTrace(): ProviderTraceEvent | undefined {
 		const event = this._providerTraceEvents[this._providerTraceEvents.length - 1];
 		return event ? structuredClone(event) : undefined;
+	}
+
+	private _getStoredProviderOptions(model: Model<any>): Record<string, unknown> {
+		const scope = getProviderOptionScope(model);
+		const branch = this.sessionManager.getBranch();
+		for (let index = branch.length - 1; index >= 0; index--) {
+			const entry = branch[index];
+			if (entry.type !== "custom" || entry.customType !== "hifi.provider-options") continue;
+			const data = entry.data;
+			if (!data || typeof data !== "object") continue;
+			const record = data as { version?: unknown; scope?: unknown; values?: unknown };
+			if (record.version !== 1 || record.scope !== scope || !record.values || typeof record.values !== "object") {
+				continue;
+			}
+			return structuredClone(record.values as Record<string, unknown>);
+		}
+		return this.settingsManager.getProviderOptions(scope);
+	}
+
+	private _restoreProviderOptions(initial?: Readonly<Record<string, unknown>>): void {
+		const model = this.model;
+		if (!model) {
+			this.agent.providerOptions = undefined;
+			return;
+		}
+		const selected = structuredClone(initial ?? this._getStoredProviderOptions(model));
+		resolveProviderOptions(model, selected);
+		this.agent.providerOptions = Object.keys(selected).length > 0 ? selected : undefined;
+	}
+
+	getProviderOptionDefinitions(): readonly ProviderOptionDefinition[] {
+		return this.model ? getProviderOptionDefinitions(this.model) : [];
+	}
+
+	/** Explicit selections only; defaults are exposed by getEffectiveProviderOptions(). */
+	getProviderOptionValues(): Record<string, unknown> {
+		return structuredClone(this.agent.providerOptions ?? {});
+	}
+
+	getEffectiveProviderOptions(): Record<string, unknown> {
+		return this.model ? resolveProviderOptions(this.model, this.agent.providerOptions ?? {}) : {};
+	}
+
+	setProviderOption(key: string, value: unknown): Record<string, unknown> {
+		const model = this.model;
+		if (!model) throw new Error("No model selected");
+		const selected = { ...(this.agent.providerOptions ?? {}), [key]: value };
+		const effective = resolveProviderOptions(model, selected);
+		const persisted = structuredClone(selected);
+		const scope = getProviderOptionScope(model);
+		this.settingsManager.setProviderOptions(scope, persisted);
+		this.sessionManager.appendCustomEntry("hifi.provider-options", {
+			version: 1,
+			scope,
+			values: persisted,
+			timestamp: Date.now(),
+		});
+		this.agent.providerOptions = persisted;
+		return effective;
+	}
+
+	unsetProviderOption(key: string): Record<string, unknown> {
+		const model = this.model;
+		if (!model) throw new Error("No model selected");
+		if (!getProviderOptionDefinitions(model).some((definition) => definition.key === key)) {
+			resolveProviderOptions(model, { [key]: null });
+		}
+		const selected = { ...(this.agent.providerOptions ?? {}) };
+		delete selected[key];
+		const effective = resolveProviderOptions(model, selected);
+		const scope = getProviderOptionScope(model);
+		this.settingsManager.setProviderOptions(scope, selected);
+		this.sessionManager.appendCustomEntry("hifi.provider-options", {
+			version: 1,
+			scope,
+			values: structuredClone(selected),
+			timestamp: Date.now(),
+		});
+		this.agent.providerOptions = Object.keys(selected).length > 0 ? selected : undefined;
+		return effective;
 	}
 
 	/**
@@ -1841,6 +1927,7 @@ export class AgentSession {
 		const previousModel = this.model;
 		const thinkingLevel = this._getThinkingLevelForModelSwitch();
 		this.agent.state.model = model;
+		this._restoreProviderOptions();
 		this.sessionManager.appendModelChange(model.provider, model.id);
 		this.settingsManager.setDefaultModelAndProvider(model.provider, model.id);
 
@@ -1891,6 +1978,7 @@ export class AgentSession {
 
 		// Apply model
 		this.agent.state.model = next.model;
+		this._restoreProviderOptions();
 		this.sessionManager.appendModelChange(next.model.provider, next.model.id);
 		this.settingsManager.setDefaultModelAndProvider(next.model.provider, next.model.id);
 
@@ -1923,6 +2011,7 @@ export class AgentSession {
 		const thinkingLevel = this._getThinkingLevelForModelSwitch();
 		this._preflightModelSwitch(nextModel, options);
 		this.agent.state.model = nextModel;
+		this._restoreProviderOptions();
 		this.sessionManager.appendModelChange(nextModel.provider, nextModel.id);
 		this.settingsManager.setDefaultModelAndProvider(nextModel.provider, nextModel.id);
 
