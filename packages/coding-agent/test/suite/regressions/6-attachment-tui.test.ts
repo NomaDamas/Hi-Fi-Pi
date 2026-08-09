@@ -469,7 +469,7 @@ describe("Issue 6 attachment TUI contracts", () => {
 		const output = renderCommandOutput(context);
 
 		expect(output).toContain("Status: unsupported");
-		expect(output).toContain("Reason: only application/pdf is enabled");
+		expect(output).toContain("Reason: enabled media types are application/pdf, text/plain");
 	});
 
 	it("reports the selected model transport and native PDF capability", () => {
@@ -483,7 +483,7 @@ describe("Issue 6 attachment TUI contracts", () => {
 		expect(output).toContain("Transport: openai-responses");
 		expect(output).toContain("Declared inputs: text, image");
 		expect(output).toContain("Endpoint profile: openai-official");
-		expect(output).toContain("Native openai-responses-pdf: supported");
+		expect(output).toContain("Native openai-responses-input-file: supported");
 		expect(output).toContain("inline→input_file");
 		expect(output).toContain("official-default");
 		expect(output).toContain("PDF: native via input_file");
