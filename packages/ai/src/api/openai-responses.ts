@@ -313,6 +313,59 @@ function buildParams(
 				: false,
 	};
 
+	const explicitPreviousResponseId = options?.providerOptions?.["openai.responses.previous_response_id"];
+	const continueFromConversation = options?.providerOptions?.["openai.responses.continue"] === true;
+	if (explicitPreviousResponseId !== undefined && continueFromConversation) {
+		throw new Error("OpenAI Responses continuation must use either previous_response_id or continue, not both");
+	}
+	if (typeof explicitPreviousResponseId === "string") {
+		params.previous_response_id = explicitPreviousResponseId;
+	} else if (continueFromConversation) {
+		const previous = [...context.messages]
+			.reverse()
+			.find(
+				(message) =>
+					message.role === "assistant" &&
+					message.providerState?.provider === model.provider &&
+					(message.providerState.api === undefined || message.providerState.api === model.api) &&
+					Boolean(message.providerState.continuationId ?? message.providerState.responseId),
+			);
+		if (previous?.role !== "assistant") {
+			throw new Error("OpenAI Responses continuation was requested but no compatible response state exists");
+		}
+		params.previous_response_id = previous.providerState?.continuationId ?? previous.providerState?.responseId;
+	}
+
+	const textFormat = options?.providerOptions?.["openai.responses.text_format"];
+	if (textFormat && typeof textFormat === "object") {
+		params.text = { format: structuredClone(textFormat) } as ResponseCreateParamsStreaming["text"];
+	}
+
+	const builtInTools =
+		options?.providerOptions?.[
+			model.provider === "xai" ? "xai.responses.built_in_tools" : "openai.responses.built_in_tools"
+		];
+	if (Array.isArray(builtInTools)) {
+		params.tools = [
+			...(params.tools ?? []),
+			...(structuredClone(builtInTools) as NonNullable<ResponseCreateParamsStreaming["tools"]>),
+		];
+		const builtInTypes = new Set(
+			builtInTools.flatMap((tool) =>
+				tool && typeof tool === "object" && "type" in tool && typeof tool.type === "string" ? [tool.type] : [],
+			),
+		);
+		const include = new Set(params.include ?? []);
+		if (builtInTypes.has("file_search")) include.add("file_search_call.results");
+		if (builtInTypes.has("web_search") || builtInTypes.has("web_search_preview")) {
+			include.add("web_search_call.action.sources");
+		}
+		if (builtInTypes.has("code_interpreter")) include.add("code_interpreter_call.outputs");
+		if (include.size > 0) params.include = [...include];
+	}
+
+	if (options?.providerOptions?.["openai.responses.background"] === true) params.background = true;
+
 	if (options?.maxTokens) {
 		params.max_output_tokens = Math.max(options.maxTokens, OPENAI_RESPONSES_MIN_OUTPUT_TOKENS);
 	}
@@ -329,10 +382,13 @@ function buildParams(
 	}
 
 	if (toolPlacement.immediate.length > 0) {
-		params.tools = convertResponsesTools(toolPlacement.immediate, {
-			supportsStrictMode: compat.supportsStrictMode,
-			supportsOpenAIGrammarTools: compat.supportsOpenAIGrammarTools,
-		});
+		params.tools = [
+			...(params.tools ?? []),
+			...convertResponsesTools(toolPlacement.immediate, {
+				supportsStrictMode: compat.supportsStrictMode,
+				supportsOpenAIGrammarTools: compat.supportsOpenAIGrammarTools,
+			}),
+		];
 	}
 
 	if (options?.toolChoice !== undefined) {
@@ -348,13 +404,15 @@ function buildParams(
 				effort: effort as NonNullable<typeof params.reasoning>["effort"],
 				summary: options?.reasoningSummary || "auto",
 			};
-			params.include = ["reasoning.encrypted_content"];
+			params.include = [...new Set([...(params.include ?? []), "reasoning.encrypted_content"] as const)];
 		} else if (model.provider !== "github-copilot" && model.thinkingLevelMap?.off !== null) {
 			params.reasoning = {
 				effort: (model.thinkingLevelMap?.off ?? "none") as NonNullable<typeof params.reasoning>["effort"],
 			};
 		}
-		if (model.provider === "xai") params.include = ["reasoning.encrypted_content"];
+		if (model.provider === "xai") {
+			params.include = [...new Set([...(params.include ?? []), "reasoning.encrypted_content"] as const)];
+		}
 	}
 
 	return params;

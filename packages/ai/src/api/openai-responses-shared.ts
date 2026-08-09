@@ -19,6 +19,7 @@ import type { ProviderTraceRecorder } from "../provider-trace.ts";
 import type {
 	Api,
 	AssistantMessage,
+	CitationPart,
 	Context,
 	ImageContent,
 	Model,
@@ -250,6 +251,17 @@ export function convertResponsesMessages<TApi extends Api>(
 		} else if (msg.role === "assistant") {
 			const output: ResponseInput = [];
 			const assistantMsg = msg as AssistantMessage;
+			for (const nativePart of assistantMsg.nativeParts ?? []) {
+				if (
+					nativePart.provider !== model.provider ||
+					(nativePart.api !== undefined && nativePart.api !== model.api) ||
+					nativePart.kind !== "openai.responses.output_item" ||
+					!nativePart.payload ||
+					typeof nativePart.payload !== "object"
+				)
+					continue;
+				output.push(structuredClone(nativePart.payload) as ResponseInputItem);
+			}
 			const isDifferentModel =
 				assistantMsg.model !== model.id &&
 				assistantMsg.provider === model.provider &&
@@ -488,6 +500,50 @@ export async function processResponsesStream<TApi extends Api>(
 	let sawTerminalResponseEvent = false;
 	const outputSlots = new Map<number, ResponsesOutputSlot>();
 	const reasoningBlocksById = new Map<string, ThinkingContent>();
+	const preservedNativeOutputIndexes = new Set<number>();
+	const preserveNativeOutputItem = (outputIndex: number, item: ResponseOutputItem): void => {
+		if (preservedNativeOutputIndexes.has(outputIndex)) return;
+		preservedNativeOutputIndexes.add(outputIndex);
+		const nativeParts = output.nativeParts ?? [];
+		nativeParts.push({
+			type: "provider-native",
+			provider: model.provider,
+			api: model.api,
+			modelId: model.id,
+			kind: "openai.responses.output_item",
+			payload: structuredClone(item),
+			portability: "provider-locked",
+			...(typeof item.id === "string" ? { stateId: item.id } : {}),
+		});
+		output.nativeParts = nativeParts;
+	};
+	const appendOutputCitations = (item: ResponseOutputMessage): void => {
+		const citations: CitationPart[] = [];
+		for (const content of item.content ?? []) {
+			if (content.type !== "output_text") continue;
+			for (const annotation of content.annotations ?? []) {
+				if (annotation.type === "url_citation") {
+					citations.push({
+						type: "citation",
+						title: annotation.title,
+						url: annotation.url,
+						quotedText: content.text.slice(annotation.start_index, annotation.end_index),
+						provider: model.provider,
+						raw: structuredClone(annotation),
+					});
+				} else {
+					citations.push({
+						type: "citation",
+						sourceId: annotation.file_id,
+						...("filename" in annotation ? { title: annotation.filename } : {}),
+						provider: model.provider,
+						raw: structuredClone(annotation),
+					});
+				}
+			}
+		}
+		if (citations.length > 0) output.citations = [...(output.citations ?? []), ...citations];
+	};
 	const applyMessagePhaseStopReason = (item: ResponseOutputItem): void => {
 		if (item.type === "message" && item.phase === "final_answer") {
 			output.stopReason = "stop";
@@ -602,6 +658,17 @@ export async function processResponsesStream<TApi extends Api>(
 		backfillReasoningSignatures(response.output ?? []);
 		if (response?.id) {
 			output.responseId = response.id;
+			output.providerState = {
+				provider: model.provider,
+				api: model.api,
+				modelId: model.id,
+				responseId: response.id,
+				continuationId: response.id,
+				metadata: {
+					status: response.status,
+					...(response.background !== undefined ? { background: response.background } : {}),
+				},
+			};
 		}
 		if (response?.usage) {
 			const inputDetails = response.usage.input_tokens_details as
@@ -639,6 +706,13 @@ export async function processResponsesStream<TApi extends Api>(
 	for await (const event of openaiStream) {
 		if (event.type === "response.created") {
 			output.responseId = event.response.id;
+			output.providerState = {
+				provider: model.provider,
+				api: model.api,
+				modelId: model.id,
+				responseId: event.response.id,
+				continuationId: event.response.id,
+			};
 		} else if (event.type === "response.output_item.added") {
 			createSlot(event.output_index, event.item);
 		} else if (event.type === "response.reasoning_summary_text.delta") {
@@ -730,6 +804,17 @@ export async function processResponsesStream<TApi extends Api>(
 				slot.block.thinking = summaryText || contentText || slot.block.thinking;
 				slot.block.thinkingSignature = JSON.stringify(item);
 				reasoningBlocksById.set(item.id, slot.block);
+				output.reasoningState = [
+					...(output.reasoningState ?? []),
+					{
+						provider: model.provider,
+						api: model.api,
+						modelId: model.id,
+						...(item.encrypted_content ? { encrypted: item.encrypted_content } : {}),
+						signature: slot.block.thinkingSignature,
+						metadata: { itemId: item.id, status: item.status },
+					},
+				];
 				stream.push({
 					type: "thinking_end",
 					contentIndex: slot.contentIndex,
@@ -740,6 +825,7 @@ export async function processResponsesStream<TApi extends Api>(
 			} else if (item.type === "message" && slot?.type === "text") {
 				slot.block.text = item.content?.map((c) => (c.type === "output_text" ? c.text : c.refusal)).join("") || "";
 				slot.block.textSignature = encodeTextSignatureV1(item.id, item.phase ?? undefined);
+				appendOutputCitations(item);
 				stream.push({
 					type: "text_end",
 					contentIndex: slot.contentIndex,
@@ -776,6 +862,8 @@ export async function processResponsesStream<TApi extends Api>(
 					partial: output,
 				});
 				outputSlots.delete(event.output_index);
+			} else {
+				preserveNativeOutputItem(event.output_index, item);
 			}
 		} else if (event.type === "response.completed" || event.type === "response.incomplete") {
 			finalizeResponse(event.response);

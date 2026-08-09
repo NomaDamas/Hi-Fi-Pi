@@ -1,7 +1,7 @@
 import type { Api, AttachmentRecord, AttachmentSource, AttachmentSourcePolicy, ProviderId } from "./types.ts";
 
 const DEFAULT_URL_PROTOCOLS = ["https:"];
-const DEFAULT_CLOUD_PROTOCOLS = ["gs:", "https:"];
+const DEFAULT_CLOUD_PROTOCOLS = ["gs:", "s3:", "https:"];
 
 export class AttachmentSourcePolicyError extends Error {
 	constructor(attachment: Pick<AttachmentRecord, "id" | "filename">, reason: string) {

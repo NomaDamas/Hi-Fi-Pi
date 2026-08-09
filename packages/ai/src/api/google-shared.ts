@@ -4,7 +4,7 @@
 
 import { type Content, FinishReason, FunctionCallingConfigMode, type Part } from "@google/genai";
 import type { ProviderTraceRecorder } from "../provider-trace.ts";
-import type { Context, ImageContent, Model, StopReason, TextContent, Tool } from "../types.ts";
+import type { Context, ImageContent, Message, Model, StopReason, TextContent, Tool } from "../types.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
 import { recordProviderAttachmentLowering, resolveNativeAttachments } from "./attachment-lowering.ts";
 import { resolveJsonSchemaStrictSampling } from "./constrained-sampling.ts";
@@ -67,6 +67,36 @@ function resolveThoughtSignature(isSameProviderAndModel: boolean, signature: str
 	return isSameProviderAndModel && isValidThoughtSignature(signature) ? signature : undefined;
 }
 
+function matchingGoogleNativeParts<T extends GoogleApiType>(message: Message, model: Model<T>): Part[] {
+	return (message.nativeParts ?? []).flatMap((part) => {
+		if (
+			part.provider !== model.provider ||
+			(part.api !== undefined && part.api !== model.api) ||
+			(part.modelId !== undefined && part.modelId !== model.id) ||
+			part.kind !== "google.part" ||
+			!part.payload ||
+			typeof part.payload !== "object"
+		)
+			return [];
+		return [structuredClone(part.payload) as Part];
+	});
+}
+
+function assertGoogleCloudUri<T extends GoogleApiType>(model: Model<T>, uri: string): void {
+	if (model.api === "google-vertex") {
+		if (!uri.startsWith("gs://")) throw new Error(`Vertex AI cloud attachment URI must use gs://: ${uri}`);
+		return;
+	}
+	if (uri.startsWith("gs://")) return;
+	try {
+		const host = new URL(uri).hostname.toLowerCase();
+		if (host === "youtu.be" || host === "youtube.com" || host.endsWith(".youtube.com")) return;
+	} catch {
+		// Report the provider-native URI requirement below.
+	}
+	throw new Error(`Gemini cloud attachment URI must use gs:// or an official YouTube URL: ${uri}`);
+}
+
 /**
  * Models via Google APIs that require explicit tool call IDs in function calls/responses.
  */
@@ -107,6 +137,7 @@ export function convertMessages<T extends GoogleApiType>(
 
 	for (const msg of transformedMessages) {
 		if (msg.role === "user") {
+			const nativeParts = matchingGoogleNativeParts(msg, model);
 			const attachments = resolveNativeAttachments(
 				msg,
 				context.attachmentRegistry,
@@ -147,6 +178,7 @@ export function convertMessages<T extends GoogleApiType>(
 							...videoMetadata,
 						};
 					case "cloud-uri":
+						assertGoogleCloudUri(model, attachment.source.uri);
 						return {
 							fileData: {
 								mimeType: attachment.mediaType,
@@ -159,15 +191,16 @@ export function convertMessages<T extends GoogleApiType>(
 			});
 			if (typeof msg.content === "string") {
 				const textParts: Part[] =
-					attachmentParts.length > 0 && msg.content.length === 0
+					(nativeParts.length > 0 || attachmentParts.length > 0) && msg.content.length === 0
 						? []
 						: [{ text: sanitizeSurrogates(msg.content) }];
 				contents.push({
 					role: "user",
-					parts: [...attachmentParts, ...textParts],
+					parts: [...nativeParts, ...attachmentParts, ...textParts],
 				});
 			} else {
 				const parts: Part[] = [
+					...nativeParts,
 					...attachmentParts,
 					...msg.content.map((item) => {
 						if (item.type === "text") {
@@ -189,7 +222,7 @@ export function convertMessages<T extends GoogleApiType>(
 				});
 			}
 		} else if (msg.role === "assistant") {
-			const parts: Part[] = [];
+			const parts: Part[] = matchingGoogleNativeParts(msg, model);
 			// Check if message is from same provider and model - only then keep thinking blocks
 			const isSameProviderAndModel = msg.provider === model.provider && msg.model === model.id;
 
@@ -239,6 +272,7 @@ export function convertMessages<T extends GoogleApiType>(
 				parts,
 			});
 		} else if (msg.role === "toolResult") {
+			const nativeParts = matchingGoogleNativeParts(msg, model);
 			// Extract text and image content
 			const textContent = msg.content.filter((c): c is TextContent => c.type === "text");
 			const textResult = textContent.map((c) => c.text).join("\n");
@@ -312,6 +346,7 @@ export function convertMessages<T extends GoogleApiType>(
 							...videoMetadata,
 						};
 					case "cloud-uri":
+						assertGoogleCloudUri(model, attachment.source.uri);
 						return {
 							fileData: {
 								mimeType: attachment.mediaType,
@@ -340,11 +375,11 @@ export function convertMessages<T extends GoogleApiType>(
 			// Check if the last content is already a user turn with function responses and merge.
 			const lastContent = contents[contents.length - 1];
 			if (lastContent?.role === "user" && lastContent.parts?.some((p) => p.functionResponse)) {
-				lastContent.parts.push(functionResponsePart);
+				lastContent.parts.push(functionResponsePart, ...nativeParts);
 			} else {
 				contents.push({
 					role: "user",
-					parts: [functionResponsePart],
+					parts: [functionResponsePart, ...nativeParts],
 				});
 			}
 

@@ -85,6 +85,53 @@ const GEMINI_VIDEO_MEDIA_TYPES = [
 	"video/3gpp",
 ] as const;
 
+const BEDROCK_DOCUMENT_MEDIA_TYPES = [
+	"application/pdf",
+	"text/csv",
+	"application/msword",
+	"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+	"text/html",
+	"text/markdown",
+	"text/plain",
+	"application/vnd.ms-excel",
+	"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+] as const;
+
+const BEDROCK_AUDIO_MEDIA_TYPES = [
+	"audio/aac",
+	"audio/flac",
+	"audio/mp4",
+	"audio/mpeg",
+	"audio/ogg",
+	"audio/opus",
+	"audio/wav",
+	"audio/webm",
+] as const;
+
+const BEDROCK_VIDEO_MEDIA_TYPES = [
+	"video/x-flv",
+	"video/x-matroska",
+	"video/quicktime",
+	"video/mp4",
+	"video/mpeg",
+	"video/3gpp",
+	"video/webm",
+	"video/x-ms-wmv",
+] as const;
+
+const XAI_DOCUMENT_MEDIA_TYPES = [
+	"application/pdf",
+	"text/plain",
+	"text/markdown",
+	"text/csv",
+	"application/json",
+	"application/javascript",
+	"application/typescript",
+	"text/javascript",
+	"text/x-python",
+	"text/x-java",
+] as const;
+
 type CapabilityModel = Pick<
 	Model<string>,
 	"api" | "baseUrl" | "id" | "nativeAttachments" | "nativeInputs" | "provider"
@@ -220,6 +267,33 @@ const builtInResolvers: NativeInputCapabilityResolver[] = [
 		}),
 	},
 	{
+		id: "azure-openai-official",
+		matches: (context) => {
+			const host = hostname(context.baseUrl);
+			return (
+				context.provider === "azure-openai-responses" &&
+				context.api === "azure-openai-responses" &&
+				Boolean(
+					host?.endsWith(".openai.azure.com") ||
+						host?.endsWith(".cognitiveservices.azure.com") ||
+						host?.endsWith(".ai.azure.com"),
+				)
+			);
+		},
+		resolve: () => ({
+			profile: "azure-openai-official",
+			capabilities: [
+				nativeCapability(
+					"azure-openai-responses-input-file",
+					OPENAI_INPUT_FILE_MEDIA_TYPES,
+					["inline", "url", "provider-file"],
+					{ inline: "input_file", url: "input_file", "provider-file": "input_file" },
+					{ maximumBytes: OPENAI_FILE_LIMIT_BYTES, maximumRequestBytes: OPENAI_FILE_LIMIT_BYTES },
+				),
+			],
+		}),
+	},
+	{
 		id: "anthropic-official",
 		matches: (context) =>
 			context.provider === "anthropic" &&
@@ -330,7 +404,10 @@ const builtInResolvers: NativeInputCapabilityResolver[] = [
 		matches: (context) =>
 			context.provider === "google-vertex" &&
 			context.api === "google-vertex" &&
-			hostname(context.baseUrl)?.endsWith(".aiplatform.googleapis.com") === true,
+			Boolean(
+				hostname(context.baseUrl)?.endsWith("-aiplatform.googleapis.com") ||
+					hostname(context.baseUrl)?.endsWith(".aiplatform.googleapis.com"),
+			),
 		resolve: () => ({
 			profile: "vertex-official",
 			capabilities: [
@@ -358,10 +435,73 @@ const builtInResolvers: NativeInputCapabilityResolver[] = [
 			],
 		}),
 	},
+	{
+		id: "bedrock-official",
+		matches: (context) =>
+			context.provider === "amazon-bedrock" &&
+			context.api === "bedrock-converse-stream" &&
+			/^bedrock-runtime(?:-fips)?\.[a-z0-9-]+\.amazonaws\.com(?:\.cn)?$/.test(hostname(context.baseUrl) ?? ""),
+		resolve: () => ({
+			profile: "bedrock-official",
+			capabilities: [
+				nativeCapability(
+					"bedrock-converse-document",
+					BEDROCK_DOCUMENT_MEDIA_TYPES,
+					["inline", "cloud-uri"],
+					{ inline: "document", "cloud-uri": "document" },
+					{ maximumBytes: 4.5 * 1024 * 1024, maximumCount: 5 },
+					{
+						modelAllowList: ["*anthropic.claude*", "*amazon.nova*"],
+					},
+				),
+				nativeCapability(
+					"bedrock-converse-video",
+					BEDROCK_VIDEO_MEDIA_TYPES,
+					["inline", "cloud-uri"],
+					{ inline: "video", "cloud-uri": "video" },
+					{},
+					{
+						modelAllowList: [
+							"*amazon.nova-lite*",
+							"*amazon.nova-pro*",
+							"*amazon.nova-premier*",
+							"*amazon.nova-2-lite*",
+						],
+					},
+				),
+				nativeCapability(
+					"bedrock-converse-audio",
+					BEDROCK_AUDIO_MEDIA_TYPES,
+					["inline", "cloud-uri"],
+					{ inline: "audio", "cloud-uri": "audio" },
+					{},
+					{ modelAllowList: ["*amazon.nova-2-sonic*"] },
+				),
+			],
+		}),
+	},
+	{
+		id: "xai-official",
+		matches: (context) =>
+			context.provider === "xai" && context.api === "openai-responses" && hostname(context.baseUrl) === "api.x.ai",
+		resolve: () => ({
+			profile: "xai-official",
+			capabilities: [
+				nativeCapability(
+					"xai-chat-with-files",
+					XAI_DOCUMENT_MEDIA_TYPES,
+					["url", "provider-file"],
+					{ url: "input_file", "provider-file": "input_file" },
+					{ maximumBytes: 48 * 1024 * 1024 },
+					{ modelAllowList: ["grok-4.5*", "grok-4.20*"] },
+				),
+			],
+		}),
+	},
 ];
 
 function methodForApi(api: string, source: NativeInputTransportSource): string | undefined {
-	if (api === "openai-responses") return "input_file";
+	if (api === "openai-responses" || api === "azure-openai-responses") return "input_file";
 	if (api === "anthropic-messages") return "document";
 	if (api === "google-generative-ai" || api === "google-vertex") {
 		return source === "inline" ? "inlineData" : "fileData";

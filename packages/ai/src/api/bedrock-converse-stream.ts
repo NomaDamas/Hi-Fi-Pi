@@ -1,5 +1,6 @@
 import type { Agent as HttpsAgent } from "node:https";
 import {
+	type AudioFormat,
 	BedrockRuntimeClient,
 	type BedrockRuntimeClientConfig,
 	BedrockRuntimeServiceException,
@@ -14,6 +15,7 @@ import {
 	ConversationRole,
 	ConverseStreamCommand,
 	type ConverseStreamMetadataEvent,
+	type DocumentFormat,
 	ImageFormat,
 	type Message,
 	type SystemContentBlock,
@@ -21,18 +23,28 @@ import {
 	type ToolConfiguration,
 	type ToolResultContentBlock,
 	ToolResultStatus,
+	type VideoFormat,
 } from "@aws-sdk/client-bedrock-runtime";
 import { NodeHttpHandler } from "@smithy/node-http-handler";
 import type { BuildMiddleware, DocumentType, MetadataBearer } from "@smithy/types";
 import { HttpProxyAgent } from "http-proxy-agent";
 import { HttpsProxyAgent } from "https-proxy-agent";
+import { prepareContextAttachmentUploads } from "../attachment-lifecycle.ts";
 import { calculateCost } from "../models.ts";
+import {
+	createProviderTraceRecorder,
+	type ProviderTraceRecorder,
+	traceProviderCompletion,
+	traceProviderOptions,
+	traceProviderPayload,
+	traceProviderResponse,
+	traceRequestHeaders,
+} from "../provider-trace.ts";
 import type {
 	Api,
 	AssistantMessage,
 	CacheRetention,
 	Context,
-	ImageContent,
 	Model,
 	ProviderEnv,
 	SimpleStreamOptions,
@@ -54,6 +66,12 @@ import { parseStreamingJson } from "../utils/json-parse.ts";
 import { resolveHttpProxyUrlForTarget } from "../utils/node-http-proxy.ts";
 import { getProviderEnvValue } from "../utils/provider-env.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
+import {
+	type ResolvedNativeAttachment,
+	recordProviderAttachmentLowering,
+	resolveNativeAttachments,
+	UnsupportedInputError,
+} from "./attachment-lowering.ts";
 import { resolveJsonSchemaStrictSampling } from "./constrained-sampling.ts";
 import {
 	adjustMaxTokensForThinking,
@@ -130,6 +148,8 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 		};
 
 		const blocks = output.content as Block[];
+		const trace = createProviderTraceRecorder(model, options.onTrace);
+		let completionTraced = false;
 
 		// A profile explicitly configured through pi's auth flow (the `profile`
 		// option or scoped `AWS_PROFILE` on the stored credential's env) must win
@@ -220,6 +240,12 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 		}
 
 		try {
+			await traceProviderOptions(trace, options.onTrace, {
+				...(options.providerOptions ?? {}),
+				...(options.region ? { region: options.region } : {}),
+				...(options.profile ? { profile: options.profile } : {}),
+			});
+			await prepareContextAttachmentUploads(model, context, options, trace);
 			const client = new BedrockRuntimeClient(config);
 			const customHeaders = providerHeadersToRecord(options.headers);
 			if (customHeaders) {
@@ -229,7 +255,7 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 			const inferenceMaxTokens = options.maxTokens ?? (isAnthropicClaudeModel(model) ? model.maxTokens : undefined);
 			let commandInput = {
 				modelId: model.id,
-				messages: convertMessages(context, model, cacheRetention, options.env),
+				messages: convertMessages(context, model, cacheRetention, options.env, trace),
 				system: buildSystemPrompt(context.systemPrompt, model, cacheRetention, options.env),
 				inferenceConfig: {
 					...(inferenceMaxTokens !== undefined && { maxTokens: inferenceMaxTokens }),
@@ -243,6 +269,9 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 			if (nextCommandInput !== undefined) {
 				commandInput = nextCommandInput as typeof commandInput;
 			}
+			await trace?.flush(options.onTrace);
+			await traceRequestHeaders(trace, options.onTrace, { ...model.headers, ...options.headers });
+			await traceProviderPayload(trace, options.onTrace, commandInput);
 			const command = new ConverseStreamCommand(commandInput);
 
 			const response = await client.send(command, { abortSignal: options.signal });
@@ -252,6 +281,10 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 					responseHeaders["x-amzn-requestid"] = response.$metadata.requestId;
 				}
 				await options?.onResponse?.({ status: response.$metadata.httpStatusCode, headers: responseHeaders }, model);
+				await traceProviderResponse(trace, options.onTrace, {
+					status: response.$metadata.httpStatusCode,
+					headers: responseHeaders,
+				});
 			}
 
 			for await (const item of response.stream!) {
@@ -273,6 +306,7 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 					if (errorMessage) {
 						output.errorMessage = errorMessage;
 					}
+					preserveBedrockMessageState(item.messageStop.additionalModelResponseFields, model, output);
 				} else if (item.metadata) {
 					handleMetadata(item.metadata, model, output);
 				} else if (item.internalServerException) {
@@ -299,6 +333,8 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 				throw new Error(output.errorMessage || "An unknown error occurred");
 			}
 
+			await traceProviderCompletion(trace, options.onTrace, output);
+			completionTraced = true;
 			stream.push({ type: "done", reason: output.stopReason, message: output });
 			stream.end();
 		} catch (error) {
@@ -309,6 +345,7 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 			}
 			output.stopReason = options.signal?.aborted ? "aborted" : "error";
 			output.errorMessage = formatBedrockError(error);
+			if (!completionTraced) await traceProviderCompletion(trace, options.onTrace, output);
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();
 		}
@@ -468,6 +505,8 @@ function handleContentBlockStart(
 		};
 		output.content.push(block);
 		stream.push({ type: "toolcall_start", contentIndex: blocks.length - 1, partial: output });
+	} else if (start) {
+		preserveBedrockNativePart(output, "bedrock.content_block", start);
 	}
 }
 
@@ -526,6 +565,21 @@ function handleContentBlockDelta(
 					(thinkingBlock.thinkingSignature || "") + delta.reasoningContent.signature;
 			}
 		}
+	} else if (delta?.citation) {
+		output.citations = [
+			...(output.citations ?? []),
+			{
+				type: "citation",
+				title: delta.citation.title,
+				url: delta.citation.source,
+				quotedText: delta.citation.sourceContent?.flatMap((content) => content.text ?? []).join(""),
+				provider: output.provider,
+				raw: structuredClone(delta.citation),
+			},
+		];
+		preserveBedrockNativePart(output, "bedrock.citation_delta", delta.citation);
+	} else if (delta?.image || delta?.toolResult || delta?.$unknown) {
+		preserveBedrockNativePart(output, "bedrock.content_block_delta", delta);
 	}
 }
 
@@ -541,6 +595,20 @@ function handleMetadata(
 		output.usage.cacheWrite = event.usage.cacheWriteInputTokens || 0;
 		output.usage.totalTokens = event.usage.totalTokens || output.usage.input + output.usage.output;
 		calculateCost(model, output.usage);
+	}
+	if (event.trace || event.performanceConfig || event.serviceTier || event.metrics) {
+		output.providerState = {
+			provider: model.provider,
+			api: model.api,
+			modelId: model.id,
+			metadata: {
+				...(output.providerState?.metadata ?? {}),
+				...(event.metrics ? { metrics: structuredClone(event.metrics) } : {}),
+				...(event.trace ? { trace: structuredClone(event.trace) } : {}),
+				...(event.performanceConfig ? { performanceConfig: structuredClone(event.performanceConfig) } : {}),
+				...(event.serviceTier ? { serviceTier: structuredClone(event.serviceTier) } : {}),
+			},
+		};
 	}
 }
 
@@ -743,15 +811,173 @@ function createRequiredTextBlock(text: string): ContentBlock.TextMember {
 	return createNonBlankTextBlock(text) ?? { text: EMPTY_TEXT_PLACEHOLDER };
 }
 
-function convertToolResultContent(content: (TextContent | ImageContent)[]): ToolResultContentBlock[] {
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function decodeBase64(data: string): Uint8Array {
+	const encoded = data.includes(",") ? data.slice(data.indexOf(",") + 1) : data;
+	const binary = atob(encoded);
+	const bytes = new Uint8Array(binary.length);
+	for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
+	return bytes;
+}
+
+function bedrockDocumentFormat(mediaType: string): DocumentFormat | undefined {
+	const formats: Record<string, DocumentFormat> = {
+		"application/pdf": "pdf",
+		"text/csv": "csv",
+		"application/msword": "doc",
+		"application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+		"text/html": "html",
+		"text/markdown": "md",
+		"text/plain": "txt",
+		"application/vnd.ms-excel": "xls",
+		"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+	};
+	return formats[mediaType];
+}
+
+function bedrockAudioFormat(mediaType: string): AudioFormat | undefined {
+	const formats: Record<string, AudioFormat> = {
+		"audio/aac": "aac",
+		"audio/flac": "flac",
+		"audio/mp4": "mp4",
+		"audio/mpeg": "mp3",
+		"audio/ogg": "ogg",
+		"audio/opus": "opus",
+		"audio/wav": "wav",
+		"audio/webm": "webm",
+	};
+	return formats[mediaType];
+}
+
+function bedrockVideoFormat(mediaType: string): VideoFormat | undefined {
+	const formats: Record<string, VideoFormat> = {
+		"video/x-flv": "flv",
+		"video/x-matroska": "mkv",
+		"video/quicktime": "mov",
+		"video/mp4": "mp4",
+		"video/mpeg": "mpeg",
+		"video/3gpp": "three_gp",
+		"video/webm": "webm",
+		"video/x-ms-wmv": "wmv",
+	};
+	return formats[mediaType];
+}
+
+function bedrockAttachmentKind(attachment: ResolvedNativeAttachment): "document" | "audio" | "video" {
+	if (bedrockDocumentFormat(attachment.mediaType)) return "document";
+	if (bedrockAudioFormat(attachment.mediaType)) return "audio";
+	if (bedrockVideoFormat(attachment.mediaType)) return "video";
+	throw new Error(`Unsupported Bedrock attachment media type: ${attachment.mediaType}`);
+}
+
+function bedrockAttachmentSource(attachment: ResolvedNativeAttachment) {
+	if (attachment.source.type === "base64") return { bytes: decodeBase64(attachment.source.data) };
+	if (attachment.source.type === "cloud-uri") {
+		if (!attachment.source.uri.startsWith("s3://")) {
+			throw new Error(`Bedrock native inputs require an s3:// cloud URI: ${attachment.source.uri}`);
+		}
+		const bucketOwner =
+			isRecord(attachment.metadata?.bedrock) && typeof attachment.metadata.bedrock.bucketOwner === "string"
+				? attachment.metadata.bedrock.bucketOwner
+				: undefined;
+		return { s3Location: { uri: attachment.source.uri, ...(bucketOwner ? { bucketOwner } : {}) } };
+	}
+	throw new Error(`Bedrock cannot lower ${attachment.source.type} attachment sources`);
+}
+
+function neutralDocumentName(attachment: ResolvedNativeAttachment): string {
+	const withoutExtension = attachment.filename.replace(/\.[^.]+$/, "");
+	const sanitized = withoutExtension
+		.replace(/[^a-zA-Z0-9\s()[\]-]/g, "-")
+		.replace(/\s+/g, " ")
+		.trim();
+	return (sanitized || `attachment-${attachment.id.replace(/[^a-zA-Z0-9-]/g, "-")}`).slice(0, 200);
+}
+
+function convertBedrockAttachment(attachment: ResolvedNativeAttachment): ContentBlock {
+	const kind = bedrockAttachmentKind(attachment);
+	const source = bedrockAttachmentSource(attachment);
+	if (kind === "document") {
+		return {
+			document: {
+				format: bedrockDocumentFormat(attachment.mediaType),
+				name: neutralDocumentName(attachment),
+				source,
+				...(attachment.metadata?.citations === true ? { citations: { enabled: true } } : {}),
+			},
+		};
+	}
+	if (kind === "audio") return { audio: { format: bedrockAudioFormat(attachment.mediaType), source } };
+	return { video: { format: bedrockVideoFormat(attachment.mediaType), source } };
+}
+
+function preserveBedrockNativePart(output: AssistantMessage, kind: string, payload: unknown): void {
+	output.nativeParts = [
+		...(output.nativeParts ?? []),
+		{
+			type: "provider-native",
+			provider: output.provider,
+			api: output.api,
+			modelId: output.model,
+			kind,
+			payload: structuredClone(payload),
+			portability: "provider-locked",
+		},
+	];
+}
+
+function preserveBedrockMessageState(
+	additionalModelResponseFields: DocumentType | undefined,
+	model: Model<"bedrock-converse-stream">,
+	output: AssistantMessage,
+): void {
+	if (additionalModelResponseFields === undefined) return;
+	output.providerState = {
+		provider: model.provider,
+		api: model.api,
+		modelId: model.id,
+		metadata: {
+			...(output.providerState?.metadata ?? {}),
+			additionalModelResponseFields: structuredClone(additionalModelResponseFields),
+		},
+	};
+}
+
+function convertToolResultContent(
+	message: ToolResultMessage,
+	context: Context,
+	model: Model<"bedrock-converse-stream">,
+	trace?: ProviderTraceRecorder,
+): ToolResultContentBlock[] {
 	const result: ToolResultContentBlock[] = [];
-	for (const c of content) {
+	for (const c of message.content) {
 		if (c.type === "image") {
 			result.push({ image: createImageBlock(c.mimeType, c.data) });
 		} else {
 			const textBlock = createNonBlankTextBlock(c.text);
 			if (textBlock) result.push(textBlock);
 		}
+	}
+	for (const attachment of resolveNativeAttachments(
+		message,
+		context.attachmentRegistry,
+		model,
+		trace,
+		context.attachmentSourcePolicy,
+	)) {
+		const block = convertBedrockAttachment(attachment);
+		if ("audio" in block) {
+			throw new UnsupportedInputError(
+				model,
+				attachment.mediaType,
+				"Bedrock tool results do not support audio blocks",
+			);
+		}
+		recordProviderAttachmentLowering(trace, attachment, "tool_result");
+		result.push(block as ToolResultContentBlock);
 	}
 	if (result.length === 0) result.push({ text: EMPTY_TEXT_PLACEHOLDER });
 	return result;
@@ -762,6 +988,7 @@ function convertMessages(
 	model: Model<"bedrock-converse-stream">,
 	cacheRetention: CacheRetention,
 	env?: ProviderEnv,
+	trace?: ProviderTraceRecorder,
 ): Message[] {
 	const result: Message[] = [];
 	const transformedMessages = transformMessages(context.messages, model, normalizeToolCallId);
@@ -790,6 +1017,22 @@ function convertMessages(
 						}
 					}
 					if (content.length === 0) content.push({ text: EMPTY_TEXT_PLACEHOLDER });
+				}
+				const attachments = resolveNativeAttachments(
+					m,
+					context.attachmentRegistry,
+					model,
+					trace,
+					context.attachmentSourcePolicy,
+				);
+				if (attachments.some((attachment) => bedrockAttachmentKind(attachment) === "document")) {
+					const hasText = content.some((block) => "text" in block);
+					if (!hasText) content.unshift({ text: EMPTY_TEXT_PLACEHOLDER });
+				}
+				for (const attachment of attachments) {
+					const block = convertBedrockAttachment(attachment);
+					recordProviderAttachmentLowering(trace, attachment, bedrockAttachmentKind(attachment));
+					content.push(block);
 				}
 				result.push({
 					role: ConversationRole.USER,
@@ -854,6 +1097,17 @@ function convertMessages(
 							continue;
 					}
 				}
+				for (const nativePart of m.nativeParts ?? []) {
+					if (
+						nativePart.provider === model.provider &&
+						(nativePart.api === undefined || nativePart.api === model.api) &&
+						(nativePart.modelId === undefined || nativePart.modelId === model.id) &&
+						nativePart.kind === "bedrock.content_block" &&
+						isRecord(nativePart.payload)
+					) {
+						contentBlocks.push(nativePart.payload as unknown as ContentBlock);
+					}
+				}
 				// Skip if all content blocks were filtered out
 				if (contentBlocks.length === 0) {
 					continue;
@@ -873,7 +1127,7 @@ function convertMessages(
 				toolResults.push({
 					toolResult: {
 						toolUseId: m.toolCallId,
-						content: convertToolResultContent(m.content),
+						content: convertToolResultContent(m, context, model, trace),
 						status: m.isError ? ToolResultStatus.ERROR : ToolResultStatus.SUCCESS,
 					},
 				});
@@ -885,7 +1139,7 @@ function convertMessages(
 					toolResults.push({
 						toolResult: {
 							toolUseId: nextMsg.toolCallId,
-							content: convertToolResultContent(nextMsg.content),
+							content: convertToolResultContent(nextMsg, context, model, trace),
 							status: nextMsg.isError ? ToolResultStatus.ERROR : ToolResultStatus.SUCCESS,
 						},
 					});

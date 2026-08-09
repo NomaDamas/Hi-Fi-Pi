@@ -33,6 +33,12 @@ import { formatProviderError, normalizeProviderError } from "../utils/error-body
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { providerHeadersToRecord } from "../utils/headers.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
+import {
+	finalizeGoogleReasoningState,
+	preserveGoogleCandidateState,
+	preserveGooglePart,
+	updateGoogleProviderState,
+} from "./google-native-state.ts";
 import type { GoogleThinkingLevel } from "./google-shared.ts";
 import {
 	convertMessages,
@@ -114,7 +120,16 @@ export const stream: StreamFunction<"google-generative-ai", GoogleOptions> = (
 				// @google/genai documents GenerateContentResponse.responseId as an output-only field
 				// used to identify each response. Keep the first non-empty one from the stream.
 				output.responseId ||= chunk.responseId;
+				updateGoogleProviderState(
+					output,
+					model,
+					output.responseId,
+					typeof options?.providerOptions?.["google.cached_content"] === "string"
+						? options.providerOptions["google.cached_content"]
+						: undefined,
+				);
 				const candidate = chunk.candidates?.[0];
+				if (candidate) preserveGoogleCandidateState(output, model, candidate);
 				if (candidate?.content?.parts) {
 					for (const part of candidate.content.parts) {
 						if (part.text !== undefined) {
@@ -224,6 +239,7 @@ export const stream: StreamFunction<"google-generative-ai", GoogleOptions> = (
 							});
 							stream.push({ type: "toolcall_end", contentIndex: blockIndex(), toolCall, partial: output });
 						}
+						preserveGooglePart(output, model, part);
 					}
 				}
 
@@ -256,6 +272,7 @@ export const stream: StreamFunction<"google-generative-ai", GoogleOptions> = (
 					calculateCost(model, output.usage);
 				}
 			}
+			finalizeGoogleReasoningState(output, model);
 
 			if (currentBlock) {
 				if (currentBlock.type === "text") {
@@ -392,14 +409,21 @@ function buildParams(
 	const functionCallingMode = context.tools?.length
 		? resolveGoogleFunctionCallingMode(context.tools, options.toolChoice, supportsGoogleStrictToolSampling(model.id))
 		: undefined;
+	const providerTools: NonNullable<GenerateContentConfig["tools"]> = [];
+	if (options.providerOptions?.["google.google_search"] === true) providerTools.push({ googleSearch: {} });
+	if (options.providerOptions?.["google.url_context"] === true) providerTools.push({ urlContext: {} });
+	if (options.providerOptions?.["google.code_execution"] === true) providerTools.push({ codeExecution: {} });
+	const clientTools = context.tools && context.tools.length > 0 ? convertTools(context.tools) : undefined;
 	const config: GenerateContentConfig = {
 		...(Object.keys(generationConfig).length > 0 && generationConfig),
 		...(context.systemPrompt && { systemInstruction: sanitizeSurrogates(context.systemPrompt) }),
-		...(context.tools && context.tools.length > 0 && { tools: convertTools(context.tools) }),
+		...((clientTools?.length || providerTools.length > 0) && { tools: [...(clientTools ?? []), ...providerTools] }),
 		...(functionCallingMode !== undefined && {
 			toolConfig: { functionCallingConfig: { mode: functionCallingMode } },
 		}),
 	};
+	const cachedContent = options.providerOptions?.["google.cached_content"];
+	if (typeof cachedContent === "string") config.cachedContent = cachedContent;
 
 	if (options.thinking?.enabled && model.reasoning) {
 		const thinkingConfig: ThinkingConfig = { includeThoughts: true };

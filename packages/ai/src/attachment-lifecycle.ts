@@ -156,6 +156,51 @@ const openAIUploadBackend: AttachmentUploadBackend = {
 	},
 };
 
+const xAIUploadBackend: AttachmentUploadBackend = {
+	apiVersion: ATTACHMENT_UPLOAD_BACKEND_VERSION,
+	id: "xai-files-v1",
+	matches: (model) =>
+		model.provider === "xai" && model.api === "openai-responses" && endpointHostname(model) === "api.x.ai",
+	upload: async (context) => {
+		const apiKey = requireApiKey(context, "xAI");
+		const headers = copyHeaders(context.headers);
+		if (apiKey) headers.set("authorization", `Bearer ${apiKey}`);
+		const form = new FormData();
+		form.set("file", blobFor(context), context.attachment.filename);
+		const body = await responseJson(
+			await context.fetch(endpointWithVersion(context.model.baseUrl, "/files"), {
+				method: "POST",
+				headers,
+				body: form,
+				signal: context.signal,
+			}),
+			"xAI file upload",
+		);
+		if (typeof body.id !== "string") throw new Error("xAI file upload response is missing id");
+		return {
+			provider: context.model.provider,
+			api: context.model.api,
+			fileId: body.id,
+			endpoint: canonicalEndpoint(context.model.baseUrl),
+			sourceSha256: context.sha256,
+			uploadedAt: unixMillis(body.created_at) ?? Date.now(),
+			...(unixMillis(body.expires_at) !== undefined ? { expiresAt: unixMillis(body.expires_at) } : {}),
+			state: "ready",
+			metadata: { backend: "xai-files-v1" },
+		};
+	},
+	delete: async (context) => {
+		const apiKey = requireApiKey(context, "xAI");
+		const headers = copyHeaders(context.headers);
+		if (apiKey) headers.set("authorization", `Bearer ${apiKey}`);
+		const response = await context.fetch(
+			`${endpointWithVersion(context.model.baseUrl, "/files")}/${encodeURIComponent(context.reference.fileId)}`,
+			{ method: "DELETE", headers, signal: context.signal },
+		);
+		if (!response.ok) throw new Error(`xAI file deletion failed with HTTP ${response.status}`);
+	},
+};
+
 const anthropicUploadBackend: AttachmentUploadBackend = {
 	apiVersion: ATTACHMENT_UPLOAD_BACKEND_VERSION,
 	id: "anthropic-files-beta",
@@ -281,7 +326,7 @@ const geminiUploadBackend: AttachmentUploadBackend = {
 	},
 };
 
-const builtInUploadBackends = [openAIUploadBackend, anthropicUploadBackend, geminiUploadBackend];
+const builtInUploadBackends = [openAIUploadBackend, xAIUploadBackend, anthropicUploadBackend, geminiUploadBackend];
 
 export function registerAttachmentUploadBackend(backend: AttachmentUploadBackend): () => void {
 	if (backend.apiVersion !== ATTACHMENT_UPLOAD_BACKEND_VERSION) {
