@@ -296,15 +296,20 @@ export function registerAttachmentUploadBackend(backend: AttachmentUploadBackend
 }
 
 export function resolveAttachmentUploadBackend(model: Model<Api>): AttachmentUploadBackend | undefined {
-	const matches = [...registeredUploadBackends.values(), ...builtInUploadBackends].filter((backend) =>
-		backend.matches(model),
-	);
-	if (matches.length > 1) {
+	const registeredMatches = [...registeredUploadBackends.values()].filter((backend) => backend.matches(model));
+	if (registeredMatches.length > 1) {
 		throw new Error(
-			`Ambiguous attachment upload backends for ${model.provider}/${model.api}/${model.id}: ${matches.map((item) => item.id).join(", ")}`,
+			`Ambiguous attachment upload backends for ${model.provider}/${model.api}/${model.id}: ${registeredMatches.map((item) => item.id).join(", ")}`,
 		);
 	}
-	return matches[0];
+	if (registeredMatches[0]) return registeredMatches[0];
+	const builtInMatches = builtInUploadBackends.filter((backend) => backend.matches(model));
+	if (builtInMatches.length > 1) {
+		throw new Error(
+			`Ambiguous built-in attachment upload backends for ${model.provider}/${model.api}/${model.id}: ${builtInMatches.map((item) => item.id).join(", ")}`,
+		);
+	}
+	return builtInMatches[0];
 }
 
 export function providerRemoteKey(model: Pick<Model<Api>, "provider" | "api" | "baseUrl">): string {
