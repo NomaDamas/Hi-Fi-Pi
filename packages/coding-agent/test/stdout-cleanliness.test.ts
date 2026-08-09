@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { ENV_AGENT_DIR } from "../src/config.ts";
+import { ENV_AGENT_DIR, getVersionString } from "../src/config.ts";
 import { allowNetwork } from "./test-network-env.ts";
 
 const cliPath = resolve(__dirname, "../src/cli.ts");
@@ -89,7 +89,7 @@ describe("stdout cleanliness in non-interactive modes", () => {
 		const result = await runCli(["--version"]);
 
 		expect(result.code).toBe(0);
-		expect(result.stdout.trim()).toMatch(/^\d+\.\d+\.\d+/);
+		expect(result.stdout.trim()).toBe(getVersionString());
 		expect(result.stderr).toBe("");
 	});
 
