@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,6 +11,7 @@ import {
 } from "../src/agent-definition.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
+import { ProductPolicyEnforcer } from "../src/product/policy.ts";
 
 describe("agent definition registry", () => {
 	let directory: string;
@@ -130,5 +132,46 @@ describe("agent definition registry", () => {
 		expect(() => registry.register(definition("research", "Research.", []), { baseDirectory: directory })).toThrow(
 			"already registered",
 		);
+	});
+
+	it("enforces extension admission policy before loading product code", async () => {
+		const extensionPath = join(directory, "network-extension.ts");
+		const source = "export default function extension() {}\n";
+		writeFileSync(extensionPath, source);
+		const integrity = `sha256-${createHash("sha256").update(source).digest("base64")}`;
+		const guarded = new AgentDefinitionRegistry(registry.modelRuntime, {
+			policyEnforcer: new ProductPolicyEnforcer({
+				policy: {
+					extensions: {
+						allow: [{ source: extensionPath, versions: ["1.0.0"], integrities: [integrity] }],
+						requireVersion: true,
+						requireIntegrity: true,
+						deniedCapabilities: ["network"],
+					},
+				},
+			}),
+		});
+		guarded.register(
+			{
+				...definition("guarded", "Guarded.", []),
+				resources: {
+					extensions: [{ source: extensionPath, version: "1.0.0", integrity, capabilities: ["network"] }],
+				},
+			},
+			{ baseDirectory: directory },
+		);
+
+		await expect(
+			guarded.create({
+				agentId: "guarded",
+				cwd: directory,
+				productIdentity: {
+					tenantId: "tenant-a",
+					userId: "user-a",
+					agentId: "guarded",
+					threadId: "thread-a",
+				},
+			}),
+		).rejects.toThrow("capability network is disabled");
 	});
 });

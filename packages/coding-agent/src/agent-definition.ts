@@ -5,6 +5,8 @@ import { resolveProviderOptions } from "@earendil-works/pi-ai";
 import type { ModelRuntime } from "./core/model-runtime.ts";
 import { SessionManager } from "./core/session-manager.ts";
 import { type CreateHeadlessAgentHostOptions, createHeadlessAgentHost, type HeadlessAgentHost } from "./headless.ts";
+import type { ProductExtensionDescriptor, ProductPolicyEnforcer } from "./product/policy.ts";
+import type { ProductIdentity } from "./product/storage.ts";
 
 export const AGENT_DEFINITION_SCHEMA_VERSION = 1 as const;
 
@@ -15,7 +17,7 @@ export interface AgentDefinitionModelReference {
 }
 
 export interface AgentDefinitionResources {
-	extensions?: string[];
+	extensions?: Array<string | ProductExtensionDescriptor>;
 	skills?: string[];
 	prompts?: string[];
 }
@@ -49,6 +51,7 @@ export interface CreateDefinedAgentOptions {
 	sessionManager?: SessionManager;
 	sessionDir?: string;
 	onTrace?: CreateHeadlessAgentHostOptions["onTrace"];
+	productIdentity?: ProductIdentity;
 }
 
 export interface CreatedDefinedAgent {
@@ -82,11 +85,38 @@ function optionalStringArray(value: unknown, field: string): string[] | undefine
 	return [...value];
 }
 
+function parseExtensionResources(value: unknown): Array<string | ProductExtensionDescriptor> | undefined {
+	if (value === undefined) return undefined;
+	if (!Array.isArray(value)) {
+		throw new AgentDefinitionValidationError("resources.extensions must be an array");
+	}
+	return value.map((entry, index) => {
+		if (typeof entry === "string" && entry.length > 0) return entry;
+		if (!isRecord(entry)) {
+			throw new AgentDefinitionValidationError(`resources.extensions[${index}] must be a string or object`);
+		}
+		const capabilities = optionalStringArray(entry.capabilities, `resources.extensions[${index}].capabilities`);
+		if (capabilities?.some((capability) => !["filesystem", "process", "network", "tui"].includes(capability))) {
+			throw new AgentDefinitionValidationError(`resources.extensions[${index}].capabilities is invalid`);
+		}
+		return {
+			source: requireNonEmptyString(entry.source, `resources.extensions[${index}].source`),
+			...(entry.version !== undefined
+				? { version: requireNonEmptyString(entry.version, `resources.extensions[${index}].version`) }
+				: {}),
+			...(entry.integrity !== undefined
+				? { integrity: requireNonEmptyString(entry.integrity, `resources.extensions[${index}].integrity`) }
+				: {}),
+			...(capabilities ? { capabilities: capabilities as ProductExtensionDescriptor["capabilities"] } : {}),
+		};
+	});
+}
+
 function parseResources(value: unknown): AgentDefinitionResources | undefined {
 	if (value === undefined) return undefined;
 	if (!isRecord(value)) throw new AgentDefinitionValidationError("resources must be an object");
 	return {
-		extensions: optionalStringArray(value.extensions, "resources.extensions"),
+		extensions: parseExtensionResources(value.extensions),
 		skills: optionalStringArray(value.skills, "resources.skills"),
 		prompts: optionalStringArray(value.prompts, "resources.prompts"),
 	};
@@ -159,8 +189,31 @@ function resolveDefinitionPath(path: string, baseDirectory: string): string {
 	return isAbsolute(path) ? resolve(path) : resolve(baseDirectory, path);
 }
 
+function extensionSource(extension: string | ProductExtensionDescriptor): string {
+	return typeof extension === "string" ? extension : extension.source;
+}
+
+function resolveExtensionDescriptor(
+	extension: string | ProductExtensionDescriptor,
+	baseDirectory: string,
+): ProductExtensionDescriptor {
+	return typeof extension === "string"
+		? { source: resolveDefinitionPath(extension, baseDirectory) }
+		: { ...extension, source: resolveDefinitionPath(extension.source, baseDirectory) };
+}
+
 function assertResourcesExist(definition: AgentDefinition, baseDirectory: string): void {
-	for (const [kind, paths] of Object.entries(definition.resources ?? {})) {
+	const resources = definition.resources;
+	for (const extension of resources?.extensions ?? []) {
+		const resolvedPath = resolveDefinitionPath(extensionSource(extension), baseDirectory);
+		if (!existsSync(resolvedPath)) {
+			throw new AgentDefinitionValidationError(`extensions resource does not exist: ${resolvedPath}`);
+		}
+	}
+	for (const [kind, paths] of [
+		["skills", resources?.skills],
+		["prompts", resources?.prompts],
+	] as const) {
 		for (const path of paths ?? []) {
 			const resolvedPath = resolveDefinitionPath(path, baseDirectory);
 			if (!existsSync(resolvedPath)) {
@@ -177,9 +230,11 @@ function versionCompare(left: string, right: string): number {
 export class AgentDefinitionRegistry {
 	private readonly definitions = new Map<string, Map<string, RegisteredAgentDefinition>>();
 	readonly modelRuntime: ModelRuntime;
+	private readonly policyEnforcer?: ProductPolicyEnforcer;
 
-	constructor(modelRuntime: ModelRuntime) {
+	constructor(modelRuntime: ModelRuntime, options: { policyEnforcer?: ProductPolicyEnforcer } = {}) {
 		this.modelRuntime = modelRuntime;
+		this.policyEnforcer = options.policyEnforcer;
 	}
 
 	register(value: unknown, options: { baseDirectory?: string } = {}): AgentDefinition {
@@ -268,6 +323,17 @@ export class AgentDefinitionRegistry {
 				? SessionManager.create(cwd, resolve(options.sessionDir ?? configuredSessionDir!))
 				: SessionManager.inMemory(cwd));
 		const resources = definition.resources;
+		const extensionDescriptors = resources?.extensions?.map((extension) =>
+			resolveExtensionDescriptor(extension, baseDirectory),
+		);
+		if (extensionDescriptors && this.policyEnforcer) {
+			if (!options.productIdentity) {
+				throw new AgentDefinitionValidationError(
+					"productIdentity is required when extension policy enforcement is enabled",
+				);
+			}
+			this.policyEnforcer.assertExtensions(options.productIdentity, extensionDescriptors);
+		}
 		const host = await createHeadlessAgentHost({
 			cwd,
 			modelRuntime: this.modelRuntime,
@@ -280,12 +346,16 @@ export class AgentDefinitionRegistry {
 			sessionManager,
 			resourceLoaderOptions: {
 				systemPrompt: definition.systemPrompt,
-				additionalExtensionPaths: resources?.extensions?.map((path) => resolveDefinitionPath(path, baseDirectory)),
+				additionalExtensionPaths: extensionDescriptors?.map((extension) => extension.source),
 				additionalSkillPaths: resources?.skills?.map((path) => resolveDefinitionPath(path, baseDirectory)),
 				additionalPromptTemplatePaths: resources?.prompts?.map((path) =>
 					resolveDefinitionPath(path, baseDirectory),
 				),
+				noExtensions: true,
+				noSkills: true,
+				noPromptTemplates: true,
 				noThemes: true,
+				noContextFiles: true,
 			},
 		});
 		host.session.sessionManager.appendCustomEntry("hifi.agent-definition", {
