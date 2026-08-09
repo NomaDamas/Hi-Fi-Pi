@@ -1,11 +1,12 @@
 import chalk from "chalk";
 import { type SpawnSyncReturns, spawnSync } from "child_process";
+import { randomUUID } from "crypto";
 import { chmodSync, createWriteStream, existsSync, mkdirSync, readdirSync, renameSync, rmSync } from "fs";
-import { arch, platform } from "os";
+import { arch, homedir, platform } from "os";
 import { join } from "path";
 import { Readable } from "stream";
 import { pipeline } from "stream/promises";
-import { APP_NAME, getBinDir } from "../config.ts";
+import { APP_NAME, CONFIG_DIR_NAME, getBinDir, resolveAgentDir, USER_CONFIG_DIR_NAME } from "../config.ts";
 import { fetchWithRetry } from "./management-http.ts";
 
 const TOOLS_DIR = getBinDir();
@@ -82,15 +83,30 @@ function commandExists(cmd: string): boolean {
 	}
 }
 
+// Existing Pi installs keep managed binaries under ~/.pi/agent/bin. Reuse them so
+// users migrating to the distribution directory don't cold-download on first run.
+function getLegacyToolPath(binaryFileName: string): string | null {
+	if (USER_CONFIG_DIR_NAME === CONFIG_DIR_NAME) return null;
+	if (resolveAgentDir().source !== "default") return null;
+	const legacyPath = join(homedir(), CONFIG_DIR_NAME, "agent", "bin", binaryFileName);
+	return existsSync(legacyPath) ? legacyPath : null;
+}
+
 // Get the path to a tool (system-wide or in our tools dir)
 export function getToolPath(tool: "fd" | "rg"): string | null {
 	const config = TOOLS[tool];
 	if (!config) return null;
 
 	// Check our tools directory first
-	const localPath = join(TOOLS_DIR, config.binaryName + (platform() === "win32" ? ".exe" : ""));
+	const binaryFileName = config.binaryName + (platform() === "win32" ? ".exe" : "");
+	const localPath = join(TOOLS_DIR, binaryFileName);
 	if (existsSync(localPath)) {
 		return localPath;
+	}
+
+	const legacyPath = getLegacyToolPath(binaryFileName);
+	if (legacyPath) {
+		return legacyPath;
 	}
 
 	// Check system PATH - if found, just return the command name (it's in PATH)
@@ -106,11 +122,15 @@ export function getToolPath(tool: "fd" | "rg"): string | null {
 
 // Fetch latest release version from GitHub
 async function getLatestVersion(repo: string): Promise<string> {
+	const headers: Record<string, string> = { "User-Agent": `${APP_NAME}-coding-agent` };
+	// Unauthenticated GitHub API calls are heavily rate-limited on shared CI runners.
+	const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
+	if (token) {
+		headers.Authorization = `Bearer ${token}`;
+	}
 	const response = await fetchWithRetry(
 		`https://api.github.com/repos/${repo}/releases/latest`,
-		{
-			headers: { "User-Agent": `${APP_NAME}-coding-agent` },
-		},
+		{ headers },
 		{ timeoutMs: NETWORK_TIMEOUT_MS },
 	);
 
@@ -263,19 +283,19 @@ async function downloadTool(tool: "fd" | "rg"): Promise<string> {
 	mkdirSync(TOOLS_DIR, { recursive: true });
 
 	const downloadUrl = `https://github.com/${config.repo}/releases/download/${config.tagPrefix}${version}/${assetName}`;
-	const archivePath = join(TOOLS_DIR, assetName);
+	// Download and extract under unique per-attempt paths. Multiple processes can
+	// cold-download the same tool concurrently (parallel test workers, several
+	// sessions after a fresh install), and a shared archive path lets one process
+	// truncate the file while another is mid-extract.
+	const attemptId = `${process.pid}_${randomUUID()}`;
+	const archivePath = join(TOOLS_DIR, `${assetName}.${attemptId}.download`);
 	const binaryExt = plat === "win32" ? ".exe" : "";
 	const binaryPath = join(TOOLS_DIR, config.binaryName + binaryExt);
 
 	// Download
 	await downloadFile(downloadUrl, archivePath);
 
-	// Extract into a unique temp directory. fd and rg downloads can run concurrently
-	// during startup, so sharing a fixed directory causes races.
-	const extractDir = join(
-		TOOLS_DIR,
-		`extract_tmp_${config.binaryName}_${process.pid}_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`,
-	);
+	const extractDir = join(TOOLS_DIR, `extract_tmp_${config.binaryName}_${attemptId}`);
 	mkdirSync(extractDir, { recursive: true });
 
 	try {
@@ -298,15 +318,23 @@ async function downloadTool(tool: "fd" | "rg"): Promise<string> {
 			extractedBinary = findBinaryRecursively(extractDir, binaryFileName) ?? undefined;
 		}
 
-		if (extractedBinary) {
-			renameSync(extractedBinary, binaryPath);
-		} else {
+		if (!extractedBinary) {
 			throw new Error(`Binary not found in archive: expected ${binaryFileName} under ${extractDir}`);
 		}
 
-		// Make executable (Unix only)
+		// Make executable before publishing so the binary never appears non-runnable
 		if (plat !== "win32") {
-			chmodSync(binaryPath, 0o755);
+			chmodSync(extractedBinary, 0o755);
+		}
+
+		try {
+			renameSync(extractedBinary, binaryPath);
+		} catch (error) {
+			// On Windows rename fails when the target exists; a concurrent download
+			// already installed the binary, which is success for our caller.
+			if (!existsSync(binaryPath)) {
+				throw error;
+			}
 		}
 	} finally {
 		// Cleanup
@@ -363,6 +391,11 @@ export async function ensureTool(tool: "fd" | "rg", silent: boolean = false): Pr
 		}
 		return path;
 	} catch (e) {
+		// A concurrent process may have completed the install while ours failed.
+		const installedConcurrently = getToolPath(tool);
+		if (installedConcurrently) {
+			return installedConcurrently;
+		}
 		if (!silent) {
 			console.log(chalk.yellow(`Failed to download ${config.name}: ${e instanceof Error ? e.message : e}`));
 		}
