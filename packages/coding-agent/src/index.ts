@@ -419,6 +419,18 @@ export {
 	Theme,
 	type ThemeColor,
 } from "./modes/interactive/theme/theme.ts";
+export {
+	FilesystemProductStorage,
+	InMemoryProductCredentialBackend,
+	type ProductCredentialBackend,
+	type ProductIdentity,
+	type ProductStorageAuditEvent,
+	ProductStorageBoundaryError,
+	type ProductStorageOptions,
+	type ProductStoragePaths,
+	ScopedProductCredentialStore,
+	validateProductIdentity,
+} from "./product/storage.ts";
 // Clipboard utilities
 export { copyToClipboard } from "./utils/clipboard.ts";
 export { parseFrontmatter, stripFrontmatter } from "./utils/frontmatter.ts";

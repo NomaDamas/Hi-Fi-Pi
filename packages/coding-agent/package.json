@@ -27,6 +27,10 @@
 		"./headless": {
 			"types": "./dist/headless.d.ts",
 			"import": "./dist/headless.js"
+		},
+		"./product": {
+			"types": "./dist/product/index.d.ts",
+			"import": "./dist/product/index.js"
 		}
 	},
 	"files": [
