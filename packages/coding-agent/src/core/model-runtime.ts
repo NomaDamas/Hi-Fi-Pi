@@ -13,6 +13,7 @@ import {
 	type CredentialInfo,
 	type CredentialStore,
 	createModels,
+	dispatchProviderBackend,
 	lazyStream,
 	type Model,
 	type Models,
@@ -475,11 +476,18 @@ export class ModelRuntime implements Models {
 				model,
 				options as (StreamOptions & ModelsStreamTransforms) | undefined,
 			);
-			return prepared.provider.stream(
-				prepared.model as Model<TApi>,
-				context,
-				prepared.options as ApiStreamOptions<TApi>,
-			);
+			return dispatchProviderBackend({
+				model: prepared.model,
+				conversation: context,
+				options: prepared.options,
+				simple: false,
+				legacy: (conversation, legacyOptions) =>
+					prepared.provider.stream(
+						prepared.model as Model<TApi>,
+						conversation,
+						legacyOptions as ApiStreamOptions<TApi>,
+					),
+			});
 		});
 	}
 
@@ -494,7 +502,14 @@ export class ModelRuntime implements Models {
 	streamSimple(model: Model<Api>, context: Context, options?: ModelsSimpleStreamOptions): AssistantMessageEventStream {
 		return lazyStream(model, async () => {
 			const prepared = await this.prepareRequest(model, options);
-			return prepared.provider.streamSimple(prepared.model, context, prepared.options as SimpleStreamOptions);
+			return dispatchProviderBackend({
+				model: prepared.model,
+				conversation: context,
+				options: prepared.options,
+				simple: true,
+				legacy: (conversation, legacyOptions) =>
+					prepared.provider.streamSimple(prepared.model, conversation, legacyOptions as SimpleStreamOptions),
+			});
 		});
 	}
 

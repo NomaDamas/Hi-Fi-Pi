@@ -28,6 +28,7 @@ import type {
 	OAuthCredentials,
 	OAuthLoginCallbacks,
 	Provider,
+	ProviderBackendRegistration,
 	ProviderHeaders,
 	ProviderTraceEvent,
 	RefreshModelsContext,
@@ -1413,6 +1414,9 @@ export interface ExtensionAPI {
 	registerProvider(provider: Provider): void;
 	registerProvider(name: string, config: ProviderConfig): void;
 
+	/** Register a versioned deep provider backend. Returns an unregister function. */
+	registerProviderBackend(backend: ProviderBackendRegistration): () => void;
+
 	/**
 	 * Unregister a previously registered provider.
 	 *
@@ -1692,6 +1696,7 @@ export interface Extension {
 	commands: Map<string, RegisteredCommand>;
 	flags: Map<string, ExtensionFlag>;
 	shortcuts: Map<KeyId, ExtensionShortcut>;
+	providerBackendDisposers?: Map<string, () => void>;
 }
 
 /** Result of loading extensions. */
