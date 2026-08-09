@@ -240,20 +240,29 @@ export class RpcClient {
 	/**
 	 * Set model by provider and ID.
 	 */
-	async setModel(provider: string, modelId: string): Promise<{ provider: string; id: string }> {
-		const response = await this.send({ type: "set_model", provider, modelId });
+	async setModel(
+		provider: string,
+		modelId: string,
+		options?: { allowLossy?: boolean },
+	): Promise<{ provider: string; id: string }> {
+		const response = await this.send({ type: "set_model", provider, modelId, allowLossy: options?.allowLossy });
+		return this.getData(response);
+	}
+
+	async getPortabilityReport(provider: string, modelId: string) {
+		const response = await this.send({ type: "get_portability_report", provider, modelId });
 		return this.getData(response);
 	}
 
 	/**
 	 * Cycle to next model.
 	 */
-	async cycleModel(): Promise<{
+	async cycleModel(options?: { allowLossy?: boolean }): Promise<{
 		model: { provider: string; id: string };
 		thinkingLevel: ThinkingLevel;
 		isScoped: boolean;
 	} | null> {
-		const response = await this.send({ type: "cycle_model" });
+		const response = await this.send({ type: "cycle_model", allowLossy: options?.allowLossy });
 		return this.getData(response);
 	}
 

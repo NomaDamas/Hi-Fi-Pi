@@ -42,6 +42,68 @@ describe("AgentSession model and extension characterization", () => {
 				.filter((entry) => entry.type === "model_change")
 				.map((entry) => `${entry.provider}/${entry.modelId}`),
 		).toEqual([`${nextModel.provider}/${nextModel.id}`]);
+		expect(
+			harness.sessionManager
+				.getEntries()
+				.filter((entry) => entry.type === "custom" && entry.customType === "hifi.portability-decision"),
+		).toEqual([]);
+	});
+
+	it("reports and gates lossy provider-native model switches", async () => {
+		const harness = await createHarness({
+			models: [
+				{ id: "faux-1", name: "One", reasoning: true },
+				{ id: "faux-2", name: "Two", reasoning: true },
+			],
+		});
+		harnesses.push(harness);
+		const currentModel = harness.getModel("faux-1")!;
+		const nextModel = harness.getModel("faux-2")!;
+		harness.session.agent.state.messages = [
+			{
+				...fauxAssistantMessage("native state"),
+				nativeParts: [
+					{
+						type: "provider-native",
+						provider: currentModel.provider,
+						api: currentModel.api,
+						modelId: currentModel.id,
+						kind: "response-state",
+						payload: { responseId: "response_1" },
+					},
+				],
+			},
+		];
+
+		expect(harness.session.getPortabilityReport(currentModel)).toMatchObject({
+			canSwitchWithoutLoss: true,
+			counts: { portable: 1 },
+		});
+		const report = harness.session.getPortabilityReport(nextModel);
+		expect(report).toMatchObject({
+			canSwitchWithoutLoss: false,
+			counts: { "provider-locked": 1 },
+		});
+
+		await expect(harness.session.setModel(nextModel)).rejects.toMatchObject({
+			name: "PortabilityConfirmationRequiredError",
+			report,
+		});
+		expect(harness.session.model?.id).toBe("faux-1");
+
+		await harness.session.setModel(nextModel, { allowLossy: true });
+		expect(harness.session.model?.id).toBe("faux-2");
+		expect(
+			harness.sessionManager
+				.getEntries()
+				.filter((entry) => entry.type === "custom" && entry.customType === "hifi.portability-decision"),
+		).toEqual([
+			expect.objectContaining({
+				type: "custom",
+				customType: "hifi.portability-decision",
+				data: expect.objectContaining({ acceptedLoss: true, report }),
+			}),
+		]);
 	});
 
 	it("cycles through scoped models and preserves the scoped thinking preference", async () => {

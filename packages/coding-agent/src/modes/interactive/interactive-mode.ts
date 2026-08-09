@@ -9,7 +9,11 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AuthEvent, AuthPrompt } from "@earendil-works/pi-ai";
-import { getNativeAttachmentCapability, getNativeInputCapabilityManifest } from "@earendil-works/pi-ai";
+import {
+	getNativeAttachmentCapability,
+	getNativeInputCapabilityManifest,
+	PortabilityConfirmationRequiredError,
+} from "@earendil-works/pi-ai";
 import type {
 	Api,
 	AssistantMessage,
@@ -3975,7 +3979,18 @@ export class InteractiveMode {
 
 	private async cycleModel(direction: "forward" | "backward"): Promise<void> {
 		try {
-			const result = await this.session.cycleModel(direction);
+			let result: Awaited<ReturnType<AgentSession["cycleModel"]>>;
+			try {
+				result = await this.session.cycleModel(direction);
+			} catch (error) {
+				if (!(error instanceof PortabilityConfirmationRequiredError)) throw error;
+				const confirmed = await this.showExtensionConfirm(
+					"Provider-native portability",
+					this.formatPortabilityPrompt(error),
+				);
+				if (!confirmed) return;
+				result = await this.session.cycleModel(direction, { allowLossy: true });
+			}
 			if (result === undefined) {
 				const msg = this.session.scopedModels.length > 0 ? "Only one model in scope" : "Only one model available";
 				this.showStatus(msg);
@@ -4530,7 +4545,7 @@ export class InteractiveMode {
 		const model = await this.findExactModelMatch(searchTerm);
 		if (model) {
 			try {
-				await this.session.setModel(model);
+				if (!(await this.setModelWithPortabilityConfirmation(model))) return;
 				this.footer.invalidate();
 				this.updateEditorBorderColor();
 				this.showStatus(`Model: ${model.id}`);
@@ -4543,6 +4558,37 @@ export class InteractiveMode {
 		}
 
 		this.showModelSelector(searchTerm);
+	}
+
+	private formatPortabilityPrompt(error: PortabilityConfirmationRequiredError): string {
+		const incompatible = error.report.items.filter(
+			(item) =>
+				item.classification === "provider-locked" ||
+				item.classification === "missing" ||
+				item.classification === "unsupported",
+		);
+		const details = incompatible
+			.slice(0, 6)
+			.map((item) => `- ${item.classification}: ${item.reason}`)
+			.join("\n");
+		const remaining = incompatible.length > 6 ? `\n- and ${incompatible.length - 6} more` : "";
+		return `Switch to ${error.report.target.provider}/${error.report.target.modelId} with native-state loss?\n\n${details}${remaining}`;
+	}
+
+	private async setModelWithPortabilityConfirmation(model: Model<any>): Promise<boolean> {
+		try {
+			await this.session.setModel(model);
+			return true;
+		} catch (error) {
+			if (!(error instanceof PortabilityConfirmationRequiredError)) throw error;
+			const confirmed = await this.showExtensionConfirm(
+				"Provider-native portability",
+				this.formatPortabilityPrompt(error),
+			);
+			if (!confirmed) return false;
+			await this.session.setModel(model, { allowLossy: true });
+			return true;
+		}
 	}
 
 	private async findExactModelMatch(searchTerm: string): Promise<Model<any> | undefined> {
@@ -4663,16 +4709,15 @@ export class InteractiveMode {
 				this.session.modelRuntime,
 				this.session.scopedModels,
 				async (model) => {
+					done();
 					try {
-						await this.session.setModel(model);
+						if (!(await this.setModelWithPortabilityConfirmation(model))) return;
 						this.footer.invalidate();
 						this.updateEditorBorderColor();
-						done();
 						this.showStatus(`Model: ${model.id}`);
 						void this.maybeWarnAboutAnthropicSubscriptionAuth(model);
 						this.checkDaxnutsEasterEgg(model);
 					} catch (error) {
-						done();
 						this.showError(error instanceof Error ? error.message : String(error));
 					}
 				},
@@ -5315,7 +5360,7 @@ export class InteractiveMode {
 					selectionError = `${actionLabel}, but its default model "${defaultModelId}" is not available. Use /model to select a model.`;
 				} else {
 					try {
-						await this.session.setModel(selectedModel);
+						if (!(await this.setModelWithPortabilityConfirmation(selectedModel))) selectedModel = undefined;
 					} catch (error: unknown) {
 						selectedModel = undefined;
 						const errorMessage = error instanceof Error ? error.message : String(error);

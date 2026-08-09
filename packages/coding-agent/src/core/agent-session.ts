@@ -24,7 +24,12 @@ import type {
 	PrepareNextTurnContext,
 	ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
-import { contentText } from "@earendil-works/pi-ai";
+import type { PortabilityReport } from "@earendil-works/pi-ai";
+import {
+	analyzeConversationPortability,
+	contentText,
+	PortabilityConfirmationRequiredError,
+} from "@earendil-works/pi-ai";
 import type {
 	AssistantMessage,
 	AttachmentRecord,
@@ -32,6 +37,7 @@ import type {
 	AttachmentRegistry,
 	AuthResult,
 	ImageContent,
+	Message,
 	Model,
 	ProviderHeaders,
 	ProviderTraceEvent,
@@ -269,6 +275,11 @@ export interface ModelCycleResult {
 	thinkingLevel: ThinkingLevel;
 	/** Whether cycling through scoped models (--models flag) or all available */
 	isScoped: boolean;
+}
+
+export interface ModelSwitchOptions {
+	/** Explicitly accept provider-native state loss reported by getPortabilityReport(). */
+	allowLossy?: boolean;
 }
 
 /** Session statistics for /session command */
@@ -1785,15 +1796,47 @@ export class AgentSession {
 		});
 	}
 
+	getPortabilityReport(target: Model<any>): PortabilityReport {
+		const messages = this.agent.state.messages.filter(
+			(message): message is Message =>
+				message.role === "user" || message.role === "assistant" || message.role === "toolResult",
+		);
+		return analyzeConversationPortability({
+			messages,
+			attachments: this._attachmentRecords.values(),
+			target,
+			sourceAvailable: (attachment) =>
+				attachment.metadata?.sourceAvailable !== false &&
+				(attachment.source.type !== "path" || existsSync(attachment.source.path)),
+		});
+	}
+
+	private _preflightModelSwitch(target: Model<any>, options?: ModelSwitchOptions): PortabilityReport {
+		const report = this.getPortabilityReport(target);
+		if (!report.canSwitchWithoutLoss && !options?.allowLossy) {
+			throw new PortabilityConfirmationRequiredError(report);
+		}
+		if (!report.canSwitchWithoutLoss && options?.allowLossy) {
+			this.sessionManager.appendCustomEntry("hifi.portability-decision", {
+				version: 1,
+				acceptedLoss: true,
+				timestamp: Date.now(),
+				report,
+			});
+		}
+		return report;
+	}
+
 	/**
 	 * Set model directly.
 	 * Validates that auth is configured, saves to session and settings.
 	 * @throws Error if no auth is configured for the model
 	 */
-	async setModel(model: Model<any>): Promise<void> {
+	async setModel(model: Model<any>, options?: ModelSwitchOptions): Promise<void> {
 		if (!(await this._modelRuntime.checkAuth(model.provider))) {
 			throw new Error(`No API key for ${model.provider}/${model.id}`);
 		}
+		this._preflightModelSwitch(model, options);
 
 		const previousModel = this.model;
 		const thinkingLevel = this._getThinkingLevelForModelSwitch();
@@ -1813,14 +1856,20 @@ export class AgentSession {
 	 * @param direction - "forward" (default) or "backward"
 	 * @returns The new model info, or undefined if only one model available
 	 */
-	async cycleModel(direction: "forward" | "backward" = "forward"): Promise<ModelCycleResult | undefined> {
+	async cycleModel(
+		direction: "forward" | "backward" = "forward",
+		options?: ModelSwitchOptions,
+	): Promise<ModelCycleResult | undefined> {
 		if (this._scopedModels.length > 0) {
-			return this._cycleScopedModel(direction);
+			return this._cycleScopedModel(direction, options);
 		}
-		return this._cycleAvailableModel(direction);
+		return this._cycleAvailableModel(direction, options);
 	}
 
-	private async _cycleScopedModel(direction: "forward" | "backward"): Promise<ModelCycleResult | undefined> {
+	private async _cycleScopedModel(
+		direction: "forward" | "backward",
+		options?: ModelSwitchOptions,
+	): Promise<ModelCycleResult | undefined> {
 		const checks = await Promise.all(
 			this._scopedModels.map(async (scoped) => ({
 				scoped,
@@ -1838,6 +1887,7 @@ export class AgentSession {
 		const nextIndex = direction === "forward" ? (currentIndex + 1) % len : (currentIndex - 1 + len) % len;
 		const next = scopedModels[nextIndex];
 		const thinkingLevel = this._getThinkingLevelForModelSwitch(next.thinkingLevel);
+		this._preflightModelSwitch(next.model, options);
 
 		// Apply model
 		this.agent.state.model = next.model;
@@ -1855,7 +1905,10 @@ export class AgentSession {
 		return { model: next.model, thinkingLevel: this.thinkingLevel, isScoped: true };
 	}
 
-	private async _cycleAvailableModel(direction: "forward" | "backward"): Promise<ModelCycleResult | undefined> {
+	private async _cycleAvailableModel(
+		direction: "forward" | "backward",
+		options?: ModelSwitchOptions,
+	): Promise<ModelCycleResult | undefined> {
 		const availableModels = await this._modelRuntime.getAvailable();
 		if (availableModels.length <= 1) return undefined;
 
@@ -1868,6 +1921,7 @@ export class AgentSession {
 		const nextModel = availableModels[nextIndex];
 
 		const thinkingLevel = this._getThinkingLevelForModelSwitch();
+		this._preflightModelSwitch(nextModel, options);
 		this.agent.state.model = nextModel;
 		this.sessionManager.appendModelChange(nextModel.provider, nextModel.id);
 		this.settingsManager.setDefaultModelAndProvider(nextModel.provider, nextModel.id);

@@ -44,6 +44,7 @@ export * from "./images-models.ts";
 export * from "./models.ts";
 export * from "./models-store.ts";
 export * from "./native-input-capabilities.ts";
+export * from "./portability.ts";
 export * from "./provider-trace.ts";
 export * from "./providers/faux.ts";
 export * from "./session-resources.ts";

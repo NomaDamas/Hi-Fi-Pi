@@ -57,7 +57,7 @@
 		"build": "npm run generate-models && npm run build:offline",
 		"build:offline": "npm run check:model-data && tsgo -p tsconfig.build.json && shx rm -rf dist/providers/data && shx cp -r src/providers/data dist/providers/data",
 		"test": "vitest --run",
-		"test:native-input-contracts": "vitest --run test/native-input-provider-contracts.test.ts test/provider-attachment-lowering.test.ts test/provider-native-trace.test.ts test/attachment-lifecycle.test.ts test/native-file-media-contracts.test.ts test/attachment-source-policy.test.ts",
+		"test:native-input-contracts": "vitest --run test/native-input-provider-contracts.test.ts test/provider-attachment-lowering.test.ts test/provider-native-trace.test.ts test/attachment-lifecycle.test.ts test/native-file-media-contracts.test.ts test/attachment-source-policy.test.ts test/conversation-native-portability.test.ts",
 		"test:native-input-live": "vitest --run test/native-input-official-live.e2e.test.ts",
 		"prepublishOnly": "npm run clean && npm run build"
 	},

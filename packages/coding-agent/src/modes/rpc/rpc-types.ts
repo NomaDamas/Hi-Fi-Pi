@@ -6,7 +6,7 @@
  */
 
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { AttachmentRecord, ImageContent, Model } from "@earendil-works/pi-ai";
+import type { AttachmentRecord, ImageContent, Model, PortabilityReport } from "@earendil-works/pi-ai";
 import type { SessionStats } from "../../core/agent-session.ts";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { CompactionResult } from "../../core/compaction/index.ts";
@@ -36,8 +36,9 @@ export type RpcCommand =
 	| { id?: string; type: "get_state" }
 
 	// Model
-	| { id?: string; type: "set_model"; provider: string; modelId: string }
-	| { id?: string; type: "cycle_model" }
+	| { id?: string; type: "set_model"; provider: string; modelId: string; allowLossy?: boolean }
+	| { id?: string; type: "cycle_model"; allowLossy?: boolean }
+	| { id?: string; type: "get_portability_report"; provider: string; modelId: string }
 	| { id?: string; type: "get_available_models" }
 
 	// Thinking
@@ -144,6 +145,13 @@ export type RpcResponse =
 			command: "cycle_model";
 			success: true;
 			data: { model: Model<any>; thinkingLevel: ThinkingLevel; isScoped: boolean } | null;
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "get_portability_report";
+			success: true;
+			data: PortabilityReport;
 	  }
 	| {
 			id?: string;
