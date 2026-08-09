@@ -276,7 +276,7 @@ describe("provider-native options", () => {
 		});
 	});
 
-	it("applies Gemini video fps and thinking budget", async () => {
+	it("applies Gemini media, thinking, cached content and built-in tool controls", async () => {
 		const attachment: AttachmentRecord = {
 			id: "att_video",
 			filename: "demo.mp4",
@@ -301,14 +301,24 @@ describe("provider-native options", () => {
 				providerOptions: resolveProviderOptions(googleModel, {
 					"google.video.fps": 2,
 					"google.thinking_budget": 8192,
+					"google.cached_content": "cachedContents/cache_1",
+					"google.google_search": true,
+					"google.url_context": true,
+					"google.code_execution": true,
 				}),
 				onPayload,
 			}),
 		)) as {
 			contents: Array<{ parts: Array<{ videoMetadata?: { fps: number } }> }>;
-			config: { thinkingConfig: { thinkingBudget: number } };
+			config: {
+				thinkingConfig: { thinkingBudget: number };
+				cachedContent: string;
+				tools: Array<Record<string, unknown>>;
+			};
 		};
 		expect(payload.contents[0]?.parts[0]?.videoMetadata).toEqual({ fps: 2 });
 		expect(payload.config.thinkingConfig.thinkingBudget).toBe(8192);
+		expect(payload.config.cachedContent).toBe("cachedContents/cache_1");
+		expect(payload.config.tools).toEqual([{ googleSearch: {} }, { urlContext: {} }, { codeExecution: {} }]);
 	});
 });
