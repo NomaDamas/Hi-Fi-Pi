@@ -37,6 +37,18 @@ function validateOpenAIBuiltInTools(value: unknown): true | string {
 	return true;
 }
 
+const XAI_BUILT_IN_TOOL_TYPES = new Set(["web_search", "x_search", "code_interpreter", "file_search"]);
+
+function validateXAIBuiltInTools(value: unknown): true | string {
+	if (!Array.isArray(value)) return "must be an array of xAI built-in tool definitions";
+	for (const tool of value) {
+		if (!isRecord(tool) || typeof tool.type !== "string" || !XAI_BUILT_IN_TOOL_TYPES.has(tool.type)) {
+			return "contains an unsupported xAI built-in tool type";
+		}
+	}
+	return true;
+}
+
 const ANTHROPIC_SERVER_TOOL_TYPES = new Set([
 	"web_search_20250305",
 	"web_fetch_20250910",
@@ -138,6 +150,16 @@ const AZURE_OPENAI_OPTIONS: readonly ProviderOptionDefinition[] = [
 		type: "boolean",
 		description: "Run the Azure OpenAI response in background mode.",
 		default: false,
+	},
+];
+
+const XAI_OPTIONS: readonly ProviderOptionDefinition[] = [
+	{
+		key: "xai.responses.built_in_tools",
+		type: "structured",
+		description: "Official xAI server-side web, X, code interpreter and collections tools.",
+		validate: validateXAIBuiltInTools,
+		modelIds: ["grok-4.5", "grok-4.20"],
 	},
 ];
 
@@ -245,6 +267,8 @@ function compatibilityDefinitions(context: ProviderBackendContext): readonly Pro
 			return context.api === "openai-responses" ? OPENAI_OPTIONS : [];
 		case "azure-openai-official":
 			return context.api === "azure-openai-responses" ? AZURE_OPENAI_OPTIONS : [];
+		case "xai-official":
+			return context.api === "openai-responses" ? XAI_OPTIONS : [];
 		case "anthropic-official":
 			return ANTHROPIC_OPTIONS;
 		case "gemini-developer-api":

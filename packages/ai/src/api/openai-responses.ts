@@ -341,7 +341,10 @@ function buildParams(
 		params.text = { format: structuredClone(textFormat) } as ResponseCreateParamsStreaming["text"];
 	}
 
-	const builtInTools = options?.providerOptions?.["openai.responses.built_in_tools"];
+	const builtInTools =
+		options?.providerOptions?.[
+			model.provider === "xai" ? "xai.responses.built_in_tools" : "openai.responses.built_in_tools"
+		];
 	if (Array.isArray(builtInTools)) {
 		params.tools = [
 			...(params.tools ?? []),

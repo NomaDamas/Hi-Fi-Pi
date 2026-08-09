@@ -119,6 +119,19 @@ const BEDROCK_VIDEO_MEDIA_TYPES = [
 	"video/x-ms-wmv",
 ] as const;
 
+const XAI_DOCUMENT_MEDIA_TYPES = [
+	"application/pdf",
+	"text/plain",
+	"text/markdown",
+	"text/csv",
+	"application/json",
+	"application/javascript",
+	"application/typescript",
+	"text/javascript",
+	"text/x-python",
+	"text/x-java",
+] as const;
+
 type CapabilityModel = Pick<
 	Model<string>,
 	"api" | "baseUrl" | "id" | "nativeAttachments" | "nativeInputs" | "provider"
@@ -463,6 +476,24 @@ const builtInResolvers: NativeInputCapabilityResolver[] = [
 					{ inline: "audio", "cloud-uri": "audio" },
 					{},
 					{ modelAllowList: ["*amazon.nova-2-sonic*"] },
+				),
+			],
+		}),
+	},
+	{
+		id: "xai-official",
+		matches: (context) =>
+			context.provider === "xai" && context.api === "openai-responses" && hostname(context.baseUrl) === "api.x.ai",
+		resolve: () => ({
+			profile: "xai-official",
+			capabilities: [
+				nativeCapability(
+					"xai-chat-with-files",
+					XAI_DOCUMENT_MEDIA_TYPES,
+					["url", "provider-file"],
+					{ url: "input_file", "provider-file": "input_file" },
+					{ maximumBytes: 48 * 1024 * 1024 },
+					{ modelAllowList: ["grok-4.5*", "grok-4.20*"] },
 				),
 			],
 		}),
