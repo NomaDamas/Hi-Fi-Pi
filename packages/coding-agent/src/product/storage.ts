@@ -4,6 +4,7 @@ import { basename, dirname, join, resolve, sep } from "node:path";
 import type {
 	AttachmentRecord,
 	AttachmentRegistry,
+	AttachmentSource,
 	Credential,
 	CredentialInfo,
 	CredentialStore,
@@ -199,6 +200,59 @@ export class FilesystemProductStorage {
 			timestamp: Date.now(),
 			resourceId: id,
 			details: { mediaType: input.mediaType, sizeBytes: input.bytes.byteLength },
+		});
+		return cloneAttachment(record);
+	}
+
+	registerAttachment(
+		identityInput: ProductIdentity,
+		input: {
+			filename: string;
+			mediaType: string;
+			source: Exclude<AttachmentSource, { type: "path" }>;
+			id?: string;
+			sizeBytes?: number;
+			sha256?: string;
+			metadata?: Record<string, unknown>;
+		},
+	): AttachmentRecord {
+		const identity = validateProductIdentity(identityInput);
+		const paths = this.pathsFor(identity);
+		mkdirSync(paths.attachments, { recursive: true, mode: 0o700 });
+		const id = input.id ? assertIdentitySegment(input.id, "threadId") : `att_${randomUUID()}`;
+		const metadataPath = assertWithin(
+			paths.attachments,
+			join(paths.attachments, `${id}.json`),
+			"attachment metadata",
+		);
+		if (existsSync(metadataPath)) {
+			throw new ProductStorageBoundaryError(`attachment already exists: ${id}`);
+		}
+		const record: AttachmentRecord = {
+			id,
+			filename: input.filename,
+			mediaType: input.mediaType,
+			source: structuredClone(input.source),
+			...(input.sizeBytes !== undefined ? { sizeBytes: input.sizeBytes } : {}),
+			...(input.sha256 ? { sha256: input.sha256 } : {}),
+			...(input.metadata ? { metadata: structuredClone(input.metadata) } : {}),
+		};
+		atomicJsonWrite(metadataPath, {
+			version: 1,
+			identity,
+			createdAt: Date.now(),
+			record,
+		} satisfies StoredAttachmentMetadata);
+		void this.audit({
+			type: "product_storage_audit",
+			action: "attachment_store",
+			identity,
+			timestamp: Date.now(),
+			resourceId: id,
+			details: {
+				mediaType: input.mediaType,
+				...(input.sizeBytes !== undefined ? { sizeBytes: input.sizeBytes } : {}),
+			},
 		});
 		return cloneAttachment(record);
 	}
