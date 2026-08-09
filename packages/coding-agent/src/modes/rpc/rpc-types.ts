@@ -6,7 +6,13 @@
  */
 
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { AttachmentRecord, ImageContent, Model, PortabilityReport } from "@earendil-works/pi-ai";
+import type {
+	AttachmentRecord,
+	ImageContent,
+	Model,
+	PortabilityReport,
+	ProviderOptionDefinition,
+} from "@earendil-works/pi-ai";
 import type { SessionStats } from "../../core/agent-session.ts";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { CompactionResult } from "../../core/compaction/index.ts";
@@ -40,6 +46,9 @@ export type RpcCommand =
 	| { id?: string; type: "cycle_model"; allowLossy?: boolean }
 	| { id?: string; type: "get_portability_report"; provider: string; modelId: string }
 	| { id?: string; type: "get_available_models" }
+	| { id?: string; type: "get_provider_options" }
+	| { id?: string; type: "set_provider_option"; key: string; value: unknown }
+	| { id?: string; type: "unset_provider_option"; key: string }
 
 	// Thinking
 	| { id?: string; type: "set_thinking_level"; level: ThinkingLevel }
@@ -159,6 +168,24 @@ export type RpcResponse =
 			command: "get_available_models";
 			success: true;
 			data: { models: Model<any>[] };
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "get_provider_options";
+			success: true;
+			data: {
+				definitions: readonly ProviderOptionDefinition[];
+				selected: Record<string, unknown>;
+				effective: Record<string, unknown>;
+			};
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "set_provider_option" | "unset_provider_option";
+			success: true;
+			data: { selected: Record<string, unknown>; effective: Record<string, unknown> };
 	  }
 
 	// Thinking

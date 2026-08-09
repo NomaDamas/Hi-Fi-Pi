@@ -671,6 +671,24 @@ export class InteractiveMode {
 			};
 		}
 
+		const providerOptionsCommand = slashCommands.find((command) => command.name === "provider-options");
+		if (providerOptionsCommand) {
+			providerOptionsCommand.getArgumentCompletions = (prefix: string): AutocompleteItem[] | null => {
+				if (prefix.includes(" ")) return null;
+				const definitions = [...this.session.getProviderOptionDefinitions()];
+				return createFuzzyAutocompleteItems(
+					definitions,
+					prefix,
+					(definition) => `${definition.key} ${definition.description}`,
+					(definition) => ({
+						value: definition.key,
+						label: definition.key,
+						description: definition.description,
+					}),
+				);
+			};
+		}
+
 		// Convert prompt templates to SlashCommand format for autocomplete
 		const templateCommands: SlashCommand[] = this.session.promptTemplates.map((cmd) => ({
 			name: cmd.name,
@@ -2841,6 +2859,11 @@ export class InteractiveMode {
 			}
 			if (text === "/capabilities") {
 				this.handleCapabilitiesCommand();
+				this.editor.setText("");
+				return;
+			}
+			if (text === "/provider-options" || text.startsWith("/provider-options ")) {
+				this.handleProviderOptionsCommand(text.slice("/provider-options".length).trim());
 				this.editor.setText("");
 				return;
 			}
@@ -6045,6 +6068,54 @@ export class InteractiveMode {
 		this.ui.requestRender();
 	}
 
+	private handleProviderOptionsCommand(argumentsText: string): void {
+		if (!argumentsText) {
+			const definitions = this.session.getProviderOptionDefinitions();
+			const selected = this.session.getProviderOptionValues();
+			const effective = this.session.getEffectiveProviderOptions();
+			let info = `${theme.bold("Current Provider Options")}\n\n`;
+			if (definitions.length === 0) {
+				info += theme.fg("dim", "The current provider backend/model declares no namespaced controls.");
+			} else {
+				for (const definition of definitions) {
+					const value = effective[definition.key];
+					const origin = Object.hasOwn(selected, definition.key) ? "selected" : "default";
+					info += `${theme.fg("accent", definition.key)} = ${JSON.stringify(value)} ${theme.fg("dim", `(${definition.type}, ${origin})`)}\n`;
+					info += `${theme.fg("dim", definition.description)}\n`;
+				}
+			}
+			this.chatContainer.addChild(new Spacer(1));
+			this.chatContainer.addChild(new Text(info.trimEnd(), 1, 0));
+			this.ui.requestRender();
+			return;
+		}
+
+		const separator = argumentsText.search(/\s/);
+		if (separator < 0) {
+			this.showWarning("Usage: /provider-options <key> <json-value|--unset>");
+			return;
+		}
+		const key = argumentsText.slice(0, separator);
+		const rawValue = argumentsText.slice(separator).trim();
+		try {
+			if (rawValue === "--unset") {
+				this.session.unsetProviderOption(key);
+				this.showStatus(`Provider option unset: ${key}`);
+				return;
+			}
+			let value: unknown;
+			try {
+				value = JSON.parse(rawValue);
+			} catch {
+				value = rawValue;
+			}
+			this.session.setProviderOption(key, value);
+			this.showStatus(`Provider option set: ${key} = ${JSON.stringify(value)}`);
+		} catch (error) {
+			this.showError(error instanceof Error ? error.message : String(error));
+		}
+	}
+
 	private handleInputInspectCommand(): void {
 		const events = this.session.getProviderTraceEvents();
 		const latest = events[events.length - 1];
@@ -6075,6 +6146,7 @@ export class InteractiveMode {
 			if (event.remote) info += `\n${theme.fg("dim", "Remote:")} ${event.remote.provider}/${event.remote.fileId}`;
 			if (event.wire) info += `\n${theme.fg("dim", "Wire:")} ${event.wire.kind} · ${event.wire.source}`;
 			if (event.headers) info += `\n${theme.fg("dim", "Headers:")} ${JSON.stringify(event.headers)}`;
+			if (event.options) info += `\n${theme.fg("dim", "Options:")} ${JSON.stringify(event.options)}`;
 			if (event.payload !== undefined) {
 				info += `\n${theme.fg("dim", "Payload:")} ${JSON.stringify(event.payload, null, 2)}`;
 			}

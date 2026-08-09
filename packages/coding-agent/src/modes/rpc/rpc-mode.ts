@@ -499,6 +499,30 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				return success(id, "get_available_models", { models });
 			}
 
+			case "get_provider_options": {
+				return success(id, "get_provider_options", {
+					definitions: session.getProviderOptionDefinitions(),
+					selected: session.getProviderOptionValues(),
+					effective: session.getEffectiveProviderOptions(),
+				});
+			}
+
+			case "set_provider_option": {
+				const effective = session.setProviderOption(command.key, command.value);
+				return success(id, "set_provider_option", {
+					selected: session.getProviderOptionValues(),
+					effective,
+				});
+			}
+
+			case "unset_provider_option": {
+				const effective = session.unsetProviderOption(command.key);
+				return success(id, "unset_provider_option", {
+					selected: session.getProviderOptionValues(),
+					effective,
+				});
+			}
+
 			// =================================================================
 			// Thinking
 			// =================================================================
