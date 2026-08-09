@@ -284,6 +284,48 @@ describe("RPC prompt response semantics", () => {
 		}
 	});
 
+	it("uses the same provider option definitions and effective values over RPC", async () => {
+		const { lineHandler, cleanup } = await startRpcMode({ withAuth: true, responseDelayMs: 0 });
+
+		try {
+			lineHandler(JSON.stringify({ id: "options-get", type: "get_provider_options" }));
+			await vi.waitFor(() => {
+				const response = parseOutputLines(rpcIo.outputLines).find((record) => record.id === "options-get");
+				expect(response).toMatchObject({
+					success: true,
+					data: {
+						definitions: expect.arrayContaining([
+							expect.objectContaining({ key: "anthropic.document.citations", type: "boolean" }),
+						]),
+						effective: { "anthropic.document.citations": false },
+					},
+				});
+			});
+
+			rpcIo.outputLines = [];
+			lineHandler(
+				JSON.stringify({
+					id: "options-set",
+					type: "set_provider_option",
+					key: "anthropic.document.citations",
+					value: true,
+				}),
+			);
+			await vi.waitFor(() => {
+				const response = parseOutputLines(rpcIo.outputLines).find((record) => record.id === "options-set");
+				expect(response).toMatchObject({
+					success: true,
+					data: {
+						selected: { "anthropic.document.citations": true },
+						effective: { "anthropic.document.citations": true },
+					},
+				});
+			});
+		} finally {
+			await cleanup();
+		}
+	});
+
 	it("rejects malformed JSONL RPC attachments before provider execution", async () => {
 		let providerCallCount = 0;
 		testContextCapture.current = () => {

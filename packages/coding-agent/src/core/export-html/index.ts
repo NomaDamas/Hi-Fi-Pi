@@ -1,4 +1,10 @@
 import type { AgentState } from "@earendil-works/pi-agent-core";
+import {
+	type AssistantMessage,
+	type AttachmentSource,
+	type Message,
+	sanitizeProviderTraceValue,
+} from "@earendil-works/pi-ai";
 import { existsSync, readFileSync, writeFileSync } from "fs";
 import { basename, join } from "path";
 import { APP_NAME, getExportTemplateDir } from "../../config.ts";
@@ -137,8 +143,77 @@ interface SessionData {
 	renderedTools?: Record<string, RenderedToolHtml>;
 }
 
+function sanitizeExportAttachmentSource(source: AttachmentSource): AttachmentSource {
+	if (source.type !== "url" && source.type !== "cloud-uri") return structuredClone(source);
+	const value = source.type === "url" ? source.url : source.uri;
+	if (!/^https?:\/\//i.test(value)) return structuredClone(source);
+	try {
+		const url = new URL(value);
+		if ([...url.searchParams.keys()].length > 0) {
+			url.search = "";
+			url.searchParams.set("redacted", "true");
+		}
+		url.username = "";
+		url.password = "";
+		return source.type === "url" ? { ...source, url: url.toString() } : { ...source, uri: url.toString() };
+	} catch {
+		return source.type === "url"
+			? { ...source, url: "[redacted invalid URL]" }
+			: { ...source, uri: "[redacted invalid URL]" };
+	}
+}
+
+function sanitizeProviderNativeMessageForExport(message: Message): Message {
+	const sanitized = structuredClone(message);
+	if (sanitized.nativeParts) {
+		sanitized.nativeParts = sanitized.nativeParts.map((part) => ({
+			...part,
+			payload: sanitizeProviderTraceValue(part.payload),
+		}));
+	}
+	if (sanitized.role === "assistant") {
+		const assistant = sanitized as AssistantMessage;
+		assistant.content = assistant.content.map((part) =>
+			part.type === "toolCall" && part.providerMetadata
+				? {
+						...part,
+						providerMetadata: sanitizeProviderTraceValue(part.providerMetadata) as Record<string, unknown>,
+					}
+				: part,
+		);
+		assistant.citations = assistant.citations?.map((citation) => ({
+			...citation,
+			...(citation.url ? { url: sanitizeProviderTraceValue(citation.url, "url") as string } : {}),
+			...(citation.raw ? { raw: sanitizeProviderTraceValue(citation.raw) } : {}),
+		}));
+		assistant.reasoningState = assistant.reasoningState?.map((state) => ({
+			...state,
+			...(state.encrypted ? { encrypted: "[redacted]" } : {}),
+			...(state.signature ? { signature: "[redacted]" } : {}),
+			...(state.metadata ? { metadata: sanitizeProviderTraceValue(state.metadata) as Record<string, unknown> } : {}),
+		}));
+		if (assistant.providerState?.metadata) {
+			assistant.providerState = {
+				...assistant.providerState,
+				metadata: sanitizeProviderTraceValue(assistant.providerState.metadata) as Record<string, unknown>,
+			};
+		}
+	}
+	if (sanitized.role === "toolResult" && sanitized.providerMetadata) {
+		sanitized.providerMetadata = sanitizeProviderTraceValue(sanitized.providerMetadata) as Record<string, unknown>;
+	}
+	return sanitized;
+}
+
 export function sanitizeSessionEntriesForExport(entries: SessionEntry[]): SessionEntry[] {
 	return entries.map((entry) => {
+		if (entry.type === "message") {
+			const message = entry.message;
+			if (message.role === "user" || message.role === "assistant" || message.role === "toolResult") {
+				return { ...entry, message: sanitizeProviderNativeMessageForExport(message) };
+			}
+			return entry;
+		}
 		if (entry.type !== "attachment") return entry;
 		const sourceAvailable =
 			entry.attachment.source.type === "base64"
@@ -149,8 +224,29 @@ export function sanitizeSessionEntriesForExport(entries: SessionEntry[]): Sessio
 			attachment: {
 				...entry.attachment,
 				metadata: { ...entry.attachment.metadata, sourceAvailable },
-				...(entry.attachment.source.type === "base64"
-					? { source: { type: "base64" as const, data: "[omitted from export]" } }
+				source:
+					entry.attachment.source.type === "base64"
+						? { type: "base64" as const, data: "[omitted from export]" }
+						: sanitizeExportAttachmentSource(entry.attachment.source),
+				...(entry.attachment.remotes
+					? {
+							remotes: Object.fromEntries(
+								Object.entries(entry.attachment.remotes).map(([key, remote]) => [
+									key,
+									remote.uri
+										? {
+												...remote,
+												uri: (
+													sanitizeExportAttachmentSource({ type: "url", url: remote.uri }) as {
+														type: "url";
+														url: string;
+													}
+												).url,
+											}
+										: remote,
+								]),
+							),
+						}
 					: {}),
 			},
 		};

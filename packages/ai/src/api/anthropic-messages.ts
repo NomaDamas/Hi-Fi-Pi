@@ -9,11 +9,13 @@ import type {
 	RefusalStopDetails,
 	ToolResultBlockParam,
 } from "@anthropic-ai/sdk/resources/messages.js";
+import { prepareContextAttachmentUploads } from "../attachment-lifecycle.ts";
 import { calculateCost } from "../models.ts";
 import {
 	createProviderTraceRecorder,
 	type ProviderTraceRecorder,
 	traceProviderCompletion,
+	traceProviderOptions,
 	traceProviderPayload,
 	traceProviderResponse,
 	traceRequestHeaders,
@@ -46,7 +48,11 @@ import { parseJsonWithRepair, parseStreamingJson } from "../utils/json-parse.ts"
 import { getProviderEnvValue } from "../utils/provider-env.ts";
 import { retryProviderRequest } from "../utils/provider-retry.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
-import { recordProviderAttachmentLowering, resolvePdfAttachments } from "./attachment-lowering.ts";
+import {
+	type ResolvedNativeAttachment,
+	recordProviderAttachmentLowering,
+	resolveNativeAttachments,
+} from "./attachment-lowering.ts";
 import { resolveJsonSchemaStrictSampling } from "./constrained-sampling.ts";
 import { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "./github-copilot-headers.ts";
 import { adjustMaxTokensForThinking, buildBaseOptions, clampMaxTokensToContext } from "./simple-options.ts";
@@ -64,6 +70,11 @@ function resolveCacheRetention(cacheRetention?: CacheRetention, env?: ProviderEn
 		return "long";
 	}
 	return "short";
+}
+
+function resolveNamespacedCacheRetention(options?: StreamOptions): CacheRetention | undefined {
+	const value = options?.providerOptions?.["anthropic.cache_retention"];
+	return value === "none" || value === "short" || value === "long" ? value : options?.cacheRetention;
 }
 
 function getCacheControl(
@@ -524,6 +535,8 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 		let completionTraced = false;
 
 		try {
+			await traceProviderOptions(trace, options?.onTrace, options?.providerOptions);
+			await prepareContextAttachmentUploads(model, context, options, trace);
 			let client: Anthropic;
 			let isOAuth: boolean;
 
@@ -543,7 +556,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 					});
 				}
 
-				const cacheRetention = resolveCacheRetention(options?.cacheRetention, options?.env);
+				const cacheRetention = resolveCacheRetention(resolveNamespacedCacheRetention(options), options?.env);
 				const cacheSessionId = cacheRetention === "none" ? undefined : options?.sessionId;
 
 				const created = createClient(
@@ -992,7 +1005,7 @@ function buildParams(
 	options?: AnthropicOptions,
 	trace?: ProviderTraceRecorder,
 ): MessageCreateParamsStreaming {
-	const { cacheControl } = getCacheControl(model, options?.cacheRetention, options?.env);
+	const { cacheControl } = getCacheControl(model, resolveNamespacedCacheRetention(options), options?.env);
 	const compat = getAnthropicCompat(model);
 	const transformedMessages = transformMessages(context.messages, model, normalizeToolCallId);
 	const normalizeToolName = isOAuthToken ? toClaudeCodeName : (name: string) => name;
@@ -1020,6 +1033,7 @@ function buildParams(
 			context,
 			model,
 			trace,
+			options?.providerOptions?.["anthropic.document.citations"] === true,
 		),
 		max_tokens: options?.maxTokens ?? model.maxTokens,
 		stream: true,
@@ -1131,6 +1145,62 @@ function normalizeToolCallId(id: string): string {
 	return id.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 64);
 }
 
+function decodeBase64Text(data: string, filename: string): string {
+	try {
+		const bytes = Uint8Array.from(atob(data), (character) => character.charCodeAt(0));
+		return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+	} catch (error) {
+		throw new Error(
+			`Anthropic text document ${filename} is not valid UTF-8: ${error instanceof Error ? error.message : String(error)}`,
+		);
+	}
+}
+
+function convertAnthropicDocument(attachment: ResolvedNativeAttachment, citationsEnabled = false): ContentBlockParam {
+	const citations = citationsEnabled ? { citations: { enabled: true } } : {};
+	switch (attachment.source.type) {
+		case "base64":
+			if (attachment.mediaType === "text/plain") {
+				return {
+					type: "document",
+					source: {
+						type: "text",
+						media_type: "text/plain",
+						data: decodeBase64Text(attachment.source.data, attachment.filename),
+					},
+					title: attachment.filename,
+					...citations,
+				} as unknown as ContentBlockParam;
+			}
+			return {
+				type: "document",
+				source: {
+					type: "base64",
+					media_type: "application/pdf",
+					data: attachment.source.data,
+				},
+				title: attachment.filename,
+				...citations,
+			};
+		case "url":
+			return {
+				type: "document",
+				source: { type: "url", url: attachment.source.url },
+				title: attachment.filename,
+				...citations,
+			};
+		case "provider-file":
+			return {
+				type: "document",
+				source: { type: "file", file_id: attachment.source.fileId },
+				title: attachment.filename,
+				...citations,
+			} as unknown as ContentBlockParam;
+		case "cloud-uri":
+			throw new Error("Anthropic Messages does not accept cloud URI attachment sources");
+	}
+}
+
 function convertToolResult(
 	msg: ToolResultMessage,
 	isOAuthToken: boolean,
@@ -1140,6 +1210,7 @@ function convertToolResult(
 	context?: Context,
 	model?: Model<"anthropic-messages">,
 	trace?: ProviderTraceRecorder,
+	citationsEnabled = false,
 ): { toolResult: ToolResultBlockParam; siblingContent: ContentBlockParam[] } {
 	const references: Array<{ type: "tool_reference"; tool_name: string }> = [];
 	for (const name of msg.addedToolNames ?? []) {
@@ -1151,34 +1222,13 @@ function convertToolResult(
 			tool_name: isOAuthToken ? toClaudeCodeName(name) : name,
 		});
 	}
-	const attachments = context && model ? resolvePdfAttachments(msg, context.attachmentRegistry, model, trace) : [];
+	const attachments =
+		context && model
+			? resolveNativeAttachments(msg, context.attachmentRegistry, model, trace, context.attachmentSourcePolicy)
+			: [];
 	const attachmentBlocks: DocumentBlockParam[] = attachments.map((attachment) => {
 		recordProviderAttachmentLowering(trace, attachment, "tool_result.document");
-		switch (attachment.source.type) {
-			case "base64":
-				return {
-					type: "document",
-					source: {
-						type: "base64",
-						media_type: "application/pdf",
-						data: attachment.source.data,
-					},
-					title: attachment.filename,
-				};
-			case "url":
-				return {
-					type: "document",
-					source: { type: "url", url: attachment.source.url },
-					title: attachment.filename,
-				};
-			case "provider-file":
-				return {
-					type: "document",
-					source: { type: "file", file_id: attachment.source.fileId },
-					title: attachment.filename,
-				} as unknown as DocumentBlockParam;
-		}
-		throw new Error("Unknown attachment source");
+		return convertAnthropicDocument(attachment, citationsEnabled) as DocumentBlockParam;
 	});
 	const legacyContent = convertContentBlocks(msg.content);
 	const convertedContent: ToolResultBlockParam["content"] =
@@ -1217,6 +1267,7 @@ function convertMessages(
 	context?: Context,
 	model?: Model<"anthropic-messages">,
 	trace?: ProviderTraceRecorder,
+	citationsEnabled = false,
 ): MessageParam[] {
 	const params: MessageParam[] = [];
 	const loadedToolNames = new Set<string>();
@@ -1228,35 +1279,17 @@ function convertMessages(
 			const attachmentModel = model;
 			const attachments =
 				context && attachmentModel
-					? resolvePdfAttachments(msg, context.attachmentRegistry, attachmentModel, trace)
+					? resolveNativeAttachments(
+							msg,
+							context.attachmentRegistry,
+							attachmentModel,
+							trace,
+							context.attachmentSourcePolicy,
+						)
 					: [];
 			const attachmentBlocks: ContentBlockParam[] = attachments.map((attachment) => {
 				recordProviderAttachmentLowering(trace, attachment, "document");
-				switch (attachment.source.type) {
-					case "base64":
-						return {
-							type: "document",
-							source: {
-								type: "base64",
-								media_type: "application/pdf",
-								data: attachment.source.data,
-							},
-							title: attachment.filename,
-						};
-					case "url":
-						return {
-							type: "document",
-							source: { type: "url", url: attachment.source.url },
-							title: attachment.filename,
-						};
-					case "provider-file":
-						return {
-							type: "document",
-							source: { type: "file", file_id: attachment.source.fileId },
-							title: attachment.filename,
-						} as unknown as ContentBlockParam;
-				}
-				throw new Error("Unknown attachment source");
+				return convertAnthropicDocument(attachment, citationsEnabled);
 			});
 			if (typeof msg.content === "string") {
 				const text = sanitizeSurrogates(msg.content);
@@ -1378,6 +1411,7 @@ function convertMessages(
 					context,
 					model,
 					trace,
+					citationsEnabled,
 				);
 				toolResults.push(converted.toolResult);
 				siblingContent.push(...converted.siblingContent);

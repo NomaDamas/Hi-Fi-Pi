@@ -24,7 +24,15 @@ import type {
 	PrepareNextTurnContext,
 	ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
-import { contentText } from "@earendil-works/pi-ai";
+import type { PortabilityReport, ProviderOptionDefinition } from "@earendil-works/pi-ai";
+import {
+	analyzeConversationPortability,
+	contentText,
+	getProviderOptionDefinitions,
+	getProviderOptionScope,
+	PortabilityConfirmationRequiredError,
+	resolveProviderOptions,
+} from "@earendil-works/pi-ai";
 import type {
 	AssistantMessage,
 	AttachmentRecord,
@@ -32,6 +40,7 @@ import type {
 	AttachmentRegistry,
 	AuthResult,
 	ImageContent,
+	Message,
 	Model,
 	ProviderHeaders,
 	ProviderTraceEvent,
@@ -229,6 +238,8 @@ export interface AgentSessionConfig {
 	extensionRunnerRef?: { current?: ExtensionRunner };
 	/** Session start event metadata emitted when extensions bind to this runtime. */
 	sessionStartEvent?: SessionStartEvent;
+	/** Initial namespaced provider controls supplied by an SDK caller. */
+	providerOptions?: Record<string, unknown>;
 }
 
 export interface ExtensionBindings {
@@ -269,6 +280,11 @@ export interface ModelCycleResult {
 	thinkingLevel: ThinkingLevel;
 	/** Whether cycling through scoped models (--models flag) or all available */
 	isScoped: boolean;
+}
+
+export interface ModelSwitchOptions {
+	/** Explicitly accept provider-native state loss reported by getPortabilityReport(). */
+	allowLossy?: boolean;
 }
 
 /** Session statistics for /session command */
@@ -346,6 +362,14 @@ export class AgentSession {
 			return new Uint8Array(readFileSync(attachment.source.path));
 		},
 		list: () => Array.from(this._attachmentRecords.values()),
+		update: (attachment) => {
+			this._validateAttachmentRecord(attachment);
+			if (!this._attachmentRecords.has(attachment.id)) {
+				throw new Error(`Cannot update unknown attachment ID "${attachment.id}".`);
+			}
+			this.sessionManager.updateAttachment(attachment);
+			this._attachmentRecords.set(attachment.id, attachment);
+		},
 	};
 	/** Messages queued to be included with the next user prompt as context ("asides"). */
 	private _pendingNextTurnMessages: CustomMessage[] = [];
@@ -417,6 +441,7 @@ export class AgentSession {
 		this._baseToolsOverride = config.baseToolsOverride;
 		this._sessionStartEvent = config.sessionStartEvent ?? { type: "session_start", reason: "startup" };
 		this._syncAttachmentsFromActiveBranch();
+		this._restoreProviderOptions(config.providerOptions);
 		this._installProviderTraceBridge();
 
 		// Always subscribe to agent events for internal handling
@@ -895,6 +920,86 @@ export class AgentSession {
 		return event ? structuredClone(event) : undefined;
 	}
 
+	private _getStoredProviderOptions(model: Model<any>): Record<string, unknown> {
+		const scope = getProviderOptionScope(model);
+		const branch = this.sessionManager.getBranch();
+		for (let index = branch.length - 1; index >= 0; index--) {
+			const entry = branch[index];
+			if (entry.type !== "custom" || entry.customType !== "hifi.provider-options") continue;
+			const data = entry.data;
+			if (!data || typeof data !== "object") continue;
+			const record = data as { version?: unknown; scope?: unknown; values?: unknown };
+			if (record.version !== 1 || record.scope !== scope || !record.values || typeof record.values !== "object") {
+				continue;
+			}
+			return structuredClone(record.values as Record<string, unknown>);
+		}
+		return this.settingsManager.getProviderOptions(scope);
+	}
+
+	private _restoreProviderOptions(initial?: Readonly<Record<string, unknown>>): void {
+		const model = this.model;
+		if (!model) {
+			this.agent.providerOptions = undefined;
+			return;
+		}
+		const selected = structuredClone(initial ?? this._getStoredProviderOptions(model));
+		resolveProviderOptions(model, selected);
+		this.agent.providerOptions = Object.keys(selected).length > 0 ? selected : undefined;
+	}
+
+	getProviderOptionDefinitions(): readonly ProviderOptionDefinition[] {
+		return this.model ? getProviderOptionDefinitions(this.model) : [];
+	}
+
+	/** Explicit selections only; defaults are exposed by getEffectiveProviderOptions(). */
+	getProviderOptionValues(): Record<string, unknown> {
+		return structuredClone(this.agent.providerOptions ?? {});
+	}
+
+	getEffectiveProviderOptions(): Record<string, unknown> {
+		return this.model ? resolveProviderOptions(this.model, this.agent.providerOptions ?? {}) : {};
+	}
+
+	setProviderOption(key: string, value: unknown): Record<string, unknown> {
+		const model = this.model;
+		if (!model) throw new Error("No model selected");
+		const selected = { ...(this.agent.providerOptions ?? {}), [key]: value };
+		const effective = resolveProviderOptions(model, selected);
+		const persisted = structuredClone(selected);
+		const scope = getProviderOptionScope(model);
+		this.settingsManager.setProviderOptions(scope, persisted);
+		this.sessionManager.appendCustomEntry("hifi.provider-options", {
+			version: 1,
+			scope,
+			values: persisted,
+			timestamp: Date.now(),
+		});
+		this.agent.providerOptions = persisted;
+		return effective;
+	}
+
+	unsetProviderOption(key: string): Record<string, unknown> {
+		const model = this.model;
+		if (!model) throw new Error("No model selected");
+		if (!getProviderOptionDefinitions(model).some((definition) => definition.key === key)) {
+			resolveProviderOptions(model, { [key]: null });
+		}
+		const selected = { ...(this.agent.providerOptions ?? {}) };
+		delete selected[key];
+		const effective = resolveProviderOptions(model, selected);
+		const scope = getProviderOptionScope(model);
+		this.settingsManager.setProviderOptions(scope, selected);
+		this.sessionManager.appendCustomEntry("hifi.provider-options", {
+			version: 1,
+			scope,
+			values: structuredClone(selected),
+			timestamp: Date.now(),
+		});
+		this.agent.providerOptions = Object.keys(selected).length > 0 ? selected : undefined;
+		return effective;
+	}
+
 	/**
 	 * Temporarily disconnect from agent events.
 	 * User listeners are preserved and will receive events again after resubscribe().
@@ -1199,12 +1304,14 @@ export class AgentSession {
 			path?: unknown;
 			data?: unknown;
 			url?: unknown;
+			uri?: unknown;
 			provider?: unknown;
 			fileId?: unknown;
 		};
 		if (source.type === "path" && typeof source.path === "string" && source.path.length > 0) return;
 		if (source.type === "base64" && typeof source.data === "string" && source.data.length > 0) return;
 		if (source.type === "url" && typeof source.url === "string" && source.url.length > 0) return;
+		if (source.type === "cloud-uri" && typeof source.uri === "string" && source.uri.length > 0) return;
 		if (
 			source.type === "provider-file" &&
 			typeof source.provider === "string" &&
@@ -1775,19 +1882,52 @@ export class AgentSession {
 		});
 	}
 
+	getPortabilityReport(target: Model<any>): PortabilityReport {
+		const messages = this.agent.state.messages.filter(
+			(message): message is Message =>
+				message.role === "user" || message.role === "assistant" || message.role === "toolResult",
+		);
+		return analyzeConversationPortability({
+			messages,
+			attachments: this._attachmentRecords.values(),
+			target,
+			sourceAvailable: (attachment) =>
+				attachment.metadata?.sourceAvailable !== false &&
+				(attachment.source.type !== "path" || existsSync(attachment.source.path)),
+		});
+	}
+
+	private _preflightModelSwitch(target: Model<any>, options?: ModelSwitchOptions): PortabilityReport {
+		const report = this.getPortabilityReport(target);
+		if (!report.canSwitchWithoutLoss && !options?.allowLossy) {
+			throw new PortabilityConfirmationRequiredError(report);
+		}
+		if (!report.canSwitchWithoutLoss && options?.allowLossy) {
+			this.sessionManager.appendCustomEntry("hifi.portability-decision", {
+				version: 1,
+				acceptedLoss: true,
+				timestamp: Date.now(),
+				report,
+			});
+		}
+		return report;
+	}
+
 	/**
 	 * Set model directly.
 	 * Validates that auth is configured, saves to session and settings.
 	 * @throws Error if no auth is configured for the model
 	 */
-	async setModel(model: Model<any>): Promise<void> {
+	async setModel(model: Model<any>, options?: ModelSwitchOptions): Promise<void> {
 		if (!(await this._modelRuntime.checkAuth(model.provider))) {
 			throw new Error(`No API key for ${model.provider}/${model.id}`);
 		}
+		this._preflightModelSwitch(model, options);
 
 		const previousModel = this.model;
 		const thinkingLevel = this._getThinkingLevelForModelSwitch();
 		this.agent.state.model = model;
+		this._restoreProviderOptions();
 		this.sessionManager.appendModelChange(model.provider, model.id);
 		this.settingsManager.setDefaultModelAndProvider(model.provider, model.id);
 
@@ -1803,14 +1943,20 @@ export class AgentSession {
 	 * @param direction - "forward" (default) or "backward"
 	 * @returns The new model info, or undefined if only one model available
 	 */
-	async cycleModel(direction: "forward" | "backward" = "forward"): Promise<ModelCycleResult | undefined> {
+	async cycleModel(
+		direction: "forward" | "backward" = "forward",
+		options?: ModelSwitchOptions,
+	): Promise<ModelCycleResult | undefined> {
 		if (this._scopedModels.length > 0) {
-			return this._cycleScopedModel(direction);
+			return this._cycleScopedModel(direction, options);
 		}
-		return this._cycleAvailableModel(direction);
+		return this._cycleAvailableModel(direction, options);
 	}
 
-	private async _cycleScopedModel(direction: "forward" | "backward"): Promise<ModelCycleResult | undefined> {
+	private async _cycleScopedModel(
+		direction: "forward" | "backward",
+		options?: ModelSwitchOptions,
+	): Promise<ModelCycleResult | undefined> {
 		const checks = await Promise.all(
 			this._scopedModels.map(async (scoped) => ({
 				scoped,
@@ -1828,9 +1974,11 @@ export class AgentSession {
 		const nextIndex = direction === "forward" ? (currentIndex + 1) % len : (currentIndex - 1 + len) % len;
 		const next = scopedModels[nextIndex];
 		const thinkingLevel = this._getThinkingLevelForModelSwitch(next.thinkingLevel);
+		this._preflightModelSwitch(next.model, options);
 
 		// Apply model
 		this.agent.state.model = next.model;
+		this._restoreProviderOptions();
 		this.sessionManager.appendModelChange(next.model.provider, next.model.id);
 		this.settingsManager.setDefaultModelAndProvider(next.model.provider, next.model.id);
 
@@ -1845,7 +1993,10 @@ export class AgentSession {
 		return { model: next.model, thinkingLevel: this.thinkingLevel, isScoped: true };
 	}
 
-	private async _cycleAvailableModel(direction: "forward" | "backward"): Promise<ModelCycleResult | undefined> {
+	private async _cycleAvailableModel(
+		direction: "forward" | "backward",
+		options?: ModelSwitchOptions,
+	): Promise<ModelCycleResult | undefined> {
 		const availableModels = await this._modelRuntime.getAvailable();
 		if (availableModels.length <= 1) return undefined;
 
@@ -1858,7 +2009,9 @@ export class AgentSession {
 		const nextModel = availableModels[nextIndex];
 
 		const thinkingLevel = this._getThinkingLevelForModelSwitch();
+		this._preflightModelSwitch(nextModel, options);
 		this.agent.state.model = nextModel;
+		this._restoreProviderOptions();
 		this.sessionManager.appendModelChange(nextModel.provider, nextModel.id);
 		this.settingsManager.setDefaultModelAndProvider(nextModel.provider, nextModel.id);
 

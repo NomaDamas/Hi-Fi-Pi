@@ -117,8 +117,14 @@ export type ProviderTraceStage =
 	| "input_resolution"
 	| "capability_decision"
 	| "source_selection"
+	| "upload_start"
+	| "upload_progress"
+	| "upload_complete"
+	| "upload_error"
+	| "remote_delete"
 	| "remote_reuse"
 	| "provider_lowering"
+	| "provider_options"
 	| "request_headers"
 	| "sanitized_wire_payload"
 	| "response_metadata"
@@ -159,17 +165,19 @@ export interface ProviderTraceEvent {
 		form: NativeInputTransportSource;
 	};
 	remote?: {
-		state: "provided" | "reused";
+		state: "uploading" | "provided" | "reused" | "ready" | "deleted" | "failed";
 		provider: ProviderId;
 		api?: Api;
 		fileId: string;
 		uri?: string;
 		expiresAt?: number;
 	};
+	progress?: { loadedBytes: number; totalBytes?: number };
 	wire?: {
 		kind: string;
 		source: NativeInputTransportSource;
 	};
+	options?: Record<string, unknown>;
 	headers?: Record<string, string>;
 	payload?: unknown;
 	response?: {
@@ -227,6 +235,10 @@ export interface StreamOptions {
 	onResponse?: (response: ProviderResponse, model: Model<Api>) => void | Promise<void>;
 	/** Observe factual, credential-safe provider request lifecycle records without mutating the request. */
 	onTrace?: ProviderTraceCallback;
+	/** Explicit native-file upload policy. Omitted requests retain the existing inline path. */
+	attachmentUpload?: AttachmentUploadOptions;
+	/** Validated namespaced controls registered by the selected provider backend. */
+	providerOptions?: Record<string, unknown>;
 	/**
 	 * Optional custom HTTP headers to include in API requests.
 	 * Merged with provider defaults; caller values override default headers.
@@ -451,21 +463,54 @@ export type AttachmentSource =
 	| {
 			type: "url";
 			url: string;
+			expiresAt?: number;
+	  }
+	| {
+			type: "cloud-uri";
+			uri: string;
+			provider?: ProviderId;
+			api?: Api;
+			endpoint?: string;
+			expiresAt?: number;
 	  }
 	| {
 			type: "provider-file";
 			provider: ProviderId;
 			fileId: string;
 			uri?: string;
+			api?: Api;
+			endpoint?: string;
 	  };
+
+export interface AttachmentUploadProgress {
+	attachmentId: string;
+	provider: ProviderId;
+	api: Api;
+	state: "starting" | "uploading" | "complete" | "failed" | "cancelled";
+	loadedBytes: number;
+	totalBytes?: number;
+	error?: string;
+}
+
+export interface AttachmentUploadOptions {
+	mode: "inline" | "upload" | "auto";
+	allowInlineFallback?: boolean;
+	expiresAfterSeconds?: number;
+	onProgress?: (progress: AttachmentUploadProgress) => void | Promise<void>;
+}
 
 export interface ProviderFileReference {
 	provider: ProviderId;
 	api: Api;
 	fileId: string;
 	uri?: string;
+	endpoint?: string;
+	endpointProfile?: string;
+	sourceSha256?: string;
 	uploadedAt: number;
 	expiresAt?: number;
+	state?: "ready" | "deleted" | "failed";
+	deletedAt?: number;
 	metadata?: Record<string, unknown>;
 }
 
@@ -484,6 +529,19 @@ export interface AttachmentRegistry {
 	resolve(id: string): AttachmentRecord | undefined;
 	read?(attachment: AttachmentRecord): Uint8Array;
 	list?(): readonly AttachmentRecord[];
+	/** Persist a new version of an existing attachment record. */
+	update?(attachment: AttachmentRecord): void | Promise<void>;
+}
+
+export interface AttachmentSourcePolicy {
+	allowedUrlProtocols?: string[];
+	allowedCloudProtocols?: string[];
+	allowedHosts?: string[];
+	deniedHosts?: string[];
+	denyPrivateNetwork?: boolean;
+	allowRedirects?: boolean;
+	maximumRedirects?: number;
+	maximumBytes?: number;
 }
 
 export interface ToolCall {
@@ -492,6 +550,51 @@ export interface ToolCall {
 	name: string;
 	arguments: Record<string, any>;
 	thoughtSignature?: string; // Google-specific: opaque signature for reusing thought context
+	/** Opaque provider tool-call metadata retained for same-provider replay. */
+	providerMetadata?: Record<string, unknown>;
+}
+
+export type ProviderNativePortability = "portable" | "reconstructable" | "provider-locked";
+
+/** Formal escape hatch for vendor state that cannot be represented by Pi's portable content blocks. */
+export interface ProviderNativePart {
+	type: "provider-native";
+	provider: ProviderId;
+	api?: Api;
+	modelId?: string;
+	kind: string;
+	payload: unknown;
+	portability?: ProviderNativePortability;
+	stateId?: string;
+}
+
+export interface CitationPart {
+	type: "citation";
+	sourceId?: string;
+	title?: string;
+	url?: string;
+	quotedText?: string;
+	provider?: ProviderId;
+	raw?: unknown;
+}
+
+export interface ProviderReasoningState {
+	provider: ProviderId;
+	api?: Api;
+	modelId?: string;
+	encrypted?: string;
+	signature?: string;
+	metadata?: Record<string, unknown>;
+}
+
+export interface ProviderConversationState {
+	provider: ProviderId;
+	api?: Api;
+	modelId?: string;
+	responseId?: string;
+	continuationId?: string;
+	cachedContentId?: string;
+	metadata?: Record<string, unknown>;
 }
 
 export interface Usage {
@@ -523,6 +626,7 @@ export interface UserMessage {
 	role: "user";
 	content: string | (TextContent | ImageContent)[];
 	attachments?: AttachmentReference[];
+	nativeParts?: ProviderNativePart[];
 	timestamp: number; // Unix timestamp in milliseconds
 }
 
@@ -534,6 +638,10 @@ export interface AssistantMessage {
 	model: string;
 	responseModel?: string; // Concrete `chunk.model` when different from the requested `model` (e.g. OpenRouter `auto` -> `anthropic/...`)
 	responseId?: string; // Provider-specific response/message identifier when the upstream API exposes one
+	nativeParts?: ProviderNativePart[];
+	citations?: CitationPart[];
+	reasoningState?: ProviderReasoningState[];
+	providerState?: ProviderConversationState;
 	diagnostics?: AssistantMessageDiagnostic[]; // Redacted provider/runtime diagnostics for failures and recoveries.
 	usage: Usage;
 	stopReason: StopReason;
@@ -548,6 +656,8 @@ export interface ToolResultMessage<TDetails = any> {
 	toolName: string;
 	content: (TextContent | ImageContent)[]; // Supports text and images
 	attachments?: AttachmentReference[];
+	nativeParts?: ProviderNativePart[];
+	providerMetadata?: Record<string, unknown>;
 	details?: TDetails;
 	/** Usage from the tool execution itself, if available. Not part of main LLM context accounting. */
 	usage?: Usage;
@@ -620,6 +730,8 @@ export interface Context {
 	messages: Message[];
 	tools?: Tool[];
 	attachmentRegistry?: AttachmentRegistry;
+	/** Optional request boundary for remote attachment sources. No source is fetched during lowering. */
+	attachmentSourcePolicy?: AttachmentSourcePolicy;
 }
 
 /**
@@ -887,9 +999,10 @@ export interface ModelCost extends ModelCostRates {
 	tiers?: ModelCostTier[];
 }
 
-export type NativeAttachmentTransportSource = "inline" | "url" | "provider-file";
+export type NativeInputTransportSource = "inline" | "url" | "provider-file" | "cloud-uri";
 
-export type NativeInputTransportSource = NativeAttachmentTransportSource | "cloud-uri";
+/** @deprecated Use NativeInputTransportSource. Retained for additive API compatibility. */
+export type NativeAttachmentTransportSource = NativeInputTransportSource;
 
 export type NativeInputCapabilityProvenance = "official-default" | "configured" | "live-verified";
 

@@ -90,6 +90,8 @@ export interface CreateAgentSessionOptions {
 	sessionStartEvent?: SessionStartEvent;
 	/** Observe sanitized provider-native input traces without affecting requests. */
 	onTrace?: ProviderTraceCallback;
+	/** Initial non-secret, namespaced controls for the selected provider backend/model. */
+	providerOptions?: Record<string, unknown>;
 }
 
 /** Result from createAgentSession */
@@ -355,6 +357,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			});
 		},
 		onTrace: options.onTrace,
+		providerOptions: options.providerOptions,
 		sessionId: sessionManager.getSessionId(),
 		transformContext: async (messages) => {
 			const runner = extensionRunnerRef.current;
@@ -396,6 +399,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		excludedToolNames,
 		extensionRunnerRef,
 		sessionStartEvent: options.sessionStartEvent,
+		providerOptions: options.providerOptions,
 	});
 	const extensionsResult = resourceLoader.getExtensions();
 

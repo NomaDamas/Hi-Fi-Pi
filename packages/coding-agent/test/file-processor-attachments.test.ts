@@ -39,6 +39,22 @@ describe("processFileArguments attachment classification", () => {
 		expect(result.attachments).toEqual([]);
 	});
 
+	it("promotes an explicitly requested @file: text input without changing the default", async () => {
+		const markdownPath = join(testDir, "README.md");
+		writeFileSync(markdownPath, "# Native document\n");
+
+		const cli = await processFileArguments([`file:${markdownPath}`]);
+		expect(cli.text).toBe("");
+		expect(cli.attachments).toHaveLength(1);
+		expect(cli.attachments[0]).toMatchObject({ filename: "README.md", mediaType: "text/markdown" });
+
+		const interactive = await processPromptFileReferences(`Analyze @file:${markdownPath}`, {
+			failureMode: "throw",
+		});
+		expect(interactive.text).toBe("Analyze");
+		expect(interactive.attachments[0]).toMatchObject({ filename: "README.md", mediaType: "text/markdown" });
+	});
+
 	it("keeps supported images on the legacy image path", async () => {
 		const path = join(testDir, "figure.png");
 		writeFileSync(path, Buffer.from(TINY_PNG_BASE64, "base64"));

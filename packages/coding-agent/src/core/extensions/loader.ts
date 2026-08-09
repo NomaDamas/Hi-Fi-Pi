@@ -8,7 +8,11 @@ import { createRequire } from "node:module";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import * as _bundledPiAgentCore from "@earendil-works/pi-agent-core";
-import type { Provider } from "@earendil-works/pi-ai";
+import {
+	type Provider,
+	type ProviderBackendRegistration,
+	registerProviderBackend as registerPiProviderBackend,
+} from "@earendil-works/pi-ai";
 import * as _bundledPiAiCompat from "@earendil-works/pi-ai/compat";
 import * as _bundledPiAiOauth from "@earendil-works/pi-ai/oauth";
 import * as _bundledPiAiProviders from "@earendil-works/pi-ai/providers/all";
@@ -383,6 +387,17 @@ function createExtensionAPI(
 			runtime.registerNativeProvider(providerOrName, extension.path);
 		},
 
+		registerProviderBackend(backend: ProviderBackendRegistration) {
+			runtime.assertActive();
+			const unregister = registerPiProviderBackend(backend);
+			extension.providerBackendDisposers ??= new Map();
+			extension.providerBackendDisposers.set(backend.id, unregister);
+			return () => {
+				unregister();
+				extension.providerBackendDisposers?.delete(backend.id);
+			};
+		},
+
 		unregisterProvider(name: string) {
 			runtime.assertActive();
 			runtime.unregisterProvider(name, extension.path);
@@ -453,7 +468,13 @@ function createExtension(extensionPath: string, resolvedPath: string): Extension
 		commands: new Map(),
 		flags: new Map(),
 		shortcuts: new Map(),
+		providerBackendDisposers: new Map(),
 	};
+}
+
+function disposeExtensionProviderBackends(extension: Extension | undefined): void {
+	for (const unregister of extension?.providerBackendDisposers?.values() ?? []) unregister();
+	extension?.providerBackendDisposers?.clear();
 }
 
 async function loadExtension(
@@ -464,6 +485,7 @@ async function loadExtension(
 	cacheToken?: ExtensionCacheToken,
 ): Promise<{ extension: Extension | null; error: string | null }> {
 	const resolvedPath = resolvePath(extensionPath, cwd, { normalizeUnicodeSpaces: true });
+	let extension: Extension | undefined;
 
 	try {
 		const factory = await loadExtensionModule(resolvedPath, cacheToken);
@@ -472,13 +494,14 @@ async function loadExtension(
 			return { extension: null, error: `Extension does not export a valid factory function: ${extensionPath}` };
 		}
 
-		const extension = createExtension(extensionPath, resolvedPath);
+		extension = createExtension(extensionPath, resolvedPath);
 		const api = createExtensionAPI(extension, runtime, cwd, eventBus);
 		await factory(api);
 		time(`${extensionPath} factory`, "extensions");
 
 		return { extension, error: null };
 	} catch (err) {
+		disposeExtensionProviderBackends(extension);
 		const message = err instanceof Error ? err.message : String(err);
 		return { extension: null, error: `Failed to load extension: ${message}` };
 	}
@@ -497,7 +520,12 @@ export async function loadExtensionFromFactory(
 	const extension = createExtension(extensionPath, extensionPath);
 	const resolvedCwd = resolvePath(cwd);
 	const api = createExtensionAPI(extension, runtime, resolvedCwd, eventBus);
-	await factory(api);
+	try {
+		await factory(api);
+	} catch (error) {
+		disposeExtensionProviderBackends(extension);
+		throw error;
+	}
 	time(`${extensionPath} factory`, "extensions");
 	return extension;
 }

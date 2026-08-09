@@ -1,5 +1,14 @@
 import type { AgentTool, ThinkingLevel } from "@earendil-works/pi-agent-core";
-import { fauxAssistantMessage, fauxToolCall, type Model, type Usage } from "@earendil-works/pi-ai";
+import {
+	type AssistantMessage,
+	createAssistantMessageEventStream,
+	fauxAssistantMessage,
+	fauxToolCall,
+	inspectProviderBackendSelection,
+	listProviderBackends,
+	type Model,
+	type Usage,
+} from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
 import type { BuildSystemPromptOptions, ExtensionAPI } from "../../src/index.ts";
@@ -42,6 +51,132 @@ describe("AgentSession model and extension characterization", () => {
 				.filter((entry) => entry.type === "model_change")
 				.map((entry) => `${entry.provider}/${entry.modelId}`),
 		).toEqual([`${nextModel.provider}/${nextModel.id}`]);
+		expect(
+			harness.sessionManager
+				.getEntries()
+				.filter((entry) => entry.type === "custom" && entry.customType === "hifi.portability-decision"),
+		).toEqual([]);
+	});
+
+	it("reports and gates lossy provider-native model switches", async () => {
+		const harness = await createHarness({
+			models: [
+				{ id: "faux-1", name: "One", reasoning: true },
+				{ id: "faux-2", name: "Two", reasoning: true },
+			],
+		});
+		harnesses.push(harness);
+		const currentModel = harness.getModel("faux-1")!;
+		const nextModel = harness.getModel("faux-2")!;
+		harness.session.agent.state.messages = [
+			{
+				...fauxAssistantMessage("native state"),
+				nativeParts: [
+					{
+						type: "provider-native",
+						provider: currentModel.provider,
+						api: currentModel.api,
+						modelId: currentModel.id,
+						kind: "response-state",
+						payload: { responseId: "response_1" },
+					},
+				],
+			},
+		];
+
+		expect(harness.session.getPortabilityReport(currentModel)).toMatchObject({
+			canSwitchWithoutLoss: true,
+			counts: { portable: 1 },
+		});
+		const report = harness.session.getPortabilityReport(nextModel);
+		expect(report).toMatchObject({
+			canSwitchWithoutLoss: false,
+			counts: { "provider-locked": 1 },
+		});
+
+		await expect(harness.session.setModel(nextModel)).rejects.toMatchObject({
+			name: "PortabilityConfirmationRequiredError",
+			report,
+		});
+		expect(harness.session.model?.id).toBe("faux-1");
+
+		await harness.session.setModel(nextModel, { allowLossy: true });
+		expect(harness.session.model?.id).toBe("faux-2");
+		expect(
+			harness.sessionManager
+				.getEntries()
+				.filter((entry) => entry.type === "custom" && entry.customType === "hifi.portability-decision"),
+		).toEqual([
+			expect.objectContaining({
+				type: "custom",
+				customType: "hifi.portability-decision",
+				data: expect.objectContaining({ acceptedLoss: true, report }),
+			}),
+		]);
+	});
+
+	it("lets extensions register a deep provider backend without replacing AgentSession", async () => {
+		const backendId = `extension-backend-${Date.now()}`;
+		const harness = await createHarness({
+			extensionFactories: [
+				(pi) => {
+					pi.registerProviderBackend({
+						apiVersion: 1,
+						id: backendId,
+						match: { provider: "faux", api: /^faux(?::|$)/, baseUrl: "http://localhost:0" },
+						prepareInput: ({ conversation }) => ({
+							request: { messageCount: conversation.messages.length },
+						}),
+						stream: ({ api, provider, modelId, request }) => {
+							const stream = createAssistantMessageEventStream();
+							const text = `backend:${JSON.stringify(request)}`;
+							const message: AssistantMessage = {
+								role: "assistant",
+								content: [{ type: "text", text }],
+								api,
+								provider,
+								model: modelId,
+								usage: {
+									input: 0,
+									output: 0,
+									cacheRead: 0,
+									cacheWrite: 0,
+									totalTokens: 0,
+									cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+								},
+								stopReason: "stop",
+								timestamp: Date.now(),
+							};
+							const partial: AssistantMessage = { ...message, content: [], stopReason: "pending" };
+							queueMicrotask(() => {
+								stream.push({ type: "start", partial: { ...partial } });
+								partial.content = [{ type: "text", text: "" }];
+								stream.push({ type: "text_start", contentIndex: 0, partial: { ...partial } });
+								partial.content = [{ type: "text", text }];
+								stream.push({ type: "text_delta", contentIndex: 0, delta: text, partial: { ...partial } });
+								stream.push({ type: "text_end", contentIndex: 0, content: text, partial: { ...partial } });
+								stream.push({ type: "done", reason: "stop", message });
+							});
+							return stream;
+						},
+					});
+				},
+			],
+		});
+		try {
+			expect(listProviderBackends().map((backend) => backend.id)).toContain(backendId);
+			expect(inspectProviderBackendSelection(harness.session.model!)).toMatchObject({
+				kind: "registered",
+				id: backendId,
+			});
+			harness.session.agent.streamFunction = (requestModel, context, options) =>
+				harness.session.modelRuntime.streamSimple(requestModel, context, options);
+			await harness.session.prompt("hello");
+			expect(getAssistantTexts(harness)).toEqual(['backend:{"messageCount":1}']);
+		} finally {
+			harness.cleanup();
+		}
+		expect(listProviderBackends().map((backend) => backend.id)).not.toContain(backendId);
 	});
 
 	it("cycles through scoped models and preserves the scoped thinking preference", async () => {

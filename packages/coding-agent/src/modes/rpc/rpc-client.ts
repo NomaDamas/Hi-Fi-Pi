@@ -6,7 +6,7 @@
 
 import { type ChildProcess, spawn } from "node:child_process";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { AttachmentRecord, ImageContent } from "@earendil-works/pi-ai";
+import type { AttachmentRecord, ImageContent, ProviderOptionDefinition } from "@earendil-works/pi-ai";
 import type { AgentSessionEvent, SessionStats } from "../../core/agent-session.ts";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { CompactionResult } from "../../core/compaction/index.ts";
@@ -240,20 +240,29 @@ export class RpcClient {
 	/**
 	 * Set model by provider and ID.
 	 */
-	async setModel(provider: string, modelId: string): Promise<{ provider: string; id: string }> {
-		const response = await this.send({ type: "set_model", provider, modelId });
+	async setModel(
+		provider: string,
+		modelId: string,
+		options?: { allowLossy?: boolean },
+	): Promise<{ provider: string; id: string }> {
+		const response = await this.send({ type: "set_model", provider, modelId, allowLossy: options?.allowLossy });
+		return this.getData(response);
+	}
+
+	async getPortabilityReport(provider: string, modelId: string) {
+		const response = await this.send({ type: "get_portability_report", provider, modelId });
 		return this.getData(response);
 	}
 
 	/**
 	 * Cycle to next model.
 	 */
-	async cycleModel(): Promise<{
+	async cycleModel(options?: { allowLossy?: boolean }): Promise<{
 		model: { provider: string; id: string };
 		thinkingLevel: ThinkingLevel;
 		isScoped: boolean;
 	} | null> {
-		const response = await this.send({ type: "cycle_model" });
+		const response = await this.send({ type: "cycle_model", allowLossy: options?.allowLossy });
 		return this.getData(response);
 	}
 
@@ -263,6 +272,30 @@ export class RpcClient {
 	async getAvailableModels(): Promise<ModelInfo[]> {
 		const response = await this.send({ type: "get_available_models" });
 		return this.getData<{ models: ModelInfo[] }>(response).models;
+	}
+
+	async getProviderOptions(): Promise<{
+		definitions: readonly ProviderOptionDefinition[];
+		selected: Record<string, unknown>;
+		effective: Record<string, unknown>;
+	}> {
+		const response = await this.send({ type: "get_provider_options" });
+		return this.getData(response);
+	}
+
+	async setProviderOption(
+		key: string,
+		value: unknown,
+	): Promise<{ selected: Record<string, unknown>; effective: Record<string, unknown> }> {
+		const response = await this.send({ type: "set_provider_option", key, value });
+		return this.getData(response);
+	}
+
+	async unsetProviderOption(
+		key: string,
+	): Promise<{ selected: Record<string, unknown>; effective: Record<string, unknown> }> {
+		const response = await this.send({ type: "unset_provider_option", key });
+		return this.getData(response);
 	}
 
 	/**

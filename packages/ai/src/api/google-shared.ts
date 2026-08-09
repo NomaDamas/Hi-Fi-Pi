@@ -6,7 +6,7 @@ import { type Content, FinishReason, FunctionCallingConfigMode, type Part } from
 import type { ProviderTraceRecorder } from "../provider-trace.ts";
 import type { Context, ImageContent, Model, StopReason, TextContent, Tool } from "../types.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
-import { recordProviderAttachmentLowering, resolvePdfAttachments } from "./attachment-lowering.ts";
+import { recordProviderAttachmentLowering, resolveNativeAttachments } from "./attachment-lowering.ts";
 import { resolveJsonSchemaStrictSampling } from "./constrained-sampling.ts";
 import { transformMessages } from "./transform-messages.ts";
 
@@ -95,6 +95,7 @@ export function convertMessages<T extends GoogleApiType>(
 	model: Model<T>,
 	context: Context,
 	trace?: ProviderTraceRecorder,
+	nativeOptions?: { videoFps?: number },
 ): Content[] {
 	const contents: Content[] = [];
 	const normalizeToolCallId = (id: string): string => {
@@ -106,10 +107,20 @@ export function convertMessages<T extends GoogleApiType>(
 
 	for (const msg of transformedMessages) {
 		if (msg.role === "user") {
-			const attachments = resolvePdfAttachments(msg, context.attachmentRegistry, model, trace);
+			const attachments = resolveNativeAttachments(
+				msg,
+				context.attachmentRegistry,
+				model,
+				trace,
+				context.attachmentSourcePolicy,
+			);
 			const attachmentParts: Part[] = attachments.map((attachment) => {
 				const wireKind = attachment.source.type === "base64" ? "inlineData" : "fileData";
 				recordProviderAttachmentLowering(trace, attachment, wireKind);
+				const videoMetadata =
+					attachment.mediaType.startsWith("video/") && nativeOptions?.videoFps !== undefined
+						? { videoMetadata: { fps: nativeOptions.videoFps } }
+						: {};
 				switch (attachment.source.type) {
 					case "base64":
 						return {
@@ -117,6 +128,7 @@ export function convertMessages<T extends GoogleApiType>(
 								mimeType: attachment.mediaType,
 								data: attachment.source.data,
 							},
+							...videoMetadata,
 						};
 					case "url":
 						return {
@@ -124,6 +136,7 @@ export function convertMessages<T extends GoogleApiType>(
 								mimeType: attachment.mediaType,
 								fileUri: attachment.source.url,
 							},
+							...videoMetadata,
 						};
 					case "provider-file":
 						return {
@@ -131,6 +144,15 @@ export function convertMessages<T extends GoogleApiType>(
 								mimeType: attachment.mediaType,
 								fileUri: attachment.source.uri ?? attachment.source.fileId,
 							},
+							...videoMetadata,
+						};
+					case "cloud-uri":
+						return {
+							fileData: {
+								mimeType: attachment.mediaType,
+								fileUri: attachment.source.uri,
+							},
+							...videoMetadata,
 						};
 				}
 				throw new Error("Unknown attachment source");
@@ -226,7 +248,13 @@ export function convertMessages<T extends GoogleApiType>(
 
 			const hasText = textResult.length > 0;
 			const hasImages = imageContent.length > 0;
-			const attachments = resolvePdfAttachments(msg, context.attachmentRegistry, model, trace);
+			const attachments = resolveNativeAttachments(
+				msg,
+				context.attachmentRegistry,
+				model,
+				trace,
+				context.attachmentSourcePolicy,
+			);
 
 			// Gemini 3+ models support multimodal function responses with images nested inside
 			// functionResponse.parts. Claude and other non-Gemini models behind Cloud Code Assist /
@@ -251,6 +279,10 @@ export function convertMessages<T extends GoogleApiType>(
 				const wireKind =
 					attachment.source.type === "base64" ? "functionResponse.inlineData" : "functionResponse.fileData";
 				recordProviderAttachmentLowering(trace, attachment, wireKind);
+				const videoMetadata =
+					attachment.mediaType.startsWith("video/") && nativeOptions?.videoFps !== undefined
+						? { videoMetadata: { fps: nativeOptions.videoFps } }
+						: {};
 				switch (attachment.source.type) {
 					case "base64":
 						return {
@@ -259,6 +291,7 @@ export function convertMessages<T extends GoogleApiType>(
 								data: attachment.source.data,
 								displayName: attachment.filename,
 							},
+							...videoMetadata,
 						};
 					case "url":
 						return {
@@ -267,6 +300,7 @@ export function convertMessages<T extends GoogleApiType>(
 								fileUri: attachment.source.url,
 								displayName: attachment.filename,
 							},
+							...videoMetadata,
 						};
 					case "provider-file":
 						return {
@@ -275,6 +309,16 @@ export function convertMessages<T extends GoogleApiType>(
 								fileUri: attachment.source.uri ?? attachment.source.fileId,
 								displayName: attachment.filename,
 							},
+							...videoMetadata,
+						};
+					case "cloud-uri":
+						return {
+							fileData: {
+								mimeType: attachment.mediaType,
+								fileUri: attachment.source.uri,
+								displayName: attachment.filename,
+							},
+							...videoMetadata,
 						};
 				}
 				throw new Error("Unknown attachment source");

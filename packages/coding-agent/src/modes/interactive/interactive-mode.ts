@@ -9,7 +9,11 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AuthEvent, AuthPrompt } from "@earendil-works/pi-ai";
-import { getNativeAttachmentCapability, getNativeInputCapabilityManifest } from "@earendil-works/pi-ai";
+import {
+	getNativeAttachmentCapability,
+	getNativeInputCapabilityManifest,
+	PortabilityConfirmationRequiredError,
+} from "@earendil-works/pi-ai";
 import type {
 	Api,
 	AssistantMessage,
@@ -342,6 +346,8 @@ function formatAttachmentSource(attachment: AttachmentRecord): string {
 			return fs.existsSync(attachment.source.path) ? attachment.source.path : `${attachment.source.path} (missing)`;
 		case "url":
 			return attachment.source.url;
+		case "cloud-uri":
+			return attachment.source.uri;
 		case "base64":
 			return "inline base64 (data redacted)";
 		case "provider-file":
@@ -662,6 +668,24 @@ export class InteractiveMode {
 					label: provider.id,
 					description: formatLoginProviderCompletionDescription(provider),
 				}));
+			};
+		}
+
+		const providerOptionsCommand = slashCommands.find((command) => command.name === "provider-options");
+		if (providerOptionsCommand) {
+			providerOptionsCommand.getArgumentCompletions = (prefix: string): AutocompleteItem[] | null => {
+				if (prefix.includes(" ")) return null;
+				const definitions = [...this.session.getProviderOptionDefinitions()];
+				return createFuzzyAutocompleteItems(
+					definitions,
+					prefix,
+					(definition) => `${definition.key} ${definition.description}`,
+					(definition) => ({
+						value: definition.key,
+						label: definition.key,
+						description: definition.description,
+					}),
+				);
 			};
 		}
 
@@ -2838,6 +2862,11 @@ export class InteractiveMode {
 				this.editor.setText("");
 				return;
 			}
+			if (text === "/provider-options" || text.startsWith("/provider-options ")) {
+				this.handleProviderOptionsCommand(text.slice("/provider-options".length).trim());
+				this.editor.setText("");
+				return;
+			}
 			if (text === "/input-inspect") {
 				this.handleInputInspectCommand();
 				this.editor.setText("");
@@ -3973,7 +4002,18 @@ export class InteractiveMode {
 
 	private async cycleModel(direction: "forward" | "backward"): Promise<void> {
 		try {
-			const result = await this.session.cycleModel(direction);
+			let result: Awaited<ReturnType<AgentSession["cycleModel"]>>;
+			try {
+				result = await this.session.cycleModel(direction);
+			} catch (error) {
+				if (!(error instanceof PortabilityConfirmationRequiredError)) throw error;
+				const confirmed = await this.showExtensionConfirm(
+					"Provider-native portability",
+					this.formatPortabilityPrompt(error),
+				);
+				if (!confirmed) return;
+				result = await this.session.cycleModel(direction, { allowLossy: true });
+			}
 			if (result === undefined) {
 				const msg = this.session.scopedModels.length > 0 ? "Only one model in scope" : "Only one model available";
 				this.showStatus(msg);
@@ -4528,7 +4568,7 @@ export class InteractiveMode {
 		const model = await this.findExactModelMatch(searchTerm);
 		if (model) {
 			try {
-				await this.session.setModel(model);
+				if (!(await this.setModelWithPortabilityConfirmation(model))) return;
 				this.footer.invalidate();
 				this.updateEditorBorderColor();
 				this.showStatus(`Model: ${model.id}`);
@@ -4541,6 +4581,37 @@ export class InteractiveMode {
 		}
 
 		this.showModelSelector(searchTerm);
+	}
+
+	private formatPortabilityPrompt(error: PortabilityConfirmationRequiredError): string {
+		const incompatible = error.report.items.filter(
+			(item) =>
+				item.classification === "provider-locked" ||
+				item.classification === "missing" ||
+				item.classification === "unsupported",
+		);
+		const details = incompatible
+			.slice(0, 6)
+			.map((item) => `- ${item.classification}: ${item.reason}`)
+			.join("\n");
+		const remaining = incompatible.length > 6 ? `\n- and ${incompatible.length - 6} more` : "";
+		return `Switch to ${error.report.target.provider}/${error.report.target.modelId} with native-state loss?\n\n${details}${remaining}`;
+	}
+
+	private async setModelWithPortabilityConfirmation(model: Model<any>): Promise<boolean> {
+		try {
+			await this.session.setModel(model);
+			return true;
+		} catch (error) {
+			if (!(error instanceof PortabilityConfirmationRequiredError)) throw error;
+			const confirmed = await this.showExtensionConfirm(
+				"Provider-native portability",
+				this.formatPortabilityPrompt(error),
+			);
+			if (!confirmed) return false;
+			await this.session.setModel(model, { allowLossy: true });
+			return true;
+		}
 	}
 
 	private async findExactModelMatch(searchTerm: string): Promise<Model<any> | undefined> {
@@ -4661,16 +4732,15 @@ export class InteractiveMode {
 				this.session.modelRuntime,
 				this.session.scopedModels,
 				async (model) => {
+					done();
 					try {
-						await this.session.setModel(model);
+						if (!(await this.setModelWithPortabilityConfirmation(model))) return;
 						this.footer.invalidate();
 						this.updateEditorBorderColor();
-						done();
 						this.showStatus(`Model: ${model.id}`);
 						void this.maybeWarnAboutAnthropicSubscriptionAuth(model);
 						this.checkDaxnutsEasterEgg(model);
 					} catch (error) {
-						done();
 						this.showError(error instanceof Error ? error.message : String(error));
 					}
 				},
@@ -5313,7 +5383,7 @@ export class InteractiveMode {
 					selectionError = `${actionLabel}, but its default model "${defaultModelId}" is not available. Use /model to select a model.`;
 				} else {
 					try {
-						await this.session.setModel(selectedModel);
+						if (!(await this.setModelWithPortabilityConfirmation(selectedModel))) selectedModel = undefined;
 					} catch (error: unknown) {
 						selectedModel = undefined;
 						const errorMessage = error instanceof Error ? error.message : String(error);
@@ -5998,6 +6068,54 @@ export class InteractiveMode {
 		this.ui.requestRender();
 	}
 
+	private handleProviderOptionsCommand(argumentsText: string): void {
+		if (!argumentsText) {
+			const definitions = this.session.getProviderOptionDefinitions();
+			const selected = this.session.getProviderOptionValues();
+			const effective = this.session.getEffectiveProviderOptions();
+			let info = `${theme.bold("Current Provider Options")}\n\n`;
+			if (definitions.length === 0) {
+				info += theme.fg("dim", "The current provider backend/model declares no namespaced controls.");
+			} else {
+				for (const definition of definitions) {
+					const value = effective[definition.key];
+					const origin = Object.hasOwn(selected, definition.key) ? "selected" : "default";
+					info += `${theme.fg("accent", definition.key)} = ${JSON.stringify(value)} ${theme.fg("dim", `(${definition.type}, ${origin})`)}\n`;
+					info += `${theme.fg("dim", definition.description)}\n`;
+				}
+			}
+			this.chatContainer.addChild(new Spacer(1));
+			this.chatContainer.addChild(new Text(info.trimEnd(), 1, 0));
+			this.ui.requestRender();
+			return;
+		}
+
+		const separator = argumentsText.search(/\s/);
+		if (separator < 0) {
+			this.showWarning("Usage: /provider-options <key> <json-value|--unset>");
+			return;
+		}
+		const key = argumentsText.slice(0, separator);
+		const rawValue = argumentsText.slice(separator).trim();
+		try {
+			if (rawValue === "--unset") {
+				this.session.unsetProviderOption(key);
+				this.showStatus(`Provider option unset: ${key}`);
+				return;
+			}
+			let value: unknown;
+			try {
+				value = JSON.parse(rawValue);
+			} catch {
+				value = rawValue;
+			}
+			this.session.setProviderOption(key, value);
+			this.showStatus(`Provider option set: ${key} = ${JSON.stringify(value)}`);
+		} catch (error) {
+			this.showError(error instanceof Error ? error.message : String(error));
+		}
+	}
+
 	private handleInputInspectCommand(): void {
 		const events = this.session.getProviderTraceEvents();
 		const latest = events[events.length - 1];
@@ -6028,6 +6146,7 @@ export class InteractiveMode {
 			if (event.remote) info += `\n${theme.fg("dim", "Remote:")} ${event.remote.provider}/${event.remote.fileId}`;
 			if (event.wire) info += `\n${theme.fg("dim", "Wire:")} ${event.wire.kind} · ${event.wire.source}`;
 			if (event.headers) info += `\n${theme.fg("dim", "Headers:")} ${JSON.stringify(event.headers)}`;
+			if (event.options) info += `\n${theme.fg("dim", "Options:")} ${JSON.stringify(event.options)}`;
 			if (event.payload !== undefined) {
 				info += `\n${theme.fg("dim", "Payload:")} ${JSON.stringify(event.payload, null, 2)}`;
 			}

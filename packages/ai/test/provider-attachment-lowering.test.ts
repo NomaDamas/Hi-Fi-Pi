@@ -750,28 +750,28 @@ describe("provider-native PDF attachment lowering", () => {
 	});
 
 	it("rejects unsupported media before provider request construction", () => {
-		const video: AttachmentRecord = {
-			id: "att_video",
-			filename: "demo.mp4",
-			mediaType: "video/mp4",
+		const archive: AttachmentRecord = {
+			id: "att_archive",
+			filename: "archive.zip",
+			mediaType: "application/zip",
 			source: { type: "base64", data: "AAAA" },
 		};
 		const context: Context = {
 			messages: [
 				{
 					role: "user",
-					content: "Analyze demo.mp4",
-					attachments: [{ type: "attachment", attachmentId: video.id }],
+					content: "Analyze archive.zip",
+					attachments: [{ type: "attachment", attachmentId: archive.id }],
 					timestamp: 1_700_000_000_000,
 				},
 			],
 			attachmentRegistry: {
-				resolve: (id) => (id === video.id ? video : undefined),
+				resolve: (id) => (id === archive.id ? archive : undefined),
 			},
 		};
 
 		expect(() => convertGoogleMessages(makeModel("google-generative-ai", "google"), context)).toThrow(
-			/google.*google-generative-ai.*video\/mp4/i,
+			/google.*google-generative-ai.*application\/zip/i,
 		);
 	});
 });

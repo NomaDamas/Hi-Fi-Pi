@@ -155,6 +155,18 @@ export async function traceRequestHeaders(
 	await recorder.emit({ stage: "request_headers", headers: sanitizeProviderHeadersForTrace(headers) }, callback);
 }
 
+export async function traceProviderOptions(
+	recorder: ProviderTraceRecorder | undefined,
+	callback: ProviderTraceCallback | undefined,
+	options: Record<string, unknown> | undefined,
+): Promise<void> {
+	if (!recorder || !options) return;
+	await recorder.emit(
+		{ stage: "provider_options", options: sanitizeProviderTraceValue(options) as Record<string, unknown> },
+		callback,
+	);
+}
+
 export async function traceProviderPayload(
 	recorder: ProviderTraceRecorder | undefined,
 	callback: ProviderTraceCallback | undefined,

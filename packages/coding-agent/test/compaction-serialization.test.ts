@@ -76,4 +76,46 @@ describe("serializeConversation", () => {
 		expect(result).not.toContain("truncated");
 		expect(result).toContain(longText);
 	});
+
+	it("preserves readable provider-native state markers without serializing opaque payloads", () => {
+		const secret = "opaque-provider-secret";
+		const messages: Message[] = [
+			{
+				role: "assistant",
+				content: [{ type: "text", text: "answer" }],
+				api: "anthropic-messages",
+				provider: "anthropic",
+				model: "claude-test",
+				nativeParts: [
+					{
+						type: "provider-native",
+						provider: "anthropic",
+						kind: "server-tool-state",
+						payload: { token: secret },
+					},
+				],
+				citations: [{ type: "citation", title: "Paper", raw: { token: secret } }],
+				reasoningState: [{ provider: "anthropic", encrypted: secret }],
+				providerState: { provider: "anthropic", responseId: secret },
+				usage: {
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 0,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+				stopReason: "stop",
+				timestamp: 1,
+			},
+		];
+
+		const result = serializeConversation(messages);
+
+		expect(result).toContain("[Assistant citations]: Paper");
+		expect(result).toContain("anthropic/server-tool-state");
+		expect(result).toContain("anthropic/reasoning");
+		expect(result).toContain("anthropic/conversation-state");
+		expect(result).not.toContain(secret);
+	});
 });

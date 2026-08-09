@@ -26,6 +26,8 @@ export type { OpenAICodexResponsesOptions, OpenAICodexWebSocketDebugStats } from
 export type { OpenAICompletionsOptions } from "./api/openai-completions.ts";
 export type { OpenAIResponsesOptions } from "./api/openai-responses.ts";
 export type { PiMessagesEvent, PiMessagesOptions, PiMessagesRewriteImpact } from "./api/pi-messages.ts";
+export * from "./attachment-lifecycle.ts";
+export * from "./attachment-sources.ts";
 export * from "./auth/context.ts";
 export * from "./auth/credential-store.ts";
 export * from "./auth/helpers.ts";
@@ -42,6 +44,9 @@ export * from "./images-models.ts";
 export * from "./models.ts";
 export * from "./models-store.ts";
 export * from "./native-input-capabilities.ts";
+export * from "./portability.ts";
+export * from "./provider-backend.ts";
+export * from "./provider-options.ts";
 export * from "./provider-trace.ts";
 export * from "./providers/faux.ts";
 export * from "./session-resources.ts";

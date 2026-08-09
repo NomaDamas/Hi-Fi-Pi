@@ -471,21 +471,56 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				if (!model) {
 					return error(id, "set_model", `Model not found: ${command.provider}/${command.modelId}`);
 				}
-				await session.setModel(model);
+				await session.setModel(model, { allowLossy: command.allowLossy });
 				return success(id, "set_model", model);
 			}
 
 			case "cycle_model": {
-				const result = await session.cycleModel();
+				const result = await session.cycleModel("forward", { allowLossy: command.allowLossy });
 				if (!result) {
 					return success(id, "cycle_model", null);
 				}
 				return success(id, "cycle_model", result);
 			}
 
+			case "get_portability_report": {
+				const models = await session.modelRuntime.getAvailable();
+				const model = models.find(
+					(candidate) => candidate.provider === command.provider && candidate.id === command.modelId,
+				);
+				if (!model) {
+					return error(id, "get_portability_report", `Model not found: ${command.provider}/${command.modelId}`);
+				}
+				return success(id, "get_portability_report", session.getPortabilityReport(model));
+			}
+
 			case "get_available_models": {
 				const models = await session.modelRuntime.getAvailable();
 				return success(id, "get_available_models", { models });
+			}
+
+			case "get_provider_options": {
+				return success(id, "get_provider_options", {
+					definitions: session.getProviderOptionDefinitions(),
+					selected: session.getProviderOptionValues(),
+					effective: session.getEffectiveProviderOptions(),
+				});
+			}
+
+			case "set_provider_option": {
+				const effective = session.setProviderOption(command.key, command.value);
+				return success(id, "set_provider_option", {
+					selected: session.getProviderOptionValues(),
+					effective,
+				});
+			}
+
+			case "unset_provider_option": {
+				const effective = session.unsetProviderOption(command.key);
+				return success(id, "unset_provider_option", {
+					selected: session.getProviderOptionValues(),
+					effective,
+				});
 			}
 
 			// =================================================================

@@ -455,7 +455,10 @@ function buildParams(
 	context: Context,
 	options: GoogleVertexOptions = {},
 ): GenerateContentParameters {
-	const contents = convertMessages(model, context);
+	const videoFps = options.providerOptions?.["google.video.fps"];
+	const contents = convertMessages(model, context, undefined, {
+		...(typeof videoFps === "number" ? { videoFps } : {}),
+	});
 
 	const generationConfig: GenerateContentConfig = {};
 	if (options.temperature !== undefined) {
@@ -479,7 +482,10 @@ function buildParams(
 
 	if (options.thinking?.enabled && model.reasoning) {
 		const thinkingConfig: ThinkingConfig = { includeThoughts: true };
-		if (options.thinking.level !== undefined) {
+		const nativeThinkingBudget = options.providerOptions?.["google.thinking_budget"];
+		if (typeof nativeThinkingBudget === "number") {
+			thinkingConfig.thinkingBudget = nativeThinkingBudget;
+		} else if (options.thinking.level !== undefined) {
 			thinkingConfig.thinkingLevel = THINKING_LEVEL_MAP[options.thinking.level];
 		} else if (options.thinking.budgetTokens !== undefined) {
 			thinkingConfig.thinkingBudget = options.thinking.budgetTokens;

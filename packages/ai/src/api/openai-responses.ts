@@ -1,10 +1,12 @@
 import OpenAI from "openai";
 import type { ResponseCreateParamsStreaming } from "openai/resources/responses/responses.js";
+import { prepareContextAttachmentUploads } from "../attachment-lifecycle.ts";
 import { clampThinkingLevel } from "../models.ts";
 import {
 	createProviderTraceRecorder,
 	type ProviderTraceRecorder,
 	traceProviderCompletion,
+	traceProviderOptions,
 	traceProviderPayload,
 	traceProviderResponse,
 	traceRequestHeaders,
@@ -136,6 +138,8 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 		let completionTraced = false;
 
 		try {
+			await traceProviderOptions(trace, options?.onTrace, options?.providerOptions);
+			await prepareContextAttachmentUploads(model, context, options, trace);
 			// Create OpenAI client
 			const apiKey = getClientApiKey(model.provider, options?.apiKey, options?.headers);
 			const cacheRetention = resolveCacheRetention(options?.cacheRetention, options?.env);
@@ -303,7 +307,10 @@ function buildParams(
 		prompt_cache_key: cacheRetention === "none" ? undefined : clampOpenAIPromptCacheKey(options?.sessionId),
 		prompt_cache_retention: getPromptCacheRetention(compat, cacheRetention),
 		prompt_cache_options: disableImplicitPromptCache ? { mode: "explicit" } : undefined,
-		store: false,
+		store:
+			typeof options?.providerOptions?.["openai.responses.store"] === "boolean"
+				? options.providerOptions["openai.responses.store"]
+				: false,
 	};
 
 	if (options?.maxTokens) {
@@ -314,8 +321,11 @@ function buildParams(
 		params.temperature = options?.temperature;
 	}
 
-	if (options?.serviceTier !== undefined) {
-		params.service_tier = options.serviceTier;
+	const providerServiceTier = options?.providerOptions?.["openai.responses.service_tier"];
+	const serviceTier =
+		options?.serviceTier ?? (typeof providerServiceTier === "string" ? providerServiceTier : undefined);
+	if (serviceTier !== undefined) {
+		params.service_tier = serviceTier as ResponseCreateParamsStreaming["service_tier"];
 	}
 
 	if (toolPlacement.immediate.length > 0) {

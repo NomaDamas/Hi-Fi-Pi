@@ -544,6 +544,10 @@ export class ExtensionRunner {
 	): void {
 		if (!this.staleMessage) {
 			this.staleMessage = message;
+			for (const extension of this.extensions) {
+				for (const unregister of extension.providerBackendDisposers?.values() ?? []) unregister();
+				extension.providerBackendDisposers?.clear();
+			}
 			this.runtime.invalidate(message);
 		}
 	}

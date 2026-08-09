@@ -13,7 +13,77 @@ const OPENAI_FILE_LIMIT_BYTES = 50 * 1024 * 1024;
 const ANTHROPIC_REQUEST_LIMIT_BYTES = 32 * 1024 * 1024;
 const ANTHROPIC_FILE_LIMIT_BYTES = 500 * 1024 * 1024;
 const GEMINI_INLINE_LIMIT_BYTES = 50 * 1024 * 1024;
+const GEMINI_MEDIA_INLINE_LIMIT_BYTES = 20 * 1024 * 1024;
 const OFFICIAL_CAPABILITIES_VERIFIED_AT = "2026-08-07";
+
+const OPENAI_INPUT_FILE_MEDIA_TYPES = [
+	"application/pdf",
+	"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+	"application/msword",
+	"application/rtf",
+	"text/rtf",
+	"application/vnd.oasis.opendocument.text",
+	"application/vnd.openxmlformats-officedocument.presentationml.presentation",
+	"application/vnd.ms-powerpoint",
+	"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+	"application/vnd.ms-excel",
+	"text/csv",
+	"application/csv",
+	"text/tsv",
+	"text/plain",
+	"text/markdown",
+	"text/html",
+	"text/xml",
+	"application/json",
+	"application/javascript",
+	"application/typescript",
+	"text/javascript",
+	"text/css",
+	"text/x-python",
+	"text/x-typescript",
+	"text/x-rust",
+	"text/x-go",
+	"text/x-java",
+	"text/x-c",
+	"text/x-c++",
+	"text/x-sh",
+	"text/x-yaml",
+	"application/yaml",
+	"application/toml",
+] as const;
+
+const GEMINI_DOCUMENT_MEDIA_TYPES = [
+	"application/pdf",
+	"text/plain",
+	"text/markdown",
+	"text/html",
+	"text/css",
+	"text/csv",
+	"text/xml",
+	"application/json",
+] as const;
+
+const GEMINI_AUDIO_MEDIA_TYPES = [
+	"audio/wav",
+	"audio/mpeg",
+	"audio/mp3",
+	"audio/aiff",
+	"audio/aac",
+	"audio/ogg",
+	"audio/flac",
+	"audio/mp4",
+] as const;
+
+const GEMINI_VIDEO_MEDIA_TYPES = [
+	"video/mp4",
+	"video/mpeg",
+	"video/quicktime",
+	"video/avi",
+	"video/x-flv",
+	"video/x-ms-wmv",
+	"video/webm",
+	"video/3gpp",
+] as const;
 
 type CapabilityModel = Pick<
 	Model<string>,
@@ -88,7 +158,48 @@ function pdfCapability(
 	};
 }
 
+function nativeCapability(
+	id: string,
+	mediaTypes: readonly string[],
+	sources: NativeInputTransportSource[],
+	wireKinds: Partial<Record<NativeInputTransportSource, string>>,
+	limits: NativeInputCapabilityLimits,
+	extra: Partial<NativeInputCapabilityDefinition> = {},
+): NativeInputCapabilityDefinition {
+	return {
+		id,
+		supported: true,
+		mediaTypes: [...mediaTypes],
+		sources,
+		wireKinds,
+		limits,
+		provenance: "official-default",
+		verifiedAt: OFFICIAL_CAPABILITIES_VERIFIED_AT,
+		...extra,
+	};
+}
+
 const builtInResolvers: NativeInputCapabilityResolver[] = [
+	{
+		id: "openai-audio-chat",
+		matches: (context) =>
+			context.provider === "openai" &&
+			context.api === "openai-completions" &&
+			hostname(context.baseUrl) === "api.openai.com",
+		resolve: () => ({
+			profile: "openai-audio-chat",
+			capabilities: [
+				nativeCapability(
+					"openai-chat-input-audio",
+					["audio/wav", "audio/mpeg"],
+					["inline"],
+					{ inline: "input_audio" },
+					{},
+					{ modelAllowList: ["gpt-audio*", "gpt-4o-audio-preview*"] },
+				),
+			],
+		}),
+	},
 	{
 		id: "openai-official",
 		matches: (context) =>
@@ -98,8 +209,9 @@ const builtInResolvers: NativeInputCapabilityResolver[] = [
 		resolve: () => ({
 			profile: "openai-official",
 			capabilities: [
-				pdfCapability(
-					"openai-responses-pdf",
+				nativeCapability(
+					"openai-responses-input-file",
+					OPENAI_INPUT_FILE_MEDIA_TYPES,
 					["inline", "url", "provider-file"],
 					{ inline: "input_file", url: "input_file", "provider-file": "input_file" },
 					{ maximumBytes: OPENAI_FILE_LIMIT_BYTES, maximumRequestBytes: OPENAI_FILE_LIMIT_BYTES },
@@ -124,6 +236,24 @@ const builtInResolvers: NativeInputCapabilityResolver[] = [
 						maximumBytes: ANTHROPIC_REQUEST_LIMIT_BYTES,
 						maximumRequestBytes: ANTHROPIC_REQUEST_LIMIT_BYTES,
 					},
+				),
+				nativeCapability(
+					"anthropic-text-document",
+					["text/plain"],
+					["inline"],
+					{ inline: "document" },
+					{
+						maximumBytes: ANTHROPIC_REQUEST_LIMIT_BYTES,
+						maximumRequestBytes: ANTHROPIC_REQUEST_LIMIT_BYTES,
+					},
+				),
+				nativeCapability(
+					"anthropic-files-text-document",
+					["text/plain"],
+					["provider-file"],
+					{ "provider-file": "document" },
+					{ maximumBytes: ANTHROPIC_FILE_LIMIT_BYTES },
+					{ requiredHeaders: { "anthropic-beta": "files-api-2025-04-14" } },
 				),
 				pdfCapability(
 					"anthropic-files-pdf",
@@ -163,6 +293,35 @@ const builtInResolvers: NativeInputCapabilityResolver[] = [
 					},
 				),
 				pdfCapability("gemini-files-pdf", ["provider-file"], { "provider-file": "fileData" }, {}),
+				pdfCapability("gemini-cloud-pdf", ["cloud-uri"], { "cloud-uri": "fileData" }, {}),
+				nativeCapability(
+					"gemini-inline-documents",
+					GEMINI_DOCUMENT_MEDIA_TYPES.filter((mediaType) => mediaType !== "application/pdf"),
+					["inline"],
+					{ inline: "inlineData" },
+					{ maximumBytes: GEMINI_INLINE_LIMIT_BYTES },
+				),
+				nativeCapability(
+					"gemini-files-documents",
+					GEMINI_DOCUMENT_MEDIA_TYPES.filter((mediaType) => mediaType !== "application/pdf"),
+					["provider-file", "cloud-uri"],
+					{ "provider-file": "fileData", "cloud-uri": "fileData" },
+					{},
+				),
+				nativeCapability(
+					"gemini-inline-media",
+					[...GEMINI_AUDIO_MEDIA_TYPES, ...GEMINI_VIDEO_MEDIA_TYPES],
+					["inline"],
+					{ inline: "inlineData" },
+					{ maximumBytes: GEMINI_MEDIA_INLINE_LIMIT_BYTES },
+				),
+				nativeCapability(
+					"gemini-files-media",
+					[...GEMINI_AUDIO_MEDIA_TYPES, ...GEMINI_VIDEO_MEDIA_TYPES],
+					["provider-file", "cloud-uri"],
+					{ "provider-file": "fileData", "cloud-uri": "fileData" },
+					{},
+				),
 			],
 		}),
 	},
@@ -181,7 +340,21 @@ const builtInResolvers: NativeInputCapabilityResolver[] = [
 					{ inline: "inlineData" },
 					{ maximumBytes: GEMINI_INLINE_LIMIT_BYTES },
 				),
-				pdfCapability("vertex-files-pdf", ["provider-file"], { "provider-file": "fileData" }, {}),
+				pdfCapability("vertex-cloud-pdf", ["cloud-uri"], { "cloud-uri": "fileData" }, {}),
+				nativeCapability(
+					"vertex-native-documents",
+					GEMINI_DOCUMENT_MEDIA_TYPES.filter((mediaType) => mediaType !== "application/pdf"),
+					["inline", "cloud-uri"],
+					{ inline: "inlineData", "cloud-uri": "fileData" },
+					{ maximumBytes: GEMINI_INLINE_LIMIT_BYTES },
+				),
+				nativeCapability(
+					"vertex-native-media",
+					[...GEMINI_AUDIO_MEDIA_TYPES, ...GEMINI_VIDEO_MEDIA_TYPES],
+					["inline", "cloud-uri"],
+					{ inline: "inlineData", "cloud-uri": "fileData" },
+					{ maximumBytes: GEMINI_MEDIA_INLINE_LIMIT_BYTES },
+				),
 			],
 		}),
 	},

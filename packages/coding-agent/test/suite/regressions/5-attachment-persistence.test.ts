@@ -26,6 +26,7 @@ const attachment: AttachmentRecord = {
 
 type AttachmentSessionManager = SessionManager & {
 	appendAttachment(record: AttachmentRecord): string;
+	updateAttachment(record: AttachmentRecord): string;
 	getAttachment(id: string): AttachmentRecord | undefined;
 	getAttachments(): AttachmentRecord[];
 	findDanglingAttachmentReferences(): Array<{ attachmentId: string; messageEntryId: string }>;
@@ -87,6 +88,38 @@ describe("Issue 5 attachment persistence", () => {
 		expect(attachmentEntry).toMatchObject({ type: "attachment", attachment });
 		expect(messageEntry.message.attachments).toEqual([{ type: "attachment", attachmentId: attachment.id }]);
 		expect(JSON.stringify(messageEntry)).not.toContain("file_openai_123");
+	});
+
+	it("persists audited remote lifecycle updates while resolving one current attachment", () => {
+		const manager = createPersistentManager();
+		manager.appendAttachment(attachment);
+		manager.appendMessage(userMessage("Analyze", attachment.id));
+		const updated: AttachmentRecord = {
+			...attachment,
+			remotes: {
+				...attachment.remotes,
+				"anthropic:anthropic-messages:https://api.anthropic.com": {
+					provider: "anthropic",
+					api: "anthropic-messages",
+					fileId: "file_anthropic_123",
+					endpoint: "https://api.anthropic.com",
+					uploadedAt: 1_700_000_000_100,
+					state: "ready",
+				},
+			},
+		};
+		manager.updateAttachment(updated);
+		flushTurn(manager);
+
+		expect(manager.getAttachments()).toEqual([updated]);
+		const attachmentEntries = manager.getEntries().filter((entry) => entry.type === "attachment");
+		expect(attachmentEntries).toHaveLength(2);
+		expect(attachmentEntries[0]).not.toHaveProperty("operation");
+		expect(attachmentEntries[1]).toMatchObject({ operation: "update", attachment: updated });
+
+		const resumed = withAttachmentApi(SessionManager.open(manager.getSessionFile()!));
+		expect(resumed.getAttachment(updated.id)).toEqual(updated);
+		expect(resumed.getAttachments()).toEqual([updated]);
 	});
 
 	it("restores attachment metadata, missing local sources, and provider remotes on resume", () => {
@@ -335,6 +368,129 @@ describe("Issue 5 attachment persistence", () => {
 
 		expect(exported).toContain("[omitted from export]");
 		expect(exported).not.toContain("JVBERi0xLjQ=SECRET");
+	});
+
+	it("redacts signed remote URLs from JSONL exports", async () => {
+		const manager = createPersistentManager();
+		const remoteAttachment: AttachmentRecord = {
+			...attachment,
+			id: "att_signed_url",
+			source: {
+				type: "url",
+				url: "https://files.example.com/paper.pdf?X-Amz-Signature=secret&download=1",
+			},
+			remotes: {
+				openai: {
+					provider: "openai",
+					api: "openai-responses",
+					fileId: "file_123",
+					uri: "https://files.example.com/file_123?token=remote-secret",
+					uploadedAt: 1,
+				},
+			},
+		};
+		manager.appendAttachment(remoteAttachment);
+		manager.appendMessage(userMessage("Analyze", remoteAttachment.id));
+		flushTurn(manager);
+		const harness = await createHarness({ sessionManager: manager });
+		harnesses.push(harness);
+		const outputPath = join(manager.getCwd(), "safe-remote-export.jsonl");
+
+		harness.session.exportToJsonl(outputPath);
+		const exported = readFileSync(outputPath, "utf8");
+		expect(exported).toContain("redacted=true");
+		expect(exported).not.toContain("secret");
+	});
+
+	it("round-trips provider-native conversation state through session persistence", () => {
+		const manager = createPersistentManager();
+		const message = {
+			...fauxAssistantMessage("native answer"),
+			content: [
+				{
+					type: "toolCall" as const,
+					id: "call_1",
+					name: "web_search",
+					arguments: { query: "Pi" },
+					providerMetadata: { serverToolUseId: "srv_1" },
+				},
+			],
+			nativeParts: [
+				{
+					type: "provider-native" as const,
+					provider: "faux",
+					api: "openai-completions" as const,
+					kind: "server-tool-state",
+					payload: { id: "srv_1" },
+				},
+			],
+			citations: [{ type: "citation" as const, title: "Reference", url: "https://example.com/ref" }],
+			reasoningState: [{ provider: "faux", encrypted: "opaque", signature: "signature" }],
+			providerState: { provider: "faux", responseId: "response_1" },
+		};
+		manager.appendMessage(message);
+
+		const resumed = SessionManager.open(manager.getSessionFile()!);
+		const restored = resumed.getEntries().find((entry) => entry.type === "message");
+		expect(restored).toMatchObject({
+			type: "message",
+			message: JSON.parse(JSON.stringify(message)),
+		});
+	});
+
+	it("redacts provider-native secrets only at the export boundary", async () => {
+		const manager = createPersistentManager();
+		manager.appendMessage({
+			...fauxAssistantMessage("native answer"),
+			content: [
+				{
+					type: "toolCall",
+					id: "call_1",
+					name: "computer",
+					arguments: {},
+					providerMetadata: { access_token: "tool-secret" },
+				},
+			],
+			nativeParts: [
+				{
+					type: "provider-native",
+					provider: "faux",
+					kind: "state",
+					payload: { api_key: "native-secret", data: "UERG" },
+				},
+			],
+			citations: [
+				{
+					type: "citation",
+					url: "https://example.com/ref?signature=citation-secret",
+					raw: { authorization: "citation-token" },
+				},
+			],
+			reasoningState: [
+				{
+					provider: "faux",
+					encrypted: "reasoning-secret",
+					signature: "reasoning-signature",
+					metadata: { token: "metadata-secret" },
+				},
+			],
+			providerState: { provider: "faux", metadata: { password: "state-secret" } },
+		});
+		const harness = await createHarness({ sessionManager: manager });
+		harnesses.push(harness);
+		const outputPath = join(manager.getCwd(), "safe-native-export.jsonl");
+
+		harness.session.exportToJsonl(outputPath);
+		const persisted = readFileSync(manager.getSessionFile()!, "utf8");
+		const exported = readFileSync(outputPath, "utf8");
+
+		expect(persisted).toContain("reasoning-secret");
+		expect(exported).not.toContain("native-secret");
+		expect(exported).not.toContain("tool-secret");
+		expect(exported).not.toContain("citation-secret");
+		expect(exported).not.toContain("reasoning-secret");
+		expect(exported).not.toContain("state-secret");
+		expect(exported).toContain("[redacted]");
 	});
 
 	it("stores inline attachment bytes once even when multiple messages reference them", () => {

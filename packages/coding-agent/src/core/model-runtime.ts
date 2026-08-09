@@ -13,6 +13,7 @@ import {
 	type CredentialInfo,
 	type CredentialStore,
 	createModels,
+	dispatchProviderBackend,
 	lazyStream,
 	type Model,
 	type Models,
@@ -28,6 +29,7 @@ import {
 	type ProviderHeaders,
 	type SimpleStreamOptions,
 	type StreamOptions,
+	withResolvedProviderOptions,
 } from "@earendil-works/pi-ai";
 import * as builtinProviderCatalog from "@earendil-works/pi-ai/providers/all";
 import { getAgentDir } from "../config.ts";
@@ -475,11 +477,19 @@ export class ModelRuntime implements Models {
 				model,
 				options as (StreamOptions & ModelsStreamTransforms) | undefined,
 			);
-			return prepared.provider.stream(
-				prepared.model as Model<TApi>,
-				context,
-				prepared.options as ApiStreamOptions<TApi>,
-			);
+			const resolvedOptions = withResolvedProviderOptions(prepared.model, prepared.options);
+			return dispatchProviderBackend({
+				model: prepared.model,
+				conversation: context,
+				options: resolvedOptions,
+				simple: false,
+				legacy: (conversation, legacyOptions) =>
+					prepared.provider.stream(
+						prepared.model as Model<TApi>,
+						conversation,
+						legacyOptions as ApiStreamOptions<TApi>,
+					),
+			});
 		});
 	}
 
@@ -494,7 +504,15 @@ export class ModelRuntime implements Models {
 	streamSimple(model: Model<Api>, context: Context, options?: ModelsSimpleStreamOptions): AssistantMessageEventStream {
 		return lazyStream(model, async () => {
 			const prepared = await this.prepareRequest(model, options);
-			return prepared.provider.streamSimple(prepared.model, context, prepared.options as SimpleStreamOptions);
+			const resolvedOptions = withResolvedProviderOptions(prepared.model, prepared.options);
+			return dispatchProviderBackend({
+				model: prepared.model,
+				conversation: context,
+				options: resolvedOptions,
+				simple: true,
+				legacy: (conversation, legacyOptions) =>
+					prepared.provider.streamSimple(prepared.model, conversation, legacyOptions as SimpleStreamOptions),
+			});
 		});
 	}
 
