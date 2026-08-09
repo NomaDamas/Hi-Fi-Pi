@@ -18,6 +18,7 @@ let nextTraceId = 0;
 function isSensitiveKey(key: string): boolean {
 	const normalized = key.toLowerCase().replaceAll("-", "_");
 	return (
+		(normalized.startsWith("x_amz_") && /(?:authorization|credential|security_token|signature)$/.test(normalized)) ||
 		normalized === "authorization" ||
 		normalized === "proxy_authorization" ||
 		normalized === "cookie" ||

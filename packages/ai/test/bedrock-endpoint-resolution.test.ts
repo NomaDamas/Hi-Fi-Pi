@@ -55,12 +55,14 @@ const context: Context = {
 const originalAwsRegion = process.env.AWS_REGION;
 const originalAwsDefaultRegion = process.env.AWS_DEFAULT_REGION;
 const originalAwsProfile = process.env.AWS_PROFILE;
+const originalAwsBearerToken = process.env.AWS_BEARER_TOKEN_BEDROCK;
 
 beforeEach(() => {
 	bedrockMock.constructorCalls.length = 0;
 	delete process.env.AWS_REGION;
 	delete process.env.AWS_DEFAULT_REGION;
 	delete process.env.AWS_PROFILE;
+	delete process.env.AWS_BEARER_TOKEN_BEDROCK;
 });
 
 afterEach(() => {
@@ -80,6 +82,12 @@ afterEach(() => {
 		delete process.env.AWS_PROFILE;
 	} else {
 		process.env.AWS_PROFILE = originalAwsProfile;
+	}
+
+	if (originalAwsBearerToken === undefined) {
+		delete process.env.AWS_BEARER_TOKEN_BEDROCK;
+	} else {
+		process.env.AWS_BEARER_TOKEN_BEDROCK = originalAwsBearerToken;
 	}
 });
 

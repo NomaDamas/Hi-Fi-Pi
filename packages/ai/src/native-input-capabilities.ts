@@ -85,6 +85,40 @@ const GEMINI_VIDEO_MEDIA_TYPES = [
 	"video/3gpp",
 ] as const;
 
+const BEDROCK_DOCUMENT_MEDIA_TYPES = [
+	"application/pdf",
+	"text/csv",
+	"application/msword",
+	"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+	"text/html",
+	"text/markdown",
+	"text/plain",
+	"application/vnd.ms-excel",
+	"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+] as const;
+
+const BEDROCK_AUDIO_MEDIA_TYPES = [
+	"audio/aac",
+	"audio/flac",
+	"audio/mp4",
+	"audio/mpeg",
+	"audio/ogg",
+	"audio/opus",
+	"audio/wav",
+	"audio/webm",
+] as const;
+
+const BEDROCK_VIDEO_MEDIA_TYPES = [
+	"video/x-flv",
+	"video/x-matroska",
+	"video/quicktime",
+	"video/mp4",
+	"video/mpeg",
+	"video/3gpp",
+	"video/webm",
+	"video/x-ms-wmv",
+] as const;
+
 type CapabilityModel = Pick<
 	Model<string>,
 	"api" | "baseUrl" | "id" | "nativeAttachments" | "nativeInputs" | "provider"
@@ -384,6 +418,51 @@ const builtInResolvers: NativeInputCapabilityResolver[] = [
 					["inline", "cloud-uri"],
 					{ inline: "inlineData", "cloud-uri": "fileData" },
 					{ maximumBytes: GEMINI_MEDIA_INLINE_LIMIT_BYTES },
+				),
+			],
+		}),
+	},
+	{
+		id: "bedrock-official",
+		matches: (context) =>
+			context.provider === "amazon-bedrock" &&
+			context.api === "bedrock-converse-stream" &&
+			/^bedrock-runtime(?:-fips)?\.[a-z0-9-]+\.amazonaws\.com(?:\.cn)?$/.test(hostname(context.baseUrl) ?? ""),
+		resolve: () => ({
+			profile: "bedrock-official",
+			capabilities: [
+				nativeCapability(
+					"bedrock-converse-document",
+					BEDROCK_DOCUMENT_MEDIA_TYPES,
+					["inline", "cloud-uri"],
+					{ inline: "document", "cloud-uri": "document" },
+					{ maximumBytes: 4.5 * 1024 * 1024, maximumCount: 5 },
+					{
+						modelAllowList: ["*anthropic.claude*", "*amazon.nova*"],
+					},
+				),
+				nativeCapability(
+					"bedrock-converse-video",
+					BEDROCK_VIDEO_MEDIA_TYPES,
+					["inline", "cloud-uri"],
+					{ inline: "video", "cloud-uri": "video" },
+					{},
+					{
+						modelAllowList: [
+							"*amazon.nova-lite*",
+							"*amazon.nova-pro*",
+							"*amazon.nova-premier*",
+							"*amazon.nova-2-lite*",
+						],
+					},
+				),
+				nativeCapability(
+					"bedrock-converse-audio",
+					BEDROCK_AUDIO_MEDIA_TYPES,
+					["inline", "cloud-uri"],
+					{ inline: "audio", "cloud-uri": "audio" },
+					{},
+					{ modelAllowList: ["*amazon.nova-2-sonic*"] },
 				),
 			],
 		}),
