@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "remote": "https://github.com/earendil-works/pi.git",
+  "branch": "main",
+  "baseCommit": "bb226f9c1f38d3c029156a690e97bbfc602336b9",
+  "protectedSurfaces": {
+    "messageIr": ["packages/ai/src/types.ts", "packages/ai/src/session-resources.ts"],
+    "providerRequests": ["packages/ai/src/api/"],
+    "agentSession": ["packages/coding-agent/src/core/agent-session.ts"],
+    "sessionFormat": ["packages/coding-agent/src/core/session-manager.ts"],
+    "extensionEvents": ["packages/coding-agent/src/core/extensions/"]
+  }
+}

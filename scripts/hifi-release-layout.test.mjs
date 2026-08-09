@@ -6,6 +6,8 @@ const packageJson = JSON.parse(readFileSync(new URL("../packages/coding-agent/pa
 const workflow = readFileSync(new URL("../.github/workflows/build-binaries.yml", import.meta.url), "utf8");
 const binaryScript = readFileSync(new URL("./build-binaries.sh", import.meta.url), "utf8");
 const sourceScript = readFileSync(new URL("./create-source-archive.sh", import.meta.url), "utf8");
+const sdkPackScript = readFileSync(new URL("./pack-hifi-sdk.mjs", import.meta.url), "utf8");
+const upstreamBaseline = JSON.parse(readFileSync(new URL("../.github/upstream-baseline.json", import.meta.url), "utf8"));
 
 test("release layout installs only the branded executable", () => {
 	assert.deepEqual(packageJson.bin, { "hifi-pi": "dist/cli.js" });
@@ -26,4 +28,10 @@ test("standalone and source artifacts use the Hi-Fi identity", () => {
 	assert.match(binaryScript, /hifi-pi-windows-arm64\.zip/);
 	assert.match(binaryScript, /hifi-pi\.exe/);
 	assert.match(sourceScript, /archive_root="hifi-pi-\$\{version\}"/);
+	assert.match(sourceScript, /\.github\/upstream-baseline\.json/);
+});
+
+test("fork release metadata records the reviewed upstream base", () => {
+	assert.match(upstreamBaseline.baseCommit, /^[0-9a-f]{40}$/);
+	assert.match(sdkPackScript, /upstreamBaseCommit: upstreamBaseline\.baseCommit/);
 });

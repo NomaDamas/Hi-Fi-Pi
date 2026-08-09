@@ -16,6 +16,7 @@ function resolveRevision() {
 }
 
 const revision = resolveRevision();
+const upstreamBaseline = JSON.parse(readFileSync(resolve(repoRoot, ".github/upstream-baseline.json"), "utf8"));
 const packages = [
 	["ai", "packages/ai"],
 	["agent-core", "packages/agent"],
@@ -70,6 +71,7 @@ const manifest = {
 	schemaVersion: 1,
 	distribution: "hifi-pi",
 	sourceRevision: revision,
+	upstreamBaseCommit: upstreamBaseline.baseCommit,
 	artifacts,
 };
 writeFileSync(join(outputDir, "hifi-pi-sdk-manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);

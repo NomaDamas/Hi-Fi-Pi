@@ -114,6 +114,7 @@ git archive --format=tar --prefix="${archive_root}/" --mtime="@${archive_mtime}"
 tar -tzf "$temporary_archive" > "$manifest"
 
 required_paths=(
+    ".github/upstream-baseline.json"
     "package.json"
     "package-lock.json"
     "scripts/build-binaries.sh"

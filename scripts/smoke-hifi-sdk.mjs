@@ -8,6 +8,9 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const sdkIndex = process.argv.indexOf("--sdk-dir");
 const sdkDir = resolve(sdkIndex === -1 ? join(repoRoot, "release-assets", "sdk") : process.argv[sdkIndex + 1]);
 const manifest = JSON.parse(readFileSync(join(sdkDir, "hifi-pi-sdk-manifest.json"), "utf8"));
+if (!/^[0-9a-f]{40}$/.test(manifest.upstreamBaseCommit)) {
+	throw new Error(`SDK manifest has an invalid upstream base: ${manifest.upstreamBaseCommit}`);
+}
 const root = mkdtempSync(join(tmpdir(), "hifi-pi-sdk-smoke-"));
 
 function run(command, args, options = {}) {
@@ -94,6 +97,7 @@ try {
 			textPrompt: response,
 			extension: "clean-compat",
 			pdfMethod: capability.method,
+			upstreamBaseCommit: manifest.upstreamBaseCommit,
 			artifacts: manifest.artifacts.length,
 		}),
 	);
