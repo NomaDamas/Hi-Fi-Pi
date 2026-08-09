@@ -10,6 +10,7 @@ import {
 	createProviderTraceRecorder,
 	type ProviderTraceRecorder,
 	traceProviderCompletion,
+	traceProviderOptions,
 	traceProviderPayload,
 	traceRequestHeaders,
 } from "../provider-trace.ts";
@@ -85,6 +86,7 @@ export const stream: StreamFunction<"google-generative-ai", GoogleOptions> = (
 		let completionTraced = false;
 
 		try {
+			await traceProviderOptions(trace, options?.onTrace, options?.providerOptions);
 			await prepareContextAttachmentUploads(model, context, options, trace);
 			if (options?.fetch && options.fetch !== globalThis.fetch) {
 				throw new Error("Custom fetch is not supported by the Google Generative AI adapter");
@@ -374,7 +376,10 @@ function buildParams(
 	options: GoogleOptions = {},
 	trace?: ProviderTraceRecorder,
 ): GenerateContentParameters {
-	const contents = convertMessages(model, context, trace);
+	const videoFps = options.providerOptions?.["google.video.fps"];
+	const contents = convertMessages(model, context, trace, {
+		...(typeof videoFps === "number" ? { videoFps } : {}),
+	});
 
 	const generationConfig: GenerateContentConfig = {};
 	if (options.temperature !== undefined) {
@@ -398,7 +403,10 @@ function buildParams(
 
 	if (options.thinking?.enabled && model.reasoning) {
 		const thinkingConfig: ThinkingConfig = { includeThoughts: true };
-		if (options.thinking.level !== undefined) {
+		const nativeThinkingBudget = options.providerOptions?.["google.thinking_budget"];
+		if (typeof nativeThinkingBudget === "number") {
+			thinkingConfig.thinkingBudget = nativeThinkingBudget;
+		} else if (options.thinking.level !== undefined) {
 			// Cast to any since our GoogleThinkingLevel mirrors Google's ThinkingLevel enum values
 			thinkingConfig.thinkingLevel = options.thinking.level as any;
 		} else if (options.thinking.budgetTokens !== undefined) {

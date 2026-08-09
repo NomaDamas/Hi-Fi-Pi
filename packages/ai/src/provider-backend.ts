@@ -44,6 +44,25 @@ export interface ProviderBackendCapabilities {
 	transports?: Record<string, unknown>;
 }
 
+export type ProviderOptionType = "boolean" | "number" | "string" | "enum" | "structured";
+
+export interface ProviderOptionDefinition {
+	key: `${string}.${string}`;
+	type: ProviderOptionType;
+	description: string;
+	default?: unknown;
+	allowedValues?: readonly unknown[];
+	minimum?: number;
+	maximum?: number;
+	integer?: boolean;
+	pattern?: string;
+	modelIds?: ProviderBackendMatchValue;
+	/** Custom validation for structured or vendor-specific constraints. Return an error string to reject. */
+	validate?: (value: unknown, context: ProviderBackendContext) => true | string;
+	/** Secret-bearing definitions are deliberately unsupported by ordinary provider options. */
+	sensitive?: boolean;
+}
+
 export interface ProviderBackendPrepareContext extends ProviderBackendContext {
 	conversation: Context;
 	options?: StreamOptions;
@@ -76,6 +95,7 @@ export interface ProviderBackendV1 {
 	resolveCapabilities?: (
 		context: ProviderBackendContext,
 	) => ProviderBackendCapabilities | Promise<ProviderBackendCapabilities>;
+	options?: readonly ProviderOptionDefinition[];
 	prepareInput?: (context: ProviderBackendPrepareContext) => PreparedProviderInput | Promise<PreparedProviderInput>;
 	stream: (
 		context: ProviderBackendStreamContext,
@@ -269,6 +289,14 @@ export function registerProviderBackend(registration: ProviderBackendRegistratio
 	}
 	if (registeredBackends.has(registration.id))
 		throw new Error(`Provider backend already registered: ${registration.id}`);
+	const optionKeys = new Set<string>();
+	for (const definition of registration.options ?? []) {
+		if (!definition.key.includes("."))
+			throw new Error(`Provider backend option must be namespaced: ${definition.key}`);
+		if (definition.sensitive) throw new Error(`Provider backend option ${definition.key} cannot be marked sensitive`);
+		if (optionKeys.has(definition.key)) throw new Error(`Duplicate provider backend option: ${definition.key}`);
+		optionKeys.add(definition.key);
+	}
 	const backend = registration as ProviderBackendV1;
 	registeredBackends.set(backend.id, backend);
 	const unregisterUpload = backend.uploadAttachment

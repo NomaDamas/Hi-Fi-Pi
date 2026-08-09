@@ -95,6 +95,7 @@ export function convertMessages<T extends GoogleApiType>(
 	model: Model<T>,
 	context: Context,
 	trace?: ProviderTraceRecorder,
+	nativeOptions?: { videoFps?: number },
 ): Content[] {
 	const contents: Content[] = [];
 	const normalizeToolCallId = (id: string): string => {
@@ -116,6 +117,10 @@ export function convertMessages<T extends GoogleApiType>(
 			const attachmentParts: Part[] = attachments.map((attachment) => {
 				const wireKind = attachment.source.type === "base64" ? "inlineData" : "fileData";
 				recordProviderAttachmentLowering(trace, attachment, wireKind);
+				const videoMetadata =
+					attachment.mediaType.startsWith("video/") && nativeOptions?.videoFps !== undefined
+						? { videoMetadata: { fps: nativeOptions.videoFps } }
+						: {};
 				switch (attachment.source.type) {
 					case "base64":
 						return {
@@ -123,6 +128,7 @@ export function convertMessages<T extends GoogleApiType>(
 								mimeType: attachment.mediaType,
 								data: attachment.source.data,
 							},
+							...videoMetadata,
 						};
 					case "url":
 						return {
@@ -130,6 +136,7 @@ export function convertMessages<T extends GoogleApiType>(
 								mimeType: attachment.mediaType,
 								fileUri: attachment.source.url,
 							},
+							...videoMetadata,
 						};
 					case "provider-file":
 						return {
@@ -137,6 +144,7 @@ export function convertMessages<T extends GoogleApiType>(
 								mimeType: attachment.mediaType,
 								fileUri: attachment.source.uri ?? attachment.source.fileId,
 							},
+							...videoMetadata,
 						};
 					case "cloud-uri":
 						return {
@@ -144,6 +152,7 @@ export function convertMessages<T extends GoogleApiType>(
 								mimeType: attachment.mediaType,
 								fileUri: attachment.source.uri,
 							},
+							...videoMetadata,
 						};
 				}
 				throw new Error("Unknown attachment source");
@@ -270,6 +279,10 @@ export function convertMessages<T extends GoogleApiType>(
 				const wireKind =
 					attachment.source.type === "base64" ? "functionResponse.inlineData" : "functionResponse.fileData";
 				recordProviderAttachmentLowering(trace, attachment, wireKind);
+				const videoMetadata =
+					attachment.mediaType.startsWith("video/") && nativeOptions?.videoFps !== undefined
+						? { videoMetadata: { fps: nativeOptions.videoFps } }
+						: {};
 				switch (attachment.source.type) {
 					case "base64":
 						return {
@@ -278,6 +291,7 @@ export function convertMessages<T extends GoogleApiType>(
 								data: attachment.source.data,
 								displayName: attachment.filename,
 							},
+							...videoMetadata,
 						};
 					case "url":
 						return {
@@ -286,6 +300,7 @@ export function convertMessages<T extends GoogleApiType>(
 								fileUri: attachment.source.url,
 								displayName: attachment.filename,
 							},
+							...videoMetadata,
 						};
 					case "provider-file":
 						return {
@@ -294,6 +309,7 @@ export function convertMessages<T extends GoogleApiType>(
 								fileUri: attachment.source.uri ?? attachment.source.fileId,
 								displayName: attachment.filename,
 							},
+							...videoMetadata,
 						};
 					case "cloud-uri":
 						return {
@@ -302,6 +318,7 @@ export function convertMessages<T extends GoogleApiType>(
 								fileUri: attachment.source.uri,
 								displayName: attachment.filename,
 							},
+							...videoMetadata,
 						};
 				}
 				throw new Error("Unknown attachment source");

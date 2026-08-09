@@ -46,6 +46,7 @@ export * from "./models-store.ts";
 export * from "./native-input-capabilities.ts";
 export * from "./portability.ts";
 export * from "./provider-backend.ts";
+export * from "./provider-options.ts";
 export * from "./provider-trace.ts";
 export * from "./providers/faux.ts";
 export * from "./session-resources.ts";

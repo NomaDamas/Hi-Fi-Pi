@@ -15,6 +15,7 @@ import {
 	createProviderTraceRecorder,
 	type ProviderTraceRecorder,
 	traceProviderCompletion,
+	traceProviderOptions,
 	traceProviderPayload,
 	traceProviderResponse,
 	traceRequestHeaders,
@@ -69,6 +70,11 @@ function resolveCacheRetention(cacheRetention?: CacheRetention, env?: ProviderEn
 		return "long";
 	}
 	return "short";
+}
+
+function resolveNamespacedCacheRetention(options?: StreamOptions): CacheRetention | undefined {
+	const value = options?.providerOptions?.["anthropic.cache_retention"];
+	return value === "none" || value === "short" || value === "long" ? value : options?.cacheRetention;
 }
 
 function getCacheControl(
@@ -529,6 +535,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 		let completionTraced = false;
 
 		try {
+			await traceProviderOptions(trace, options?.onTrace, options?.providerOptions);
 			await prepareContextAttachmentUploads(model, context, options, trace);
 			let client: Anthropic;
 			let isOAuth: boolean;
@@ -549,7 +556,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 					});
 				}
 
-				const cacheRetention = resolveCacheRetention(options?.cacheRetention, options?.env);
+				const cacheRetention = resolveCacheRetention(resolveNamespacedCacheRetention(options), options?.env);
 				const cacheSessionId = cacheRetention === "none" ? undefined : options?.sessionId;
 
 				const created = createClient(
@@ -998,7 +1005,7 @@ function buildParams(
 	options?: AnthropicOptions,
 	trace?: ProviderTraceRecorder,
 ): MessageCreateParamsStreaming {
-	const { cacheControl } = getCacheControl(model, options?.cacheRetention, options?.env);
+	const { cacheControl } = getCacheControl(model, resolveNamespacedCacheRetention(options), options?.env);
 	const compat = getAnthropicCompat(model);
 	const transformedMessages = transformMessages(context.messages, model, normalizeToolCallId);
 	const normalizeToolName = isOAuthToken ? toClaudeCodeName : (name: string) => name;
@@ -1026,6 +1033,7 @@ function buildParams(
 			context,
 			model,
 			trace,
+			options?.providerOptions?.["anthropic.document.citations"] === true,
 		),
 		max_tokens: options?.maxTokens ?? model.maxTokens,
 		stream: true,
@@ -1148,7 +1156,8 @@ function decodeBase64Text(data: string, filename: string): string {
 	}
 }
 
-function convertAnthropicDocument(attachment: ResolvedNativeAttachment): ContentBlockParam {
+function convertAnthropicDocument(attachment: ResolvedNativeAttachment, citationsEnabled = false): ContentBlockParam {
+	const citations = citationsEnabled ? { citations: { enabled: true } } : {};
 	switch (attachment.source.type) {
 		case "base64":
 			if (attachment.mediaType === "text/plain") {
@@ -1160,6 +1169,7 @@ function convertAnthropicDocument(attachment: ResolvedNativeAttachment): Content
 						data: decodeBase64Text(attachment.source.data, attachment.filename),
 					},
 					title: attachment.filename,
+					...citations,
 				} as unknown as ContentBlockParam;
 			}
 			return {
@@ -1170,18 +1180,21 @@ function convertAnthropicDocument(attachment: ResolvedNativeAttachment): Content
 					data: attachment.source.data,
 				},
 				title: attachment.filename,
+				...citations,
 			};
 		case "url":
 			return {
 				type: "document",
 				source: { type: "url", url: attachment.source.url },
 				title: attachment.filename,
+				...citations,
 			};
 		case "provider-file":
 			return {
 				type: "document",
 				source: { type: "file", file_id: attachment.source.fileId },
 				title: attachment.filename,
+				...citations,
 			} as unknown as ContentBlockParam;
 		case "cloud-uri":
 			throw new Error("Anthropic Messages does not accept cloud URI attachment sources");
@@ -1197,6 +1210,7 @@ function convertToolResult(
 	context?: Context,
 	model?: Model<"anthropic-messages">,
 	trace?: ProviderTraceRecorder,
+	citationsEnabled = false,
 ): { toolResult: ToolResultBlockParam; siblingContent: ContentBlockParam[] } {
 	const references: Array<{ type: "tool_reference"; tool_name: string }> = [];
 	for (const name of msg.addedToolNames ?? []) {
@@ -1214,7 +1228,7 @@ function convertToolResult(
 			: [];
 	const attachmentBlocks: DocumentBlockParam[] = attachments.map((attachment) => {
 		recordProviderAttachmentLowering(trace, attachment, "tool_result.document");
-		return convertAnthropicDocument(attachment) as DocumentBlockParam;
+		return convertAnthropicDocument(attachment, citationsEnabled) as DocumentBlockParam;
 	});
 	const legacyContent = convertContentBlocks(msg.content);
 	const convertedContent: ToolResultBlockParam["content"] =
@@ -1253,6 +1267,7 @@ function convertMessages(
 	context?: Context,
 	model?: Model<"anthropic-messages">,
 	trace?: ProviderTraceRecorder,
+	citationsEnabled = false,
 ): MessageParam[] {
 	const params: MessageParam[] = [];
 	const loadedToolNames = new Set<string>();
@@ -1274,7 +1289,7 @@ function convertMessages(
 					: [];
 			const attachmentBlocks: ContentBlockParam[] = attachments.map((attachment) => {
 				recordProviderAttachmentLowering(trace, attachment, "document");
-				return convertAnthropicDocument(attachment);
+				return convertAnthropicDocument(attachment, citationsEnabled);
 			});
 			if (typeof msg.content === "string") {
 				const text = sanitizeSurrogates(msg.content);
@@ -1396,6 +1411,7 @@ function convertMessages(
 					context,
 					model,
 					trace,
+					citationsEnabled,
 				);
 				toolResults.push(converted.toolResult);
 				siblingContent.push(...converted.siblingContent);

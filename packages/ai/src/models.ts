@@ -14,6 +14,7 @@ import type {
 } from "./auth/types.ts";
 import { InMemoryModelsStore, type ModelsStore, type ProviderModelsStore } from "./models-store.ts";
 import { dispatchProviderBackend } from "./provider-backend.ts";
+import { withResolvedProviderOptions } from "./provider-options.ts";
 import type {
 	Api,
 	ApiStreamOptions,
@@ -498,10 +499,11 @@ class ModelsImpl implements MutableModels {
 				model,
 				options as ModelsApiStreamOptions<Api> | undefined,
 			);
+			const resolvedOptions = withResolvedProviderOptions(requestModel, requestOptions);
 			return dispatchProviderBackend({
 				model: requestModel,
 				conversation: context,
-				options: requestOptions,
+				options: resolvedOptions,
 				simple: false,
 				legacy: (conversation, legacyOptions) =>
 					provider.stream(requestModel as Model<TApi>, conversation, legacyOptions as ApiStreamOptions<TApi>),
@@ -521,10 +523,11 @@ class ModelsImpl implements MutableModels {
 		return lazyStream(model, async () => {
 			const provider = this.requireProvider(model);
 			const { requestModel, requestOptions } = await this.applyAuth(model, options);
+			const resolvedOptions = withResolvedProviderOptions(requestModel, requestOptions);
 			return dispatchProviderBackend({
 				model: requestModel,
 				conversation: context,
-				options: requestOptions,
+				options: resolvedOptions,
 				simple: true,
 				legacy: (conversation, legacyOptions) =>
 					provider.streamSimple(requestModel, conversation, legacyOptions as SimpleStreamOptions),

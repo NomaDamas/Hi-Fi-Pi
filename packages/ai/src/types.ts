@@ -124,6 +124,7 @@ export type ProviderTraceStage =
 	| "remote_delete"
 	| "remote_reuse"
 	| "provider_lowering"
+	| "provider_options"
 	| "request_headers"
 	| "sanitized_wire_payload"
 	| "response_metadata"
@@ -176,6 +177,7 @@ export interface ProviderTraceEvent {
 		kind: string;
 		source: NativeInputTransportSource;
 	};
+	options?: Record<string, unknown>;
 	headers?: Record<string, string>;
 	payload?: unknown;
 	response?: {
@@ -235,6 +237,8 @@ export interface StreamOptions {
 	onTrace?: ProviderTraceCallback;
 	/** Explicit native-file upload policy. Omitted requests retain the existing inline path. */
 	attachmentUpload?: AttachmentUploadOptions;
+	/** Validated namespaced controls registered by the selected provider backend. */
+	providerOptions?: Record<string, unknown>;
 	/**
 	 * Optional custom HTTP headers to include in API requests.
 	 * Merged with provider defaults; caller values override default headers.

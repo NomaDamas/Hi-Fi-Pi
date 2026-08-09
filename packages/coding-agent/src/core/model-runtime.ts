@@ -29,6 +29,7 @@ import {
 	type ProviderHeaders,
 	type SimpleStreamOptions,
 	type StreamOptions,
+	withResolvedProviderOptions,
 } from "@earendil-works/pi-ai";
 import * as builtinProviderCatalog from "@earendil-works/pi-ai/providers/all";
 import { getAgentDir } from "../config.ts";
@@ -476,10 +477,11 @@ export class ModelRuntime implements Models {
 				model,
 				options as (StreamOptions & ModelsStreamTransforms) | undefined,
 			);
+			const resolvedOptions = withResolvedProviderOptions(prepared.model, prepared.options);
 			return dispatchProviderBackend({
 				model: prepared.model,
 				conversation: context,
-				options: prepared.options,
+				options: resolvedOptions,
 				simple: false,
 				legacy: (conversation, legacyOptions) =>
 					prepared.provider.stream(
@@ -502,10 +504,11 @@ export class ModelRuntime implements Models {
 	streamSimple(model: Model<Api>, context: Context, options?: ModelsSimpleStreamOptions): AssistantMessageEventStream {
 		return lazyStream(model, async () => {
 			const prepared = await this.prepareRequest(model, options);
+			const resolvedOptions = withResolvedProviderOptions(prepared.model, prepared.options);
 			return dispatchProviderBackend({
 				model: prepared.model,
 				conversation: context,
-				options: prepared.options,
+				options: resolvedOptions,
 				simple: true,
 				legacy: (conversation, legacyOptions) =>
 					prepared.provider.streamSimple(prepared.model, conversation, legacyOptions as SimpleStreamOptions),
