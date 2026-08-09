@@ -103,4 +103,35 @@ describe("product storage boundaries", () => {
 		expect(existsSync(storage.pathsFor(tenantA).thread)).toBe(false);
 		expect(existsSync(storage.pathsFor(secondThread).thread)).toBe(true);
 	});
+
+	it("supports explicit expiry cleanup and host retention decisions with audit records", () => {
+		const audits: string[] = [];
+		const retainedStorage = new FilesystemProductStorage({
+			root,
+			attachmentRetention: ({ record, sourceExpired }) =>
+				record.filename === "retain.pdf" ? "retain" : sourceExpired ? "delete" : "retain",
+			onAudit: (event) => {
+				audits.push(`${event.action}:${String(event.details?.deletedAttachments ?? "")}`);
+			},
+		});
+		retainedStorage.registerAttachment(tenantA, {
+			id: "expired",
+			filename: "expired.pdf",
+			mediaType: "application/pdf",
+			sizeBytes: 10,
+			source: { type: "url", url: "https://files.example.com/expired.pdf", expiresAt: 10 },
+		});
+		retainedStorage.registerAttachment(tenantA, {
+			id: "retained",
+			filename: "retain.pdf",
+			mediaType: "application/pdf",
+			sizeBytes: 10,
+			source: { type: "url", url: "https://files.example.com/retained.pdf", expiresAt: 10 },
+		});
+
+		expect(retainedStorage.cleanupExpiredAttachments(tenantA, 20)).toEqual(["expired"]);
+		expect(retainedStorage.getAttachment(tenantA, "expired")).toBeUndefined();
+		expect(retainedStorage.getAttachment(tenantA, "retained")).toBeDefined();
+		expect(audits).toContain("cleanup:1");
+	});
 });

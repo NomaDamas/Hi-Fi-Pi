@@ -41,6 +41,43 @@ export interface ProductStorageAuditEvent {
 export interface ProductStorageOptions {
 	root: string;
 	onAudit?: (event: ProductStorageAuditEvent) => void | Promise<void>;
+	attachmentRetention?: (context: ProductAttachmentRetentionContext) => "retain" | "delete";
+}
+
+export interface ProductAttachmentRetentionContext {
+	identity: ProductIdentity;
+	record: AttachmentRecord;
+	createdAt: number;
+	now: number;
+	sourceExpired: boolean;
+}
+
+export interface ProductStorage {
+	createSessionManager(identity: ProductIdentity, cwd: string, options?: { resumeRecent?: boolean }): SessionManager;
+	openSessionManager(identity: ProductIdentity, sessionFile: string, cwdOverride?: string): SessionManager;
+	storeAttachment(
+		identity: ProductIdentity,
+		input: { filename: string; mediaType: string; bytes: Uint8Array; id?: string },
+	): AttachmentRecord;
+	registerAttachment(
+		identity: ProductIdentity,
+		input: {
+			filename: string;
+			mediaType: string;
+			source: Exclude<AttachmentSource, { type: "path" }>;
+			id?: string;
+			sizeBytes?: number;
+			sha256?: string;
+			metadata?: Record<string, unknown>;
+		},
+	): AttachmentRecord;
+	getAttachment(identity: ProductIdentity, attachmentId: string): AttachmentRecord | undefined;
+	listAttachments(identity: ProductIdentity): AttachmentRecord[];
+	attachmentRegistry(identity: ProductIdentity): AttachmentRegistry;
+	updateAttachment(identity: ProductIdentity, attachment: AttachmentRecord): void;
+	deleteAttachment(identity: ProductIdentity, attachmentId: string): boolean;
+	cleanupExpiredAttachments?(identity: ProductIdentity, now?: number): string[];
+	cleanupThread(identity: ProductIdentity): void;
 }
 
 export class ProductStorageBoundaryError extends Error {
@@ -96,9 +133,10 @@ function cloneAttachment(record: AttachmentRecord): AttachmentRecord {
 	return structuredClone(record);
 }
 
-export class FilesystemProductStorage {
+export class FilesystemProductStorage implements ProductStorage {
 	readonly root: string;
 	private readonly onAudit?: ProductStorageOptions["onAudit"];
+	private readonly attachmentRetention?: ProductStorageOptions["attachmentRetention"];
 
 	constructor(options: ProductStorageOptions) {
 		if (!options.root || options.root.trim().length === 0) {
@@ -106,6 +144,7 @@ export class FilesystemProductStorage {
 		}
 		this.root = resolve(options.root);
 		this.onAudit = options.onAudit;
+		this.attachmentRetention = options.attachmentRetention;
 		mkdirSync(this.root, { recursive: true, mode: 0o700 });
 	}
 
@@ -346,6 +385,45 @@ export class FilesystemProductStorage {
 			resourceId: attachmentId,
 		});
 		return true;
+	}
+
+	cleanupExpiredAttachments(identityInput: ProductIdentity, now = Date.now()): string[] {
+		const identity = validateProductIdentity(identityInput);
+		const paths = this.pathsFor(identity);
+		if (!existsSync(paths.attachments)) return [];
+		const deleted: string[] = [];
+		for (const name of readdirSync(paths.attachments).filter((entry) => entry.endsWith(".json"))) {
+			const metadataPath = assertWithin(paths.attachments, join(paths.attachments, name), "attachment metadata");
+			const metadata = JSON.parse(readFileSync(metadataPath, "utf8")) as StoredAttachmentMetadata;
+			if (metadata.version !== 1 || JSON.stringify(metadata.identity) !== JSON.stringify(identity)) continue;
+			const source = metadata.record.source;
+			const sourceExpired =
+				(source.type === "url" || source.type === "cloud-uri") &&
+				source.expiresAt !== undefined &&
+				source.expiresAt <= now;
+			let decision: "retain" | "delete" | undefined;
+			try {
+				decision = this.attachmentRetention?.({
+					identity: structuredClone(identity),
+					record: cloneAttachment(metadata.record),
+					createdAt: metadata.createdAt,
+					now,
+					sourceExpired,
+				});
+			} catch {
+				decision = "retain";
+			}
+			if ((decision ?? (sourceExpired ? "delete" : "retain")) !== "delete") continue;
+			if (this.deleteAttachment(identity, metadata.record.id)) deleted.push(metadata.record.id);
+		}
+		void this.audit({
+			type: "product_storage_audit",
+			action: "cleanup",
+			identity,
+			timestamp: Date.now(),
+			details: { deletedAttachments: deleted.length },
+		});
+		return deleted;
 	}
 
 	cleanupThread(identityInput: ProductIdentity): void {

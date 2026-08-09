@@ -11,7 +11,7 @@ import type { AgentDefinition, AgentDefinitionRegistry, CreatedDefinedAgent } fr
 import type { AgentSessionEvent } from "../core/agent-session.ts";
 import type { HeadlessAgentHost } from "../headless.ts";
 import type { ProductAttachmentOwner, ProductAttachmentRequestContext, ProductPolicyEnforcer } from "./policy.ts";
-import { type FilesystemProductStorage, type ProductIdentity, validateProductIdentity } from "./storage.ts";
+import { type ProductIdentity, type ProductStorage, validateProductIdentity } from "./storage.ts";
 
 export type ProductAgentAction =
 	| "create_session"
@@ -95,7 +95,7 @@ export interface ProductRemoteAttachmentInput {
 }
 
 export interface ProductAgentServerOptions {
-	storage: FilesystemProductStorage;
+	storage: ProductStorage;
 	policy: ProductPolicyEnforcer;
 	authorizer: ProductAgentAuthorizer;
 	/** Must return a registry whose ModelRuntime uses credentials scoped to this identity. */
@@ -225,7 +225,7 @@ function assistantText(message: AgentMessage): string {
 }
 
 export class ProductAgentServer {
-	private readonly storage: FilesystemProductStorage;
+	private readonly storage: ProductStorage;
 	private readonly policy: ProductPolicyEnforcer;
 	private readonly authorizer: ProductAgentAuthorizer;
 	private readonly registryForIdentity: ProductAgentServerOptions["registryForIdentity"];

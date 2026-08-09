@@ -398,6 +398,10 @@ ${chalk.bold("Examples:")}
   ${APP_NAME} --export ~/${CONFIG_DIR_NAME}/agent/sessions/--path--/session.jsonl
   ${APP_NAME} --export session.jsonl output.html
 
+${chalk.bold("Security Boundary:")}
+  Local CLI tools and extensions run with the current user's host permissions.
+  Product policy hooks are admission controls, not a process or container sandbox.
+
 ${chalk.bold("Environment Variables:")}
   ANTHROPIC_AUTH_TOKEN             - Anthropic bearer auth token
   ANTHROPIC_API_KEY                - Anthropic Claude API key
