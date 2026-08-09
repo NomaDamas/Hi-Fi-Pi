@@ -8,6 +8,7 @@
 import { createInterface } from "node:readline";
 import { type AttachmentRecord, type ImageContent, modelsAreEqual } from "@earendil-works/pi-ai";
 import chalk from "chalk";
+import { applyAgentDefinitionToArgs } from "./cli/agent-definition.ts";
 import { type Args, extractAgentDirOverride, type Mode, parseArgs, printHelp } from "./cli/args.ts";
 import {
 	type CredentialPrintCommand,
@@ -554,9 +555,9 @@ export async function main(args: string[], options?: MainOptions) {
 		cleanupWindowsSelfUpdateQuarantine(getPackageDir());
 	}
 
-	const cwd = process.cwd();
+	const startupCwd = process.cwd();
 	const agentDir = getAgentDir();
-	const bootstrapSettingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: false });
+	const bootstrapSettingsManager = SettingsManager.create(startupCwd, agentDir, { projectTrusted: false });
 	applyHttpProxySettings(bootstrapSettingsManager.getGlobalSettings().httpProxy);
 	configureHttpDispatcher();
 	if (await handleDistributionStateCommand(args)) {
@@ -614,6 +615,16 @@ export async function main(args: string[], options?: MainOptions) {
 		console.log(`Exported to: ${result}`);
 		process.exit(0);
 	}
+
+	let selectedAgent: ReturnType<typeof applyAgentDefinitionToArgs>;
+	try {
+		selectedAgent = applyAgentDefinitionToArgs(parsed, startupCwd);
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		console.error(chalk.red(`Error: ${message}`));
+		process.exit(1);
+	}
+	const cwd = selectedAgent?.cwd ?? startupCwd;
 
 	let appMode = resolveAppMode(parsed, process.stdin.isTTY, process.stdout.isTTY);
 	const shouldTakeOverStdout = appMode !== "interactive" && !isPlainRuntimeMetadataCommand(parsed);
@@ -803,7 +814,15 @@ export async function main(args: string[], options?: MainOptions) {
 			excludeTools: sessionOptions.excludeTools,
 			noTools: sessionOptions.noTools,
 			customTools: sessionOptions.customTools,
+			providerOptions: selectedAgent?.selection.definition.providerOptions,
 		});
+		if (selectedAgent && isInitialRuntime) {
+			created.session.sessionManager.appendCustomEntry("hifi.agent-definition", {
+				schemaVersion: selectedAgent.selection.definition.schemaVersion,
+				agentId: selectedAgent.selection.definition.id,
+				definitionVersion: selectedAgent.selection.definition.version,
+			});
+		}
 		const cliThinkingOverride = parsed.thinking !== undefined || cliThinkingFromModel;
 		if (created.session.model && cliThinkingOverride) {
 			created.session.setThinkingLevel(created.session.thinkingLevel);

@@ -1,7 +1,20 @@
 // Core session management
 
+export {
+	AGENT_DEFINITION_SCHEMA_VERSION,
+	type AgentDefinition,
+	AgentDefinitionRegistry,
+	type AgentDefinitionSelection,
+	type AgentDefinitionV1,
+	AgentDefinitionValidationError,
+	type CreateDefinedAgentOptions,
+	type CreatedDefinedAgent,
+	loadAgentDefinitionSelection,
+	parseAgentDefinition,
+	resolveAgentDefinitionResources,
+} from "./agent-definition.ts";
+export { applyAgentDefinitionToArgs, type CliAgentDefinitionSelection } from "./cli/agent-definition.ts";
 export { type Args, parseArgs } from "./cli/args.ts";
-
 // Config paths
 export {
 	type AgentDirResolution,
@@ -336,6 +349,11 @@ export {
 	type ProjectTrustStoreEntry,
 	type ProjectTrustUpdate,
 } from "./core/trust-manager.ts";
+export {
+	type CreateHeadlessAgentHostOptions,
+	createHeadlessAgentHost,
+	HeadlessAgentHost,
+} from "./headless.ts";
 // Main entry point
 export { type MainOptions, main } from "./main.ts";
 // Run modes for programmatic SDK usage
@@ -405,6 +423,7 @@ export {
 	Theme,
 	type ThemeColor,
 } from "./modes/interactive/theme/theme.ts";
+export * from "./product/index.ts";
 // Clipboard utilities
 export { copyToClipboard } from "./utils/clipboard.ts";
 export { parseFrontmatter, stripFrontmatter } from "./utils/frontmatter.ts";

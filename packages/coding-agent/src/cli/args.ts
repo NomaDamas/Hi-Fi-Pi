@@ -28,6 +28,9 @@ export interface Args {
 	fork?: string;
 	sessionDir?: string;
 	agentDir?: string;
+	agentDefinitions?: string;
+	agent?: string;
+	agentVersion?: string;
 	models?: string[];
 	tools?: string[];
 	excludeTools?: string[];
@@ -118,6 +121,15 @@ export function parseArgs(args: string[]): Args {
 			} else {
 				result.diagnostics.push({ type: "error", message: "--agent-dir requires a value" });
 			}
+		} else if (arg === "--agent-definitions") {
+			if (i + 1 < args.length) result.agentDefinitions = args[++i];
+			else result.diagnostics.push({ type: "error", message: "--agent-definitions requires a value" });
+		} else if (arg === "--agent") {
+			if (i + 1 < args.length) result.agent = args[++i];
+			else result.diagnostics.push({ type: "error", message: "--agent requires a value" });
+		} else if (arg === "--agent-version") {
+			if (i + 1 < args.length) result.agentVersion = args[++i];
+			else result.diagnostics.push({ type: "error", message: "--agent-version requires a value" });
 		} else if (arg === "--models" && i + 1 < args.length) {
 			result.models = args[++i].split(",").map((s) => s.trim());
 		} else if (arg === "--no-tools" || arg === "-nt") {
@@ -289,6 +301,9 @@ ${chalk.bold("Options:")}
   --session-id <id>              Use exact project session ID, creating it if missing
   --fork <path|id>               Fork specific session file or partial UUID into a new session
   --agent-dir <dir>              Override the Hi-Fi user state root for this process
+  --agent-definitions <file>     Load versioned named-agent definitions from JSON
+  --agent <id>                   Run the selected named agent through the normal Pi runtime
+  --agent-version <version>      Select an exact agent definition version
   --session-dir <dir>            Directory for session storage and lookup
   --no-session                   Don't save session (ephemeral)
   --name, -n <name>              Set session display name
@@ -333,6 +348,9 @@ ${chalk.bold("Examples:")}
 
   # Interactive mode with initial prompt
   ${APP_NAME} "List all .ts files in src/"
+
+  # Run a product-style named agent through the same CLI runtime
+  ${APP_NAME} --agent-definitions ./agents.json --agent research "Investigate this repository"
 
   # Include files in initial message
   ${APP_NAME} @prompt.md @image.png "What color is the sky?"
@@ -379,6 +397,10 @@ ${chalk.bold("Examples:")}
   # Export a session file to HTML
   ${APP_NAME} --export ~/${CONFIG_DIR_NAME}/agent/sessions/--path--/session.jsonl
   ${APP_NAME} --export session.jsonl output.html
+
+${chalk.bold("Security Boundary:")}
+  Local CLI tools and extensions run with the current user's host permissions.
+  Product policy hooks are admission controls, not a process or container sandbox.
 
 ${chalk.bold("Environment Variables:")}
   ANTHROPIC_AUTH_TOKEN             - Anthropic bearer auth token

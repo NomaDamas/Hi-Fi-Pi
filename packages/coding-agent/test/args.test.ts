@@ -41,6 +41,27 @@ describe("parseArgs", () => {
 		});
 	});
 
+	describe("named agent flags", () => {
+		test("parses definition file, agent id and exact version", () => {
+			const result = parseArgs([
+				"--agent-definitions",
+				"./agents.json",
+				"--agent",
+				"research",
+				"--agent-version",
+				"2.0.0",
+			]);
+			expect(result.agentDefinitions).toBe("./agents.json");
+			expect(result.agent).toBe("research");
+			expect(result.agentVersion).toBe("2.0.0");
+		});
+
+		test.each(["--agent-definitions", "--agent", "--agent-version"])("reports a missing value for %s", (flag) => {
+			const result = parseArgs([flag]);
+			expect(result.diagnostics).toContainEqual({ type: "error", message: `${flag} requires a value` });
+		});
+	});
+
 	describe("--help flag", () => {
 		test("parses --help flag", () => {
 			const result = parseArgs(["--help"]);
