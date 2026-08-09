@@ -24,6 +24,7 @@ const revision = resolveRevision();
 const args = [
 	"build",
 	"--compile",
+	"--no-compile-autoload-bunfig",
 	...(target ? [`--target=${target}`] : []),
 	"./dist/bun/cli.js",
 	"./src/utils/image-resize-worker.ts",

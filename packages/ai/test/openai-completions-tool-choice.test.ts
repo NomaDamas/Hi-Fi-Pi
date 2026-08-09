@@ -202,27 +202,8 @@ describe("openai-completions tool_choice", () => {
 		expect("strict" in (tool ?? {})).toBe(false);
 	});
 
-	it("maps groq qwen3 reasoning levels to default reasoning_effort", async () => {
-		const model = {
-			...localOpenAICompletionsModel,
-			id: "qwen/qwen3-32b",
-			name: "Qwen3-32B",
-			provider: "groq",
-			baseUrl: "https://api.groq.com/openai/v1",
-			thinkingLevelMap: {
-				off: "none",
-				minimal: null,
-				low: null,
-				medium: null,
-				high: "default",
-				xhigh: null,
-				max: null,
-			},
-			compat: {
-				thinkingFormat: "qwen",
-				supportsReasoningEffort: true,
-			},
-		} satisfies Model<"openai-completions">;
+	it("maps Groq Qwen reasoning levels to default reasoning_effort", async () => {
+		const model = getModel("groq", "qwen/qwen3.6-27b")!;
 		let payload: unknown;
 
 		await streamSimple(
@@ -278,7 +259,7 @@ describe("openai-completions tool_choice", () => {
 	});
 
 	it("enables tool_stream for supported z.ai models with tools", async () => {
-		const model = getModel("zai", "glm-4.7")!;
+		const model = getModel("zai", "glm-5.2")!;
 		const tools: Tool[] = [
 			{
 				name: "ping",
@@ -462,7 +443,7 @@ describe("openai-completions tool_choice", () => {
 	});
 
 	it("omits tool_stream for unsupported z.ai models", async () => {
-		const baseModel = getModel("zai", "glm-4.7")!;
+		const baseModel = getModel("zai", "glm-5.2")!;
 		const model = {
 			...baseModel,
 			compat: { ...baseModel.compat, zaiToolStream: false },
@@ -503,7 +484,7 @@ describe("openai-completions tool_choice", () => {
 	});
 
 	it("respects explicit z.ai tool_stream compat override", async () => {
-		const baseModel = getModel("zai", "glm-4.7")!;
+		const baseModel = getModel("zai", "glm-5.2")!;
 		const model = {
 			...baseModel,
 			compat: {
@@ -547,7 +528,7 @@ describe("openai-completions tool_choice", () => {
 	});
 
 	it("omits tool_stream when no tools are provided", async () => {
-		const model = getModel("zai", "glm-4.7")!;
+		const model = getModel("zai", "glm-5.2")!;
 		let payload: unknown;
 
 		await streamSimple(
@@ -589,7 +570,7 @@ describe("openai-completions tool_choice", () => {
 			},
 		];
 
-		const model = getModel("zai", "glm-4.7")!;
+		const model = getModel("zai", "glm-5.2")!;
 		const response = await streamSimple(
 			model,
 			{
@@ -680,6 +661,33 @@ describe("openai-completions tool_choice", () => {
 
 		expect(response.stopReason).toBe("error");
 		expect(response.errorMessage).toBe("Stream ended without finish_reason");
+	});
+
+	it("accepts streams without finish_reason when compat disables it", async () => {
+		mockState.chunks = [
+			{
+				id: "chatcmpl-no-finish-reason",
+				choices: [{ delta: { content: "complete answer" }, finish_reason: null }],
+			},
+		];
+
+		const { compat: _compat, ...baseModel } = getModel("openai", "gpt-4o-mini")!;
+		const model = {
+			...baseModel,
+			api: "openai-completions",
+			compat: { supportsFinishReason: false },
+		} as const;
+		const response = await streamSimple(
+			model,
+			{
+				messages: [{ role: "user", content: "Reply with a complete answer", timestamp: Date.now() }],
+			},
+			{ apiKey: "test" },
+		).result();
+
+		expect(response.stopReason).toBe("stop");
+		expect(response.errorMessage).toBeUndefined();
+		expect(response.content).toEqual([{ type: "text", text: "complete answer" }]);
 	});
 
 	it("ignores empty custom objects on function tool call deltas", async () => {
@@ -1167,7 +1175,7 @@ describe("openai-completions tool_choice", () => {
 	});
 
 	it("stores Qwen Token Plan reasoning replay compat in built-in metadata", () => {
-		const providers = ["qwen-token-plan", "qwen-token-plan-cn"] as const;
+		const providers = ["qwen-token-plan", "qwen-token-plan-cn", "qwen-token-plan-individual"] as const;
 
 		for (const provider of providers) {
 			const model = getModel(provider, "qwen3.7-max")!;
@@ -1325,6 +1333,7 @@ describe("openai-completions tool_choice", () => {
 				supportsDeveloperRole: false,
 				supportsReasoningEffort: true,
 				supportsUsageInStreaming: true,
+				supportsFinishReason: true,
 				maxTokensField: "max_completion_tokens",
 				requiresToolResultName: false,
 				requiresAssistantAfterToolResult: false,
@@ -1334,6 +1343,7 @@ describe("openai-completions tool_choice", () => {
 				openRouterRouting: {},
 				vercelGatewayRouting: {},
 				chatTemplateKwargs: {},
+				chatTemplateArgs: {},
 				zaiToolStream: false,
 				supportsStrictMode: true,
 				supportsOpenAIGrammarTools: false,
@@ -1478,8 +1488,49 @@ describe("openai-completions tool_choice", () => {
 		}
 	});
 
+	it("sends max_tokens for built-in and custom DeepSeek API models", async () => {
+		const customModel = {
+			...localOpenAICompletionsModel,
+			id: "custom-deepseek-model",
+			name: "Custom DeepSeek Model",
+			provider: "custom-deepseek",
+			baseUrl: "https://api.deepseek.com",
+		} satisfies Model<"openai-completions">;
+		const nativeModels = [
+			getModel("deepseek", "deepseek-v4-flash")!,
+			getModel("deepseek", "deepseek-v4-pro")!,
+		] as const;
+		const cases = [...nativeModels, customModel] as const;
+
+		for (const model of nativeModels) {
+			expect(model.compat?.maxTokensField).toBe("max_tokens");
+		}
+
+		for (const model of cases) {
+			let payload: unknown;
+
+			await streamSimple(
+				model,
+				{
+					messages: [{ role: "user", content: "Hi", timestamp: Date.now() }],
+				},
+				{
+					apiKey: "test",
+					maxTokens: 123,
+					onPayload: (params: unknown) => {
+						payload = params;
+					},
+				},
+			).result();
+
+			const params = (payload ?? mockState.lastParams) as { max_tokens?: number; max_completion_tokens?: number };
+			expect(params.max_tokens).toBe(123);
+			expect(params.max_completion_tokens).toBeUndefined();
+		}
+	});
+
 	it("sends max_tokens for Z.AI completions models", async () => {
-		const cases = [getModel("zai", "glm-4.7")!, getModel("zai", "glm-5.2")!] as const;
+		const cases = [getModel("zai", "glm-5-turbo")!, getModel("zai", "glm-5.2")!] as const;
 
 		for (const model of cases) {
 			expect(model.compat?.maxTokensField).toBe("max_tokens");

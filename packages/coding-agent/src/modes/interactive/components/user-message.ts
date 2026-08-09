@@ -1,6 +1,8 @@
 import type { AttachmentRecord } from "@earendil-works/pi-ai/compat";
 import { Box, Container, Markdown, type MarkdownTheme, Text } from "@earendil-works/pi-tui";
+import type { MarkdownTransformer } from "../../../core/extensions/types.ts";
 import { getMarkdownTheme, theme } from "../theme/theme.ts";
+import { createMarkdownTransform } from "./markdown-transform.ts";
 
 const OSC133_ZONE_START = "\x1b]133;A\x07";
 const OSC133_ZONE_END = "\x1b]133;B\x07";
@@ -13,6 +15,7 @@ export class UserMessageComponent extends Container {
 	private text: string;
 	private markdownTheme: MarkdownTheme;
 	private outputPad: number;
+	private markdownTransformers: readonly MarkdownTransformer[];
 	private attachments: readonly AttachmentRecord[];
 	private unresolvedAttachmentIds: readonly string[];
 
@@ -20,6 +23,7 @@ export class UserMessageComponent extends Container {
 		text: string,
 		markdownTheme: MarkdownTheme = getMarkdownTheme(),
 		outputPad = 1,
+		markdownTransformers: readonly MarkdownTransformer[] = [],
 		attachments: readonly AttachmentRecord[] = [],
 		unresolvedAttachmentIds: readonly string[] = [],
 	) {
@@ -27,6 +31,7 @@ export class UserMessageComponent extends Container {
 		this.text = text;
 		this.markdownTheme = markdownTheme;
 		this.outputPad = outputPad;
+		this.markdownTransformers = markdownTransformers;
 		this.attachments = attachments;
 		this.unresolvedAttachmentIds = unresolvedAttachmentIds;
 		this.rebuild();
@@ -49,7 +54,11 @@ export class UserMessageComponent extends Container {
 				{
 					color: (content: string) => theme.fg("userMessageText", content),
 				},
-				{ preserveOrderedListMarkers: true, preserveBackslashEscapes: true },
+				{
+					preserveOrderedListMarkers: true,
+					preserveBackslashEscapes: true,
+					transform: createMarkdownTransform("user", false, this.markdownTransformers),
+				},
 			),
 		);
 		if (this.attachments.length > 0 || this.unresolvedAttachmentIds.length > 0) {
