@@ -1,37 +1,45 @@
 name: Review Gate
 
 # Advisory review gate: branch protection is unavailable on the current plan,
-# so this check turns red when a PR lacks an approving review from someone
-# other than the author. Convention for all contributors (human or agent):
-# never merge while this check is failing.
+# so this check publishes a commit status that stays red until the current PR
+# head has an independent approval — a native APPROVED review from a
+# non-author pinned to the head SHA, or a head-pinned review-attestation
+# comment (`Review-attestation: <reviewer> APPROVE <head-sha>`), which exists
+# because all agents currently share one GitHub account and GitHub rejects
+# formal self-approval. New commits invalidate both forms. Convention for all
+# contributors (human or agent): never merge while this check is red.
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
   pull_request_review:
     types: [submitted, dismissed]
+  issue_comment:
+    types: [created, edited]
 
 permissions:
   pull-requests: read
+  statuses: write
 
 concurrency:
-  group: review-gate-${{ github.event.pull_request.number }}
+  group: review-gate-${{ github.event.pull_request.number || github.event.issue.number }}
   cancel-in-progress: true
 
 jobs:
   require-independent-approval:
+    if: github.event_name != 'issue_comment' || github.event.issue.pull_request
     runs-on: ubuntu-latest
     steps:
-      - name: Require an approving review from a non-author
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+
+      - name: Evaluate independent approval for the current head
         env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
           REPO: ${{ github.repository }}
-        run: |
-          author=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json author --jq '.author.login')
-          approvals=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json reviews \
-            --jq "[.reviews[] | select(.state == \"APPROVED\" and .author.login != \"$author\")] | length")
-          if [ "$approvals" -eq 0 ]; then
-            echo "::error::No approving review from a non-author yet. Do not merge while this check is red (see issue #53)."
-            exit 1
-          fi
-          echo "Found $approvals independent approval(s)."
+        run: node scripts/review-gate.mjs

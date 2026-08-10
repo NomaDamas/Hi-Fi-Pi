@@ -18,7 +18,13 @@ Include at least:
 ## Review
 
 <!--
-Merging requires an approving review from someone other than the author
+Merging requires an independent approval pinned to the current head commit
 (the Review Gate check enforces this advisorily — never merge on red).
-Name the intended reviewer here.
+Name the intended reviewer here. After reviewing, the reviewer either submits
+a formal approval (separate GitHub identity) or comments:
+
+    Review-attestation: <reviewer> APPROVE <head-sha>
+
+with at least 12 hex characters of the head SHA. Pushing new commits
+invalidates prior approvals and attestations.
 -->
