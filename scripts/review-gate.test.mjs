@@ -14,6 +14,10 @@ function gate(overrides) {
 	});
 }
 
+function attestation(body, association = "MEMBER") {
+	return { body, author_association: association };
+}
+
 test("no reviews or comments stays red", () => {
 	assert.equal(gate({}).approved, false);
 });
@@ -39,30 +43,70 @@ test("self-approval does not pass even at head", () => {
 	assert.equal(result.approved, false);
 });
 
-test("attestation comment pinned to the current head passes", () => {
+test("exact standalone attestation from a trusted association passes", () => {
 	const result = gate({
-		comments: [{ body: `Looks correct.\n\nReview-attestation: codex APPROVE ${HEAD.slice(0, 12)}` }],
+		comments: [attestation(`Review-attestation: codex APPROVE ${HEAD.slice(0, 12)}`)],
 	});
 	assert.equal(result.approved, true);
 });
 
+test("attestation surrounded by whitespace still counts as exact", () => {
+	const result = gate({
+		comments: [attestation(`\n  Review-attestation: codex APPROVE ${HEAD.slice(0, 12)}\n`)],
+	});
+	assert.equal(result.approved, true);
+});
+
+test("attestation quoted inside prose does not pass (review-request false positive)", () => {
+	const body = [
+		"Both blockers addressed — re-review requested.",
+		"",
+		`This PR's current head is \`${HEAD}\`. If the revised design is acceptable, attest with:`,
+		"",
+		`\`Review-attestation: codex APPROVE ${HEAD.slice(0, 12)}\``,
+	].join("\n");
+	const result = gate({ comments: [attestation(body)] });
+	assert.equal(result.approved, false);
+});
+
+test("attestation inside a fenced code block does not pass", () => {
+	const body = `\`\`\`\nReview-attestation: codex APPROVE ${HEAD.slice(0, 12)}\n\`\`\``;
+	const result = gate({ comments: [attestation(body)] });
+	assert.equal(result.approved, false);
+});
+
+test("attestation from an untrusted commenter does not pass", () => {
+	for (const association of ["NONE", "CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", undefined]) {
+		const result = gate({
+			comments: [{ body: `Review-attestation: codex APPROVE ${HEAD.slice(0, 12)}`, author_association: association }],
+		});
+		assert.equal(result.approved, false, `association ${association} must not pass`);
+	}
+});
+
+test("removing the attestation returns the gate to red", () => {
+	const comment = attestation(`Review-attestation: codex APPROVE ${HEAD.slice(0, 12)}`);
+	assert.equal(gate({ comments: [comment] }).approved, true);
+	assert.equal(gate({ comments: [] }).approved, false);
+});
+
 test("attestation for a superseded commit stops counting", () => {
 	const result = gate({
-		comments: [{ body: "Review-attestation: codex APPROVE ffffffffffff" }],
+		comments: [attestation("Review-attestation: codex APPROVE ffffffffffff")],
 	});
 	assert.equal(result.approved, false);
 });
 
 test("attestation shorter than 12 hex characters is ignored", () => {
 	const result = gate({
-		comments: [{ body: `Review-attestation: codex APPROVE ${HEAD.slice(0, 8)}` }],
+		comments: [attestation(`Review-attestation: codex APPROVE ${HEAD.slice(0, 8)}`)],
 	});
 	assert.equal(result.approved, false);
 });
 
 test("attestation matching is case-insensitive", () => {
 	const result = gate({
-		comments: [{ body: `review-attestation: codex approve ${HEAD.toUpperCase()}` }],
+		comments: [attestation(`review-attestation: codex approve ${HEAD.toUpperCase()}`)],
 	});
 	assert.equal(result.approved, true);
 });

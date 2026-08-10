@@ -18,7 +18,14 @@
 
 import { pathToFileURL } from "node:url";
 
-const ATTESTATION_PATTERN = /Review-attestation:\s*(\S+)\s+APPROVE\s+([0-9a-f]{12,40})/gi;
+// An attestation is a command, not a substring: the entire trimmed comment body
+// must be exactly one attestation line. Examples, quoted text, fenced code and
+// prose containing the phrase must not count.
+const ATTESTATION_LINE = /^Review-attestation:\s*(\S+)\s+APPROVE\s+([0-9a-f]{12,40})$/i;
+
+// Under the shared account the reviewer label is trust-based, but arbitrary
+// commenters must not be able to claim it.
+const TRUSTED_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
 
 export function evaluateReviewGate({ headSha, authorLogin, reviews, comments }) {
 	const head = headSha.toLowerCase();
@@ -35,11 +42,16 @@ export function evaluateReviewGate({ headSha, authorLogin, reviews, comments }) 
 	}
 
 	for (const comment of comments) {
-		for (const match of (comment.body ?? "").matchAll(ATTESTATION_PATTERN)) {
-			const [, reviewer, sha] = match;
-			if (head.startsWith(sha.toLowerCase())) {
-				return { approved: true, reason: `attested by ${reviewer} at head` };
-			}
+		if (!TRUSTED_ASSOCIATIONS.has(comment.author_association)) {
+			continue;
+		}
+		const match = (comment.body ?? "").trim().match(ATTESTATION_LINE);
+		if (!match) {
+			continue;
+		}
+		const [, reviewer, sha] = match;
+		if (head.startsWith(sha.toLowerCase())) {
+			return { approved: true, reason: `attested by ${reviewer} at head` };
 		}
 	}
 
