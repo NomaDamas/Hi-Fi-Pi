@@ -75,6 +75,36 @@ test("attestation inside a fenced code block does not pass", () => {
 	assert.equal(result.approved, false);
 });
 
+test("allowlisted login passes even when association reads as NONE (viewer-dependent)", () => {
+	// Private org membership is invisible to the Actions token, so a genuine
+	// member can surface as NONE; the explicit login allowlist must still work.
+	const result = gate({
+		comments: [
+			{
+				body: `Review-attestation: codex APPROVE ${HEAD.slice(0, 12)}`,
+				author_association: "NONE",
+				user: { login: "Eastsidegunn" },
+			},
+		],
+		trustedLogins: ["Eastsidegunn"],
+	});
+	assert.equal(result.approved, true);
+});
+
+test("non-allowlisted NONE commenter stays red even with a perfect attestation", () => {
+	const result = gate({
+		comments: [
+			{
+				body: `Review-attestation: codex APPROVE ${HEAD.slice(0, 12)}`,
+				author_association: "NONE",
+				user: { login: "drive-by" },
+			},
+		],
+		trustedLogins: ["Eastsidegunn"],
+	});
+	assert.equal(result.approved, false);
+});
+
 test("attestation from an untrusted commenter does not pass", () => {
 	for (const association of ["NONE", "CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", undefined]) {
 		const result = gate({

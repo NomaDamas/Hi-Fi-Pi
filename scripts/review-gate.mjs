@@ -24,10 +24,19 @@ import { pathToFileURL } from "node:url";
 const ATTESTATION_LINE = /^Review-attestation:\s*(\S+)\s+APPROVE\s+([0-9a-f]{12,40})$/i;
 
 // Under the shared account the reviewer label is trust-based, but arbitrary
-// commenters must not be able to claim it.
+// commenters must not be able to claim it. author_association is
+// viewer-dependent — private org membership reads as NONE to the Actions
+// token — so the workflow additionally passes an explicit login allowlist
+// (TRUSTED_ATTESTORS), which only people with push access can change.
 const TRUSTED_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
 
-export function evaluateReviewGate({ headSha, authorLogin, reviews, comments }) {
+function isTrustedCommenter(comment, trustedLogins) {
+	if (TRUSTED_ASSOCIATIONS.has(comment.author_association)) return true;
+	const login = comment.user?.login;
+	return typeof login === "string" && trustedLogins.includes(login);
+}
+
+export function evaluateReviewGate({ headSha, authorLogin, reviews, comments, trustedLogins = [] }) {
 	const head = headSha.toLowerCase();
 
 	const nativeApproval = reviews.find(
@@ -42,7 +51,7 @@ export function evaluateReviewGate({ headSha, authorLogin, reviews, comments }) 
 	}
 
 	for (const comment of comments) {
-		if (!TRUSTED_ASSOCIATIONS.has(comment.author_association)) {
+		if (!isTrustedCommenter(comment, trustedLogins)) {
 			continue;
 		}
 		const match = (comment.body ?? "").trim().match(ATTESTATION_LINE);
@@ -101,6 +110,10 @@ async function main() {
 		authorLogin: pull.user.login,
 		reviews: await paginate(`/repos/${repo}/pulls/${prNumber}/reviews`),
 		comments: await paginate(`/repos/${repo}/issues/${prNumber}/comments`),
+		trustedLogins: (process.env.TRUSTED_ATTESTORS ?? "")
+			.split(",")
+			.map((login) => login.trim())
+			.filter((login) => login.length > 0),
 	});
 
 	await githubApi(`/repos/${repo}/statuses/${pull.head.sha}`, {
