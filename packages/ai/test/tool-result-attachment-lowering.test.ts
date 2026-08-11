@@ -142,12 +142,13 @@ describe("tool-result native PDF attachment lowering", () => {
 		const model = makeModel("google-generative-ai", "google", "gemini-3-pro");
 
 		expect(convertGoogleMessages(model, makeContext(model))).toEqual([
-			{ role: "model", parts: [{ functionCall: { name: "make_report", args: {} } }] },
+			{ role: "model", parts: [{ functionCall: { id: "call_123", name: "make_report", args: {} } }] },
 			{
 				role: "user",
 				parts: [
 					{
 						functionResponse: {
+							id: "call_123",
 							name: "make_report",
 							response: { output: "report generated" },
 							parts: [
@@ -266,12 +267,13 @@ describe("tool-result native PDF attachment lowering", () => {
 
 		const google = makeModel("google-generative-ai", "google", "gemini-3-pro");
 		expect(convertGoogleMessages(google, makeContextWithoutAttachments(google))).toEqual([
-			{ role: "model", parts: [{ functionCall: { name: "make_report", args: {} } }] },
+			{ role: "model", parts: [{ functionCall: { id: "call_123", name: "make_report", args: {} } }] },
 			{
 				role: "user",
 				parts: [
 					{
 						functionResponse: {
+							id: "call_123",
 							name: "make_report",
 							response: { output: "report generated" },
 						},
