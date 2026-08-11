@@ -1,0 +1,135 @@
+name: Refresh Model Data
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "42 2 * * 1-5"
+
+permissions:
+  actions: write
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: refresh-model-data
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Check for an existing refresh pull request
+        id: existing-pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          count="$(gh pr list \
+            --repo "$GITHUB_REPOSITORY" \
+            --state open \
+            --json headRefName \
+            --jq '[.[] | select(.headRefName | startswith("automation/model-catalog-refresh-"))] | length')"
+          if [[ "$count" == "0" ]]; then
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "An open model catalog refresh pull request already exists."
+          fi
+
+      - name: Hydrate live model data
+        if: steps.existing-pr.outputs.skip == 'false'
+        run: npm --prefix packages/ai run generate-models
+
+      - name: Detect meaningful catalog drift
+        if: steps.existing-pr.outputs.skip == 'false'
+        id: model-diff
+        run: |
+          if git diff --quiet -- \
+            packages/ai/src/models.generated.ts \
+            packages/ai/src/providers \
+            ':(exclude)packages/ai/src/providers/data/.manifest.json'; then
+            git restore packages/ai/src/providers/data/.manifest.json
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "The live catalog matches the checked-in snapshot."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run model catalog contracts
+        if: steps.model-diff.outputs.changed == 'true'
+        id: contracts
+        continue-on-error: true
+        run: |
+          npm run build:offline
+          npm run check
+          cd packages/ai
+          node "$(git rev-parse --show-toplevel)/node_modules/vitest/dist/cli.js" --run \
+            test/model-data-validation.test.ts \
+            test/models-runtime.test.ts \
+            test/supports-xhigh.test.ts
+
+      - name: Create refresh pull request
+        if: steps.model-diff.outputs.changed == 'true'
+        id: create-pr
+        env:
+          CONTRACT_OUTCOME: ${{ steps.contracts.outcome }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          branch="automation/model-catalog-refresh-${GITHUB_RUN_ID}"
+          body_file="$RUNNER_TEMP/model-catalog-refresh.md"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git add \
+            packages/ai/src/models.generated.ts \
+            packages/ai/src/providers/*.models.ts \
+            packages/ai/src/providers/data
+          git commit -m "chore(ai): refresh model catalog snapshot"
+          git push origin "$branch"
+
+          {
+            echo "## Summary"
+            echo
+            echo "Refresh the checked-in provider model snapshot from the live catalog."
+            echo
+            echo "Catalog contract result before PR creation: \`$CONTRACT_OUTCOME\`."
+            echo "Source workflow: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          } > "$body_file"
+
+          draft_args=()
+          if [[ "$CONTRACT_OUTCOME" != "success" ]]; then
+            draft_args+=(--draft)
+          fi
+          gh pr create \
+            --repo "$GITHUB_REPOSITORY" \
+            --base main \
+            --head "$branch" \
+            --title "chore(ai): refresh model catalog snapshot" \
+            --body-file "$body_file" \
+            "${draft_args[@]}"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+
+      - name: Dispatch offline CI for the refresh branch
+        if: steps.create-pr.outputs.branch != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref "${{ steps.create-pr.outputs.branch }}"
+
+      - name: Report failed catalog contracts
+        if: steps.model-diff.outputs.changed == 'true' && steps.contracts.outcome != 'success'
+        run: |
+          echo "The refresh PR was opened as a draft because the pinned catalog contracts failed."
+          exit 1
