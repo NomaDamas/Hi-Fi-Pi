@@ -33,6 +33,7 @@ import { resolvePath } from "../../utils/paths.ts";
 import { createEventBus, type EventBus } from "../event-bus.ts";
 import type { ExecOptions } from "../exec.ts";
 import { execCommand } from "../exec.ts";
+import { readPiManifest } from "../pi-manifest.ts";
 import { createSyntheticSourceInfo } from "../source-info.ts";
 import { time } from "../timings.ts";
 import type {
@@ -42,6 +43,7 @@ import type {
 	ExtensionFactory,
 	ExtensionRuntime,
 	LoadExtensionsResult,
+	MarkdownTransformer,
 	MessageRenderer,
 	ProviderConfig,
 	RegisteredCommand,
@@ -178,6 +180,7 @@ export function createExtensionRuntime(): ExtensionRuntime {
 		throw new Error("Extension runtime not initialized. Action methods cannot be called during extension loading.");
 	};
 	const state: { staleMessage?: string } = {};
+	const eventBusUnsubscribers = new Set<() => void>();
 	const assertActive = () => {
 		if (state.staleMessage) {
 			throw new Error(state.staleMessage);
@@ -205,9 +208,23 @@ export function createExtensionRuntime(): ExtensionRuntime {
 		pendingNativeProviderRegistrations: [],
 		assertActive,
 		invalidate: (message) => {
-			state.staleMessage ??=
+			if (state.staleMessage) return;
+			state.staleMessage =
 				message ??
 				"This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload(). For newSession, fork, and switchSession, move post-replacement work into withSession and use the ctx passed to withSession. For reload, do not use the old ctx after await ctx.reload().";
+			for (const unsubscribe of eventBusUnsubscribers) unsubscribe();
+			eventBusUnsubscribers.clear();
+		},
+		trackEventBusSubscription: (unsubscribe) => {
+			let active = true;
+			const trackedUnsubscribe = () => {
+				if (!active) return;
+				active = false;
+				eventBusUnsubscribers.delete(trackedUnsubscribe);
+				unsubscribe();
+			};
+			eventBusUnsubscribers.add(trackedUnsubscribe);
+			return trackedUnsubscribe;
 		},
 		// Pre-bind: queue registrations so bindCore() can flush them once the
 		// model registry is available. bindCore() replaces both with direct calls.
@@ -291,6 +308,11 @@ function createExtensionAPI(
 		registerMessageRenderer<T>(customType: string, renderer: MessageRenderer<T>): void {
 			runtime.assertActive();
 			extension.messageRenderers.set(customType, renderer as MessageRenderer);
+		},
+
+		registerMarkdownTransformer(transformer: MarkdownTransformer): void {
+			runtime.assertActive();
+			extension.markdownTransformer = transformer;
 		},
 
 		registerEntryRenderer<T>(customType: string, renderer: EntryRenderer<T>): void {
@@ -403,7 +425,16 @@ function createExtensionAPI(
 			runtime.unregisterProvider(name, extension.path);
 		},
 
-		events: eventBus,
+		events: {
+			emit(channel, data) {
+				runtime.assertActive();
+				eventBus.emit(channel, data);
+			},
+			on(channel, handler) {
+				runtime.assertActive();
+				return runtime.trackEventBusSubscription(eventBus.on(channel, handler));
+			},
+		},
 	} as ExtensionAPI;
 
 	return api;
@@ -589,26 +620,6 @@ export async function loadExtensionsCached(
 	runtime?: ExtensionRuntime,
 ): Promise<LoadExtensionsResult> {
 	return loadExtensionsInternal(paths, cwd, eventBus, runtime, true);
-}
-
-interface PiManifest {
-	extensions?: string[];
-	themes?: string[];
-	skills?: string[];
-	prompts?: string[];
-}
-
-function readPiManifest(packageJsonPath: string): PiManifest | null {
-	try {
-		const content = fs.readFileSync(packageJsonPath, "utf-8");
-		const pkg = JSON.parse(content);
-		if (pkg.pi && typeof pkg.pi === "object") {
-			return pkg.pi as PiManifest;
-		}
-		return null;
-	} catch {
-		return null;
-	}
 }
 
 function isExtensionFile(name: string): boolean {

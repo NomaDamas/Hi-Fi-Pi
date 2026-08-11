@@ -36,13 +36,14 @@ type AttachmentAwareUserMessageComponent = new (
 	text: string,
 	markdownTheme?: ConstructorParameters<typeof UserMessageComponent>[1],
 	outputPad?: number,
+	markdownTransformers?: ConstructorParameters<typeof UserMessageComponent>[3],
 	attachments?: AttachmentRecord[],
 	unresolvedAttachmentIds?: string[],
 ) => UserMessageComponent;
 
 function renderAttachmentMessage(attachments: AttachmentRecord[], width = 80): string[] {
 	const Component = UserMessageComponent as AttachmentAwareUserMessageComponent;
-	return new Component("Analyze these files", undefined, 1, attachments).render(width).map(stripAnsi);
+	return new Component("Analyze these files", undefined, 1, undefined, attachments).render(width).map(stripAnsi);
 }
 
 type SubmitContext = {
@@ -85,6 +86,7 @@ type MessageContext = {
 	sessionManager: { getAttachment: (id: string) => AttachmentRecord | undefined };
 	getUserMessageText: () => string;
 	getMarkdownThemeWithSettings: () => ReturnType<typeof getMarkdownTheme>;
+	getMarkdownTransformers: () => [];
 	outputPad: number;
 	toolOutputExpanded: boolean;
 	editor: { addToHistory: ReturnType<typeof vi.fn> };
@@ -195,6 +197,7 @@ describe("Issue 6 attachment TUI contracts", () => {
 			sessionManager: { getAttachment: (id) => (id === pdf.id ? pdf : undefined) },
 			getUserMessageText: () => "Analyze after resume",
 			getMarkdownThemeWithSettings: () => getMarkdownTheme(),
+			getMarkdownTransformers: () => [],
 			outputPad: 1,
 			toolOutputExpanded: false,
 			editor: { addToHistory: vi.fn() },
@@ -219,6 +222,7 @@ describe("Issue 6 attachment TUI contracts", () => {
 			sessionManager: { getAttachment: () => undefined },
 			getUserMessageText: () => "Analyze after resume",
 			getMarkdownThemeWithSettings: () => getMarkdownTheme(),
+			getMarkdownTransformers: () => [],
 			outputPad: 1,
 			toolOutputExpanded: false,
 			editor: { addToHistory: vi.fn() },

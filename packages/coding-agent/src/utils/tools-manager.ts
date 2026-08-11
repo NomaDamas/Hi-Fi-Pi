@@ -7,6 +7,7 @@ import { join } from "path";
 import { Readable } from "stream";
 import { pipeline } from "stream/promises";
 import { APP_NAME, CONFIG_DIR_NAME, getBinDir, resolveAgentDir, USER_CONFIG_DIR_NAME } from "../config.ts";
+import { fetchWithRetry } from "./management-http.ts";
 
 const TOOLS_DIR = getBinDir();
 const NETWORK_TIMEOUT_MS = 10_000;
@@ -127,10 +128,11 @@ async function getLatestVersion(repo: string): Promise<string> {
 	if (token) {
 		headers.Authorization = `Bearer ${token}`;
 	}
-	const response = await fetch(`https://api.github.com/repos/${repo}/releases/latest`, {
-		headers,
-		signal: AbortSignal.timeout(NETWORK_TIMEOUT_MS),
-	});
+	const response = await fetchWithRetry(
+		`https://api.github.com/repos/${repo}/releases/latest`,
+		{ headers },
+		{ timeoutMs: NETWORK_TIMEOUT_MS },
+	);
 
 	if (!response.ok) {
 		throw new Error(`GitHub API error: ${response.status}`);
@@ -142,9 +144,7 @@ async function getLatestVersion(repo: string): Promise<string> {
 
 // Download a file from URL
 async function downloadFile(url: string, dest: string): Promise<void> {
-	const response = await fetch(url, {
-		signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS),
-	});
+	const response = await fetchWithRetry(url, undefined, { timeoutMs: DOWNLOAD_TIMEOUT_MS });
 
 	if (!response.ok) {
 		throw new Error(`Failed to download: ${response.status}`);

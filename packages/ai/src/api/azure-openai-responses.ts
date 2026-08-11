@@ -157,7 +157,7 @@ export const stream: StreamFunction<"azure-openai-responses", AzureOpenAIRespons
 				throw new Error("Azure OpenAI Responses stream ended without a stop reason");
 			}
 			if (output.stopReason === "aborted" || output.stopReason === "error") {
-				throw new Error("An unknown error occurred");
+				throw new Error(output.errorMessage || "An unknown error occurred");
 			}
 
 			await traceProviderCompletion(trace, options?.onTrace, output);
@@ -387,6 +387,11 @@ function buildParams(
 				effort: (model.thinkingLevelMap?.off ?? "none") as NonNullable<typeof params.reasoning>["effort"],
 			};
 		}
+	}
+
+	// Last so custom keys override the named request fields.
+	if (options?.samplingParams) {
+		Object.assign(params, options.samplingParams);
 	}
 
 	return params;

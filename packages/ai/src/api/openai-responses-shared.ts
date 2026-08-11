@@ -127,6 +127,7 @@ export interface ConvertResponsesMessagesOptions {
 	includeSystemPrompt?: boolean;
 	grammarToolInputProperties?: ReadonlyMap<string, string>;
 	deferredTools?: ReadonlyMap<string, Tool>;
+	deferredToolsMode?: "additional-tools" | "tool-search";
 	toolOptions?: ConvertResponsesToolsOptions;
 	trace?: ProviderTraceRecorder;
 }
@@ -262,10 +263,9 @@ export function convertResponsesMessages<TApi extends Api>(
 					continue;
 				output.push(structuredClone(nativePart.payload) as ResponseInputItem);
 			}
-			const isDifferentModel =
-				assistantMsg.model !== model.id &&
-				assistantMsg.provider === model.provider &&
-				assistantMsg.api === model.api;
+			const isSameProviderAndApi = assistantMsg.provider === model.provider && assistantMsg.api === model.api;
+			const isSameModel = isSameProviderAndApi && assistantMsg.model === model.id;
+			const isDifferentModel = isSameProviderAndApi && assistantMsg.model !== model.id;
 			let textBlockIndex = 0;
 
 			for (const block of msg.content) {
@@ -313,6 +313,8 @@ export function convertResponsesMessages<TApi extends Api>(
 						itemId = undefined;
 					}
 
+					const canReplayNamespace = isSameModel || options?.deferredTools?.has(toolCall.name) === true;
+
 					if (customInputProperty !== undefined) {
 						output.push({
 							type: "custom_tool_call",
@@ -322,6 +324,9 @@ export function convertResponsesMessages<TApi extends Api>(
 							input: sanitizeSurrogates(
 								getGrammarToolInput(toolCall.name, toolCall.arguments, customInputProperty),
 							),
+							...(canReplayNamespace && toolCall.namespace !== undefined
+								? { namespace: toolCall.namespace }
+								: {}),
 						} satisfies ResponseOutputItem);
 					} else {
 						output.push({
@@ -330,6 +335,9 @@ export function convertResponsesMessages<TApi extends Api>(
 							call_id: callId,
 							name: toolCall.name,
 							arguments: JSON.stringify(toolCall.arguments),
+							...(canReplayNamespace && toolCall.namespace !== undefined
+								? { namespace: toolCall.namespace }
+								: {}),
 						});
 					}
 				}
@@ -386,7 +394,13 @@ export function convertResponsesMessages<TApi extends Api>(
 				loadedToolNames.add(name);
 				deferredTools.push(tool);
 			}
-			if (deferredTools.length > 0) {
+			if (deferredTools.length > 0 && options?.deferredToolsMode === "additional-tools") {
+				messages.push({
+					type: "additional_tools",
+					role: "developer",
+					tools: convertResponsesTools(deferredTools, options.toolOptions),
+				} satisfies ResponseInputItem);
+			} else if (deferredTools.length > 0 && options?.deferredToolsMode === "tool-search") {
 				const names = deferredTools.map((tool) => tool.name);
 				const searchCallId = `pi_tool_load_${shortHash(`${msg.toolCallId}:${names.join(",")}`)}`;
 				messages.push({
@@ -402,7 +416,7 @@ export function convertResponsesMessages<TApi extends Api>(
 					execution: "client",
 					status: "completed",
 					tools: convertResponsesTools(deferredTools, {
-						...options?.toolOptions,
+						...options.toolOptions,
 						deferLoading: true,
 					}),
 				} satisfies ResponseToolSearchOutputItemParam);
@@ -593,6 +607,7 @@ export async function processResponsesStream<TApi extends Api>(
 				id: `${item.call_id}|${item.id}`,
 				name: item.name,
 				arguments: {},
+				...(item.namespace !== undefined ? { namespace: item.namespace } : {}),
 				partialJson: item.arguments || "",
 			};
 			output.content.push(block);
@@ -613,6 +628,7 @@ export async function processResponsesStream<TApi extends Api>(
 				id: `${item.call_id}|${item.id}`,
 				name: item.name,
 				arguments: { [inputProperty]: input },
+				...(item.namespace !== undefined ? { namespace: item.namespace } : {}),
 				customInput: {
 					property: inputProperty,
 					jsonBuffer: { input: "", started: false, closed: false },
@@ -694,10 +710,15 @@ export async function processResponsesStream<TApi extends Api>(
 				: (response?.service_tier ?? options.serviceTier);
 			options.applyServiceTierPricing(output.usage, serviceTier);
 		}
-		// Map status to stop reason
+		// Map status to stop reason. For incomplete responses, retain the provider's
+		// specific reason so max-output truncation and content filtering stay distinct.
 		const status = response?.status;
-		output.rawStopReason = status;
-		output.stopReason = mapStopReason(status);
+		const incompleteDetails = response?.incomplete_details as { reason?: unknown } | null | undefined;
+		const incompleteReason = typeof incompleteDetails?.reason === "string" ? incompleteDetails.reason : undefined;
+		output.rawStopReason = incompleteReason ? `${status}.${incompleteReason}` : status;
+		const mappedStop = mapStopReason(status, incompleteReason);
+		output.stopReason = mappedStop.stopReason;
+		output.errorMessage = mappedStop.errorMessage;
 		if (output.content.some((b) => b.type === "toolCall") && output.stopReason === "stop") {
 			output.stopReason = "toolUse";
 		}
@@ -839,6 +860,7 @@ export async function processResponsesStream<TApi extends Api>(
 				slot.block.partialJson !== undefined
 			) {
 				slot.block.arguments = parseStreamingJson(item.arguments || slot.block.partialJson || "{}");
+				if (item.namespace !== undefined) slot.block.namespace = item.namespace;
 				// Finalize in-place and strip the scratch buffer so replay only
 				// carries parsed arguments.
 				delete slot.block.partialJson;
@@ -854,6 +876,7 @@ export async function processResponsesStream<TApi extends Api>(
 					slot,
 					appendCustomToolCallInput(slot.block, item.input ?? getCustomToolCallInput(slot.block), true),
 				);
+				if (item.namespace !== undefined) slot.block.namespace = item.namespace;
 				delete slot.block.customInput;
 				stream.push({
 					type: "toolcall_end",
@@ -887,20 +910,31 @@ export async function processResponsesStream<TApi extends Api>(
 	}
 }
 
-function mapStopReason(status: OpenAI.Responses.ResponseStatus | undefined): StopReason {
-	if (!status) return "stop";
+function mapStopReason(
+	status: OpenAI.Responses.ResponseStatus | undefined,
+	incompleteReason?: string,
+): { stopReason: StopReason; errorMessage?: string } {
+	if (!status) return { stopReason: "stop" };
 	switch (status) {
 		case "completed":
-			return "stop";
+			return { stopReason: "stop" };
 		case "incomplete":
-			return "length";
+			if (incompleteReason === "max_output_tokens") {
+				return { stopReason: "length" };
+			}
+			return {
+				stopReason: "error",
+				errorMessage: incompleteReason
+					? `Response incomplete: ${incompleteReason}`
+					: "Response incomplete without a provider reason",
+			};
 		case "failed":
 		case "cancelled":
-			return "error";
+			return { stopReason: "error" };
 		// These two are wonky ...
 		case "in_progress":
 		case "queued":
-			return "stop";
+			return { stopReason: "stop" };
 		default: {
 			const _exhaustive: never = status;
 			throw new Error(`Unhandled stop reason: ${_exhaustive}`);

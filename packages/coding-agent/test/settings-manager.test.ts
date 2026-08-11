@@ -397,6 +397,58 @@ describe("SettingsManager", () => {
 		});
 	});
 
+	describe("TUI mode", () => {
+		it("defaults to regular and persists fullscreen mode", async () => {
+			const manager = SettingsManager.create(projectDir, agentDir);
+
+			expect(manager.getTuiMode()).toBe("regular");
+
+			manager.setTuiMode("fullscreen");
+			await manager.flush();
+
+			expect(manager.getTuiMode()).toBe("fullscreen");
+			const savedSettings = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf-8"));
+			expect(savedSettings.tuiMode).toBe("fullscreen");
+		});
+
+		it("falls back to regular for unsupported values", () => {
+			writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ tuiMode: "other" }));
+
+			const manager = SettingsManager.create(projectDir, agentDir);
+
+			expect(manager.getTuiMode()).toBe("regular");
+		});
+
+		it("does not recognize the old uiMode setting", () => {
+			writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ uiMode: "fullscreen" }));
+
+			const manager = SettingsManager.create(projectDir, agentDir);
+
+			expect(manager.getTuiMode()).toBe("regular");
+		});
+	});
+
+	it("validates and persists fullscreen settings", async () => {
+		const manager = SettingsManager.create(projectDir, agentDir);
+		expect(manager.getFullscreenExitOutput()).toBe("transcript");
+		expect(manager.getFullscreenScrollbar()).toBe("auto");
+
+		manager.setFullscreenExitOutput("resume-hint");
+		manager.setFullscreenScrollbar("hidden");
+		await manager.flush();
+		const savedSettings = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf-8"));
+		expect(savedSettings.fullscreenExitOutput).toBe("resume-hint");
+		expect(savedSettings.fullscreenScrollbar).toBe("hidden");
+
+		writeFileSync(
+			join(agentDir, "settings.json"),
+			JSON.stringify({ fullscreenExitOutput: "nothing", fullscreenScrollbar: "sometimes" }),
+		);
+		const reloadedManager = SettingsManager.create(projectDir, agentDir);
+		expect(reloadedManager.getFullscreenExitOutput()).toBe("transcript");
+		expect(reloadedManager.getFullscreenScrollbar()).toBe("auto");
+	});
+
 	describe("outputPad", () => {
 		it("should default to 1 and persist binary values", async () => {
 			const manager = SettingsManager.create(projectDir, agentDir);
@@ -417,6 +469,27 @@ describe("SettingsManager", () => {
 			const manager = SettingsManager.create(projectDir, agentDir);
 
 			expect(manager.getOutputPad()).toBe(1);
+		});
+	});
+
+	describe("markdown.mermaid", () => {
+		it("defaults to streaming and persists rendering modes", async () => {
+			const manager = SettingsManager.create(projectDir, agentDir);
+
+			expect(manager.getMermaidRenderingMode()).toBe("streaming");
+
+			manager.setMermaidRenderingMode("final");
+			await manager.flush();
+
+			expect(manager.getMermaidRenderingMode()).toBe("final");
+			const savedSettings = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf-8"));
+			expect(savedSettings.markdown.mermaid).toBe("final");
+		});
+
+		it("falls back to streaming for unsupported values", () => {
+			writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ markdown: { mermaid: "sometimes" } }));
+
+			expect(SettingsManager.create(projectDir, agentDir).getMermaidRenderingMode()).toBe("streaming");
 		});
 	});
 
