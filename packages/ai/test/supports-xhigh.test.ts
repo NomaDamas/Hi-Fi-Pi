@@ -88,20 +88,11 @@ describe("getSupportedThinkingLevels", () => {
 		expect(getSupportedThinkingLevels(model!)).toEqual(["off", "high", "max"]);
 	});
 
-	it("maps DeepSeek V4 Flash levels from its current dialect on opencode-go", () => {
-		// opencode-go flipped this model's default dialect twice within hours
-		// (models.dev 95aaaeba anthropic -> b0002c76 openai, both 2026-08-11), so
-		// pinning the dialect makes this test a coin flip under live catalog
-		// hydration (#58). The durable contract is the dialect->levels mapping;
-		// both branches are empirically recorded against the respective catalogs.
+	it("pins DeepSeek V4 Flash to the checked-in opencode-go dialect", () => {
 		const model = getModel("opencode-go", "deepseek-v4-flash");
 		expect(model).toBeDefined();
-		// Widen the generated literal type: the catalog narrows `api` to whichever
-		// dialect it currently reports, which would make this comparison TS2367.
-		const api: string = model!.api;
-		const expected =
-			api === "anthropic-messages" ? ["off", "minimal", "low", "medium", "high"] : ["off", "high", "max"];
-		expect(getSupportedThinkingLevels(model!)).toEqual(expected);
+		expect(model!.api).toBe("openai-completions");
+		expect(getSupportedThinkingLevels(model!)).toEqual(["off", "high", "max"]);
 	});
 
 	it("includes only high plus off for OpenCode Go Kimi K2.6", () => {
