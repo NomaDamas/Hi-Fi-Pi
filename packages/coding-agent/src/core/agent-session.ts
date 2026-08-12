@@ -37,7 +37,6 @@ import type {
 	AssistantMessage,
 	AttachmentRecord,
 	AttachmentReference,
-	AttachmentRegistry,
 	AuthResult,
 	ImageContent,
 	Message,
@@ -65,7 +64,7 @@ import { stripFrontmatter } from "../utils/frontmatter.ts";
 import { resolvePath } from "../utils/paths.ts";
 import { sleep } from "../utils/sleep.ts";
 import { normalizeToolResultImages } from "../utils/tool-result-images.ts";
-import { resolveAttachmentSourceRuntime } from "./attachments/attachment-runtime.ts";
+import { AttachmentCoordinator } from "./attachments/attachment-coordinator.ts";
 import { formatNoApiKeyFoundMessage, formatNoModelSelectedMessage } from "./auth-guidance.ts";
 import { type BashResult, executeBashWithOperations } from "./bash-executor.ts";
 import {
@@ -354,26 +353,7 @@ export class AgentSession {
 	private _followUpMessages: string[] = [];
 	/** Bounded, sanitized provider trace history for SDK, RPC, extensions, and TUI inspection. */
 	private readonly _providerTraceEvents: ProviderTraceEvent[] = [];
-	/** Provider-neutral records referenced by attachment sidecars in this session. */
-	private readonly _attachmentRecords = new Map<string, AttachmentRecord>();
-	private readonly _attachmentRegistry: AttachmentRegistry = {
-		resolve: (id) => this._attachmentRecords.get(id),
-		read: (attachment) => {
-			if (attachment.source.type !== "path") {
-				throw new Error(`Attachment ${attachment.id} does not have a local path source.`);
-			}
-			return new Uint8Array(readFileSync(attachment.source.path));
-		},
-		list: () => Array.from(this._attachmentRecords.values()),
-		update: (attachment) => {
-			this._validateAttachmentRecord(attachment);
-			if (!this._attachmentRecords.has(attachment.id)) {
-				throw new Error(`Cannot update unknown attachment ID "${attachment.id}".`);
-			}
-			this.sessionManager.updateAttachment(attachment);
-			this._attachmentRecords.set(attachment.id, attachment);
-		},
-	};
+	private readonly _attachmentCoordinator: AttachmentCoordinator;
 	/** Messages queued to be included with the next user prompt as context ("asides"). */
 	private _pendingNextTurnMessages: CustomMessage[] = [];
 
@@ -443,7 +423,12 @@ export class AgentSession {
 		this._excludedToolNames = config.excludedToolNames ? new Set(config.excludedToolNames) : undefined;
 		this._baseToolsOverride = config.baseToolsOverride;
 		this._sessionStartEvent = config.sessionStartEvent ?? { type: "session_start", reason: "startup" };
-		this._syncAttachmentsFromActiveBranch();
+		this._attachmentCoordinator = new AttachmentCoordinator({
+			store: this.sessionManager,
+			bindRegistry: (registry) => {
+				this.agent.attachmentRegistry = registry;
+			},
+		});
 		this._restoreProviderOptions(config.providerOptions);
 		this._installProviderTraceBridge();
 
@@ -719,13 +704,8 @@ export class AgentSession {
 		// and persist them before extensions, listeners, or the next provider turn
 		// can observe the finalized result.
 		if (event.type === "tool_execution_end" && event.result.attachments?.length) {
-			this._registerAttachments(event.result.attachments);
-			this._persistAttachmentReferences(
-				event.result.attachments.map((attachment: AttachmentRecord) => ({
-					type: "attachment" as const,
-					attachmentId: attachment.id,
-				})),
-			);
+			const attachmentReferences = this._attachmentCoordinator.register(event.result.attachments);
+			this._attachmentCoordinator.persistReferences(attachmentReferences);
 		}
 
 		// Emit to extensions first
@@ -751,7 +731,7 @@ export class AgentSession {
 				event.message.role === "toolResult"
 			) {
 				if (event.message.role === "toolResult") {
-					this._assertAttachmentReferencesResolvable(event.message.attachments);
+					this._attachmentCoordinator.assertReferencesResolvable(event.message.attachments);
 				}
 				// Regular LLM message - persist as SessionMessageEntry
 				this.sessionManager.appendMessage(event.message);
@@ -1266,83 +1246,6 @@ export class AgentSession {
 		}
 	}
 
-	private _registerAttachments(attachments: AttachmentRecord[] | undefined): void {
-		if (!attachments || attachments.length === 0) return;
-		for (const attachment of attachments) {
-			this._validateAttachmentRecord(attachment);
-			const existing = this._attachmentRecords.get(attachment.id);
-			if (existing && JSON.stringify(existing) !== JSON.stringify(attachment)) {
-				throw new Error(`Attachment ID "${attachment.id}" is already registered with different metadata.`);
-			}
-			this._attachmentRecords.set(attachment.id, attachment);
-		}
-		this.agent.attachmentRegistry = this._attachmentRegistry;
-	}
-
-	private _syncAttachmentsFromActiveBranch(): void {
-		this._attachmentRecords.clear();
-		for (const attachment of this.sessionManager.getAttachments()) {
-			this._attachmentRecords.set(attachment.id, attachment);
-		}
-		this.agent.attachmentRegistry = this._attachmentRecords.size > 0 ? this._attachmentRegistry : undefined;
-	}
-
-	private _validateAttachmentRecord(value: unknown): asserts value is AttachmentRecord {
-		if (!value || typeof value !== "object") throw new Error("Invalid attachment: expected an object.");
-		const record = value as Partial<AttachmentRecord>;
-		if (typeof record.id !== "string" || record.id.length === 0) {
-			throw new Error("Invalid attachment: id must be a non-empty string.");
-		}
-		if (typeof record.filename !== "string" || record.filename.length === 0) {
-			throw new Error(`Invalid attachment "${record.id}": filename must be a non-empty string.`);
-		}
-		if (typeof record.mediaType !== "string" || record.mediaType.length === 0) {
-			throw new Error(`Invalid attachment "${record.id}": mediaType must be a non-empty string.`);
-		}
-		if (!record.source || typeof record.source !== "object") {
-			throw new Error(`Invalid attachment "${record.id}": source is required.`);
-		}
-		const source = record.source as {
-			type?: unknown;
-			path?: unknown;
-			data?: unknown;
-			url?: unknown;
-			uri?: unknown;
-			provider?: unknown;
-			fileId?: unknown;
-		};
-		if (source.type === "path" && typeof source.path === "string" && source.path.length > 0) return;
-		if (source.type === "base64" && typeof source.data === "string" && source.data.length > 0) return;
-		if (source.type === "url" && typeof source.url === "string" && source.url.length > 0) return;
-		if (source.type === "cloud-uri" && typeof source.uri === "string" && source.uri.length > 0) return;
-		if (
-			source.type === "provider-file" &&
-			typeof source.provider === "string" &&
-			source.provider.length > 0 &&
-			typeof source.fileId === "string" &&
-			source.fileId.length > 0
-		) {
-			return;
-		}
-		throw new Error(`Invalid attachment "${record.id}": unsupported or malformed source.`);
-	}
-
-	private _assertAttachmentReferencesResolvable(attachments: AttachmentReference[] | undefined): void {
-		for (const attachment of attachments ?? []) {
-			if (!this._attachmentRecords.has(attachment.attachmentId)) {
-				throw new Error(`Unknown attachment ID: ${attachment.attachmentId}`);
-			}
-		}
-	}
-
-	private _persistAttachmentReferences(attachments: AttachmentReference[] | undefined): void {
-		for (const reference of attachments ?? []) {
-			const attachment = this._attachmentRecords.get(reference.attachmentId);
-			if (!attachment) throw new Error(`Unknown attachment ID: ${reference.attachmentId}`);
-			this.sessionManager.appendAttachment(attachment);
-		}
-	}
-
 	private async _handlePostAgentRun(): Promise<boolean> {
 		const msg = this._lastAssistantMessage;
 		this._lastAssistantMessage = undefined;
@@ -1416,10 +1319,7 @@ export class AgentSession {
 			// Emit input event for extension interception (before skill/template expansion)
 			let currentText = text;
 			let currentImages = options?.images;
-			this._registerAttachments(options?.attachments);
-			let currentAttachments = options?.attachments?.map(
-				(record): AttachmentReference => ({ type: "attachment", attachmentId: record.id }),
-			);
+			let currentAttachments = this._attachmentCoordinator.register(options?.attachments);
 			if (this._extensionRunner.hasHandlers("input")) {
 				const inputResult = await this._extensionRunner.emitInput(
 					currentText,
@@ -1436,7 +1336,7 @@ export class AgentSession {
 					currentText = inputResult.text;
 					currentImages = inputResult.images ?? currentImages;
 					currentAttachments = inputResult.attachments ?? currentAttachments;
-					this._assertAttachmentReferencesResolvable(currentAttachments);
+					this._attachmentCoordinator.assertReferencesResolvable(currentAttachments);
 				}
 			}
 
@@ -1455,10 +1355,10 @@ export class AgentSession {
 					);
 				}
 				if (options.streamingBehavior === "followUp") {
-					this._persistAttachmentReferences(currentAttachments);
+					this._attachmentCoordinator.persistReferences(currentAttachments);
 					await this._queueFollowUp(expandedText, currentImages, currentAttachments);
 				} else {
-					this._persistAttachmentReferences(currentAttachments);
+					this._attachmentCoordinator.persistReferences(currentAttachments);
 					await this._queueSteer(expandedText, currentImages, currentAttachments);
 				}
 				preflightResult?.(true);
@@ -1497,7 +1397,7 @@ export class AgentSession {
 
 			// Build messages array (custom message if any, then user message)
 			messages = [];
-			this._persistAttachmentReferences(currentAttachments);
+			this._attachmentCoordinator.persistReferences(currentAttachments);
 
 			// Add user message
 			const userContent: (TextContent | ImageContent)[] = [{ type: "text", text: expandedText }];
@@ -1640,12 +1540,8 @@ export class AgentSession {
 		let expandedText = this._expandSkillCommand(text);
 		expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
 
-		this._registerAttachments(attachments);
-		const attachmentReferences = attachments?.map((record) => ({
-			type: "attachment" as const,
-			attachmentId: record.id,
-		}));
-		this._persistAttachmentReferences(attachmentReferences);
+		const attachmentReferences = this._attachmentCoordinator.register(attachments);
+		this._attachmentCoordinator.persistReferences(attachmentReferences);
 		await this._queueSteer(expandedText, images, attachmentReferences);
 	}
 
@@ -1666,12 +1562,8 @@ export class AgentSession {
 		let expandedText = this._expandSkillCommand(text);
 		expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
 
-		this._registerAttachments(attachments);
-		const attachmentReferences = attachments?.map((record) => ({
-			type: "attachment" as const,
-			attachmentId: record.id,
-		}));
-		this._persistAttachmentReferences(attachmentReferences);
+		const attachmentReferences = this._attachmentCoordinator.register(attachments);
+		this._attachmentCoordinator.persistReferences(attachmentReferences);
 		await this._queueFollowUp(expandedText, images, attachmentReferences);
 	}
 
@@ -1898,13 +1790,9 @@ export class AgentSession {
 		);
 		return analyzeConversationPortability({
 			messages,
-			attachments: this._attachmentRecords.values(),
+			attachments: this._attachmentCoordinator.listRecords(),
 			target,
-			sourceAvailable: (attachment) =>
-				resolveAttachmentSourceRuntime(attachment, {
-					now: Date.now(),
-					pathExists: existsSync,
-				}).status === "available",
+			sourceAvailable: (attachment) => this._attachmentCoordinator.isSourceAvailable(attachment),
 		});
 	}
 
@@ -3428,7 +3316,7 @@ export class AgentSession {
 				// No summary, navigating to non-root
 				this.sessionManager.branch(newLeafId);
 			}
-			this._syncAttachmentsFromActiveBranch();
+			this._attachmentCoordinator.syncFromActiveBranch();
 
 			// Attach label to target entry when not summarizing (no summary entry to label)
 			if (label && !summaryText) {
