@@ -2,13 +2,25 @@
 
 ## [Unreleased]
 
+## [0.84.1-hifi.1] - 2026-08-13
+
+### Added
+
+- Added provider-neutral attachment records, message sidecars, source policies, and provider-native conversation parts without changing existing text/image message shapes ([#1](https://github.com/NomaDamas/Hi-Fi-Pi/issues/1), [#24](https://github.com/NomaDamas/Hi-Fi-Pi/issues/24), [#26](https://github.com/NomaDamas/Hi-Fi-Pi/issues/26)).
+- Added capability-checked native file lowering for OpenAI Responses, Anthropic Messages, Gemini, Azure OpenAI, Vertex AI, Amazon Bedrock, and xAI, including supported inline, URL, provider-file, and cloud sources ([#2](https://github.com/NomaDamas/Hi-Fi-Pi/issues/2), [#25](https://github.com/NomaDamas/Hi-Fi-Pi/issues/25), [#32](https://github.com/NomaDamas/Hi-Fi-Pi/issues/32), [#33](https://github.com/NomaDamas/Hi-Fi-Pi/issues/33), [#34](https://github.com/NomaDamas/Hi-Fi-Pi/issues/34), [#35](https://github.com/NomaDamas/Hi-Fi-Pi/issues/35), [#36](https://github.com/NomaDamas/Hi-Fi-Pi/issues/36), [#37](https://github.com/NomaDamas/Hi-Fi-Pi/issues/37), [#38](https://github.com/NomaDamas/Hi-Fi-Pi/issues/38)).
+- Added provider file upload, deduplication, lifecycle, remote-reference validation, and native tool-result attachment lowering ([#12](https://github.com/NomaDamas/Hi-Fi-Pi/issues/12), [#24](https://github.com/NomaDamas/Hi-Fi-Pi/issues/24), [#25](https://github.com/NomaDamas/Hi-Fi-Pi/issues/25)).
+- Added a versioned provider backend SDK, namespaced provider options, portability reports, and sanitized native request traces ([#10](https://github.com/NomaDamas/Hi-Fi-Pi/issues/10), [#27](https://github.com/NomaDamas/Hi-Fi-Pi/issues/27), [#28](https://github.com/NomaDamas/Hi-Fi-Pi/issues/28), [#30](https://github.com/NomaDamas/Hi-Fi-Pi/issues/30)).
+- Added preservation of vendor-native reasoning, citation, continuation, server-tool, container, cached-content, and thought-signature state for supported official transports ([#26](https://github.com/NomaDamas/Hi-Fi-Pi/issues/26), [#32](https://github.com/NomaDamas/Hi-Fi-Pi/issues/32), [#33](https://github.com/NomaDamas/Hi-Fi-Pi/issues/33), [#34](https://github.com/NomaDamas/Hi-Fi-Pi/issues/34)).
+
 ### Changed
 
+- Changed generated provider model data to use a pinned offline snapshot with an explicit refresh workflow, keeping CI deterministic while preserving reviewed catalog updates.
 - Changed OpenAI Responses deferred tool loading to prefer message-anchored `additional_tools` where supported while retaining tool-search and top-level fallbacks ([#7709](https://github.com/earendil-works/pi/issues/7709)).
 - Replaced the Mistral SDK transport with a native Chat Completions HTTP stream, eliminating its generated client and schema runtime overhead.
 
 ### Fixed
 
+- Fixed native Gemini attachments to preserve attachment identity without injecting synthetic prompt text, and kept native capabilities disabled for unknown compatible endpoints until explicitly opted in ([#9](https://github.com/NomaDamas/Hi-Fi-Pi/issues/9), [#11](https://github.com/NomaDamas/Hi-Fi-Pi/issues/11)).
 - Fixed upstream request buffer limit failures to trigger automatic assistant retries.
 - Fixed OpenAI Responses function and custom tool calls to preserve namespaces during streaming, proxying, and replay ([#7709](https://github.com/earendil-works/pi/issues/7709)).
 - Fixed built-in and custom DeepSeek API models to send output limits through the supported `max_tokens` field.

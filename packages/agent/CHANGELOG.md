@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [0.84.1-hifi.1] - 2026-08-13
+
+### Added
+
+- Added request-scoped attachment registries to the agent loop so provider backends can consume native files without changing legacy text and image messages ([#4](https://github.com/NomaDamas/Hi-Fi-Pi/issues/4)).
+- Added attachment-aware tool results and provider-option state propagation across agent turns ([#12](https://github.com/NomaDamas/Hi-Fi-Pi/issues/12), [#29](https://github.com/NomaDamas/Hi-Fi-Pi/issues/29)).
+
 ### Fixed
 
 - Fixed `streamProxy()` dropping finalized tool-call metadata such as OpenAI Responses namespaces ([#7709](https://github.com/earendil-works/pi/issues/7709)).
