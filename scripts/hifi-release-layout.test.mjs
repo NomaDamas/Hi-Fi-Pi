@@ -18,6 +18,7 @@ test("release layout installs only the branded executable", () => {
 test("release workflow privately distributes SDK artifacts without upstream npm publishing", () => {
 	assert.match(workflow, /hifi-pi-sdk-manifest\.json/);
 	assert.match(workflow, /scripts\/smoke-hifi-sdk\.mjs/);
+	assert.match(workflow, /scripts\/smoke-pi-ecosystem\.mjs/);
 	assert.match(workflow, /npm run test:pi-compat/);
 	assert.match(workflow, /test:native-input-contracts/);
 	assert.doesNotMatch(workflow, /publish-npm:/);
@@ -26,6 +27,7 @@ test("release workflow privately distributes SDK artifacts without upstream npm 
 	assert.doesNotMatch(workflow, /hifi-pi-storage-sqlite-node/);
 	assert.match(workflow, /hifi-pi-sdk-install-package-lock\.json/);
 	assert.doesNotMatch(workflow, /hifi-pi-coding-agent-install-package/);
+	assert.match(workflow, /--repo "\$\{GITHUB_REPOSITORY\}"/);
 });
 
 test("release package identities are fork-owned while source compatibility aliases remain canonical", () => {
