@@ -1,9 +1,11 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AttachmentRecord, ProviderTraceEvent } from "@earendil-works/pi-ai";
+import type { Api, AttachmentRecord, Model, ProviderTraceEvent } from "@earendil-works/pi-ai";
 import { Container } from "@earendil-works/pi-tui";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { resolveAttachmentForPresentation } from "../../../src/core/attachments/attachment-presentation.ts";
+import type { ResolvedAttachment } from "../../../src/core/attachments/attachment-runtime.ts";
 import { BUILTIN_SLASH_COMMANDS } from "../../../src/core/slash-commands.ts";
 import { UserMessageComponent } from "../../../src/modes/interactive/components/user-message.ts";
 import { InteractiveMode } from "../../../src/modes/interactive/interactive-mode.ts";
@@ -16,11 +18,6 @@ const pdf: AttachmentRecord = {
 	mediaType: "application/pdf",
 	sizeBytes: 2_457_600,
 	source: { type: "path", path: "/missing/paper.pdf" },
-	metadata: {
-		preparationStatus: "ready",
-		nativeMethod: "OpenAI input_file",
-		sourceAvailable: false,
-	},
 };
 
 const spreadsheet: AttachmentRecord = {
@@ -28,22 +25,34 @@ const spreadsheet: AttachmentRecord = {
 	filename: "results.xlsx",
 	mediaType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 	sizeBytes: 32_768,
-	source: { type: "path", path: "/missing/results.xlsx" },
-	metadata: { preparationStatus: "uploading" },
+	source: { type: "base64", data: "UEsDBA==" },
 };
+
+const openAiModel = {
+	provider: "openai",
+	id: "gpt-test",
+	api: "openai-responses",
+	baseUrl: "https://api.openai.com/v1",
+	input: ["text", "image"],
+} as Model<Api>;
 
 type AttachmentAwareUserMessageComponent = new (
 	text: string,
 	markdownTheme?: ConstructorParameters<typeof UserMessageComponent>[1],
 	outputPad?: number,
 	markdownTransformers?: ConstructorParameters<typeof UserMessageComponent>[3],
-	attachments?: AttachmentRecord[],
+	attachments?: ResolvedAttachment[],
 	unresolvedAttachmentIds?: string[],
 ) => UserMessageComponent;
 
 function renderAttachmentMessage(attachments: AttachmentRecord[], width = 80): string[] {
 	const Component = UserMessageComponent as AttachmentAwareUserMessageComponent;
-	return new Component("Analyze these files", undefined, 1, undefined, attachments).render(width).map(stripAnsi);
+	const resolved = attachments.map((attachment) =>
+		resolveAttachmentForPresentation(attachment, openAiModel, {
+			pathExists: () => false,
+		}),
+	);
+	return new Component("Analyze these files", undefined, 1, undefined, resolved).render(width).map(stripAnsi);
 }
 
 type SubmitContext = {
@@ -132,13 +141,7 @@ function createCommandContext(attachments: AttachmentRecord[] = [pdf]): CommandC
 			getAttachment: (id) => attachments.find((attachment) => attachment.id === id),
 		},
 		session: {
-			model: {
-				provider: "openai",
-				id: "gpt-test",
-				api: "openai-responses",
-				baseUrl: "https://api.openai.com/v1",
-				input: ["text", "image"],
-			},
+			model: openAiModel,
 			getProviderTraceEvents: () => [],
 		},
 		chatContainer: new Container(),
@@ -161,8 +164,8 @@ describe("Issue 6 attachment TUI contracts", () => {
 		expect(output).toContain("paper.pdf");
 		expect(output).toContain("application/pdf");
 		expect(output).toContain("2.3 MB");
-		expect(output).toContain("OpenAI input_file");
-		expect(output).toContain("ready");
+		expect(output).toContain("input_file");
+		expect(output).toContain("source missing");
 	});
 
 	it("shows a missing local source without attempting to read the file", () => {
@@ -179,7 +182,7 @@ describe("Issue 6 attachment TUI contracts", () => {
 		expect(lines.every((line) => line.length <= 28)).toBe(true);
 		expect(output).toContain("paper.pdf");
 		expect(output).toContain("results.xlsx");
-		expect(output).toContain("uploading");
+		expect(output).toContain("ready");
 	});
 
 	it("keeps legacy user message rendering byte-for-byte unchanged", () => {
@@ -416,6 +419,27 @@ describe("Issue 6 attachment TUI contracts", () => {
 		expect(renderCommandOutput(context)).toContain("No attachments in this session.");
 	});
 
+	it("reports transport state as unresolved when no model is selected", () => {
+		const context = createCommandContext([spreadsheet]);
+		context.session.model = undefined;
+		const prototype = InteractiveMode.prototype as unknown as InteractiveModePrivate;
+		prototype.handleFilesCommand.call(context);
+
+		expect(renderCommandOutput(context)).toContain("results.xlsx");
+		expect(renderCommandOutput(context)).toContain("unresolved");
+		expect(renderCommandOutput(context)).not.toContain(" · ready");
+	});
+
+	it("warns when capabilities are requested without a selected model", () => {
+		const context = createCommandContext();
+		context.session.model = undefined;
+		const prototype = InteractiveMode.prototype as unknown as InteractiveModePrivate;
+		prototype.handleCapabilitiesCommand.call(context);
+
+		expect(context.showWarning).toHaveBeenCalledWith("No model is currently selected.");
+		expect(context.chatContainer.children).toHaveLength(0);
+	});
+
 	it("inspects an attachment by index and shows missing source state", () => {
 		const context = createCommandContext([spreadsheet, pdf]);
 		const prototype = InteractiveMode.prototype as unknown as InteractiveModePrivate;
@@ -451,6 +475,27 @@ describe("Issue 6 attachment TUI contracts", () => {
 		expect(output).toContain("inline base64 (data redacted)");
 		expect(output).not.toContain("SECRET");
 		expect(output).toContain("Remote (openai): file_123");
+	});
+
+	it("distinguishes an expired remote from a reusable upload", () => {
+		const remoteAttachment: AttachmentRecord = {
+			...spreadsheet,
+			remotes: {
+				openai: {
+					provider: "openai",
+					api: "openai-responses",
+					fileId: "file_123",
+					uploadedAt: 1,
+					expiresAt: 1,
+				},
+			},
+		};
+		const context = createCommandContext([remoteAttachment]);
+		const prototype = InteractiveMode.prototype as unknown as InteractiveModePrivate;
+		prototype.handleFileCommand.call(context, "1");
+
+		expect(renderCommandOutput(context)).toContain("Status: ready");
+		expect(renderCommandOutput(context)).not.toContain("Status: uploaded");
 	});
 
 	it("shows a transport-derived unsupported status and reason", () => {
