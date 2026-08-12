@@ -7,6 +7,7 @@ const workflow = readFileSync(new URL("../.github/workflows/build-binaries.yml",
 const binaryScript = readFileSync(new URL("./build-binaries.sh", import.meta.url), "utf8");
 const sourceScript = readFileSync(new URL("./create-source-archive.sh", import.meta.url), "utf8");
 const sdkPackScript = readFileSync(new URL("./pack-hifi-sdk.mjs", import.meta.url), "utf8");
+const packageIdentityScript = readFileSync(new URL("./hifi-package-identity.mjs", import.meta.url), "utf8");
 const upstreamBaseline = JSON.parse(readFileSync(new URL("../.github/upstream-baseline.json", import.meta.url), "utf8"));
 
 test("release layout installs only the branded executable", () => {
@@ -21,6 +22,16 @@ test("release workflow privately distributes SDK artifacts without upstream npm 
 	assert.match(workflow, /test:native-input-contracts/);
 	assert.doesNotMatch(workflow, /publish-npm:/);
 	assert.doesNotMatch(workflow, /node scripts\/publish\.mjs/);
+	assert.match(workflow, /hifi-pi-session-backend-sqlite-node-\$\{VERSION\}\.tgz/);
+	assert.doesNotMatch(workflow, /hifi-pi-storage-sqlite-node/);
+	assert.match(workflow, /hifi-pi-sdk-install-package-lock\.json/);
+	assert.doesNotMatch(workflow, /hifi-pi-coding-agent-install-package/);
+});
+
+test("release package identities are fork-owned while source compatibility aliases remain canonical", () => {
+	assert.match(packageIdentityScript, /@nomadamas/);
+	assert.match(packageIdentityScript, /@earendil-works\/pi-coding-agent/);
+	assert.match(sdkPackScript, /prepareHifiPackageStage/);
 });
 
 test("standalone and source artifacts use the Hi-Fi identity", () => {
