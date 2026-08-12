@@ -3,7 +3,6 @@ import { getSelfUpdateUrl } from "../config.ts";
 import { fetchWithRetry } from "./management-http.ts";
 import { getPiUserAgent } from "./pi-user-agent.ts";
 
-const LATEST_VERSION_URL = "https://pi.dev/api/latest-version";
 const DEFAULT_VERSION_CHECK_TIMEOUT_MS = 10000;
 
 export interface LatestPiRelease {
@@ -54,9 +53,11 @@ export async function getLatestPiRelease(
 	options: { timeoutMs?: number; retry?: boolean; url?: string } = {},
 ): Promise<LatestPiRelease | undefined> {
 	if (process.env.PI_OFFLINE) return undefined;
+	const url = options.url ?? getSelfUpdateUrl();
+	if (!url) return undefined;
 
 	const response = await fetchWithRetry(
-		options.url ?? LATEST_VERSION_URL,
+		url,
 		{
 			headers: {
 				"User-Agent": getPiUserAgent(currentVersion),

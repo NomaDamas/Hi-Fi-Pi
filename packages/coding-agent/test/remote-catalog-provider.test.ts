@@ -43,7 +43,7 @@ function testProvider(localGeneratedAt?: number) {
 				},
 			},
 		}),
-		"https://pi.dev",
+		"https://catalog.example.test",
 		localGeneratedAt,
 	);
 }
@@ -72,6 +72,37 @@ async function refreshProvider(
 afterEach(() => vi.restoreAllMocks());
 
 describe("remote catalog provider", () => {
+	it("keeps static and cached models without network traffic when no catalog endpoint is configured", async () => {
+		const fetchSpy = vi.spyOn(globalThis, "fetch");
+		const provider = withRemoteCatalog(
+			createProvider({
+				id: "test-provider",
+				auth: { apiKey: { name: "Test", resolve: async () => ({ auth: {} }) } },
+				models: [model("static")],
+				api: {
+					stream: () => {
+						throw new Error("not used");
+					},
+					streamSimple: () => {
+						throw new Error("not used");
+					},
+				},
+			}),
+			undefined,
+		);
+		const store = new InMemoryModelsStore();
+		await store.write(provider.id, {
+			models: [model("cached")],
+			checkedAt: Date.now(),
+			lastModified: Date.now(),
+		});
+
+		await refreshProvider(provider, store, { force: true });
+
+		expect(fetchSpy).not.toHaveBeenCalled();
+		expect(provider.getModels().map((entry) => entry.id)).toEqual(["static", "cached"]);
+	});
+
 	it("parses keyed catalogs, sends version headers, observes the refresh TTL, and supports forced refreshes", async () => {
 		const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(
 			async () =>
@@ -90,7 +121,7 @@ describe("remote catalog provider", () => {
 		expect((await store.read(provider.id))?.models.map((entry) => entry.id)).toEqual(["dynamic"]);
 		expect(fetchSpy).toHaveBeenCalledTimes(2);
 		expect(fetchSpy.mock.calls[0]?.[1]?.headers).toMatchObject({
-			"User-Agent": expect.stringContaining(`pi/${VERSION}`),
+			"User-Agent": expect.stringContaining(`hifi-pi/${VERSION}`),
 		});
 	});
 
@@ -229,7 +260,7 @@ describe("remote catalog provider", () => {
 		expect((await store.read(provider.id))?.models.map((entry) => entry.id)).toEqual(["newer"]);
 	});
 
-	it("treats unimplemented pi.dev catalog routes as an unavailable overlay", async () => {
+	it("treats unimplemented catalog routes as an unavailable overlay", async () => {
 		vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("not implemented", { status: 501 }));
 		const provider = testProvider();
 		const store = new InMemoryModelsStore();

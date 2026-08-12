@@ -55,6 +55,8 @@ import {
 	getAuthPath,
 	getDebugLogPath,
 	getDocsPath,
+	getInstallTelemetryUrl,
+	getShareViewerBaseUrl,
 	getShareViewerUrl,
 	VERSION,
 } from "../../config.ts";
@@ -1254,8 +1256,14 @@ export class InteractiveMode {
 		if (!isInstallTelemetryEnabled(this.settingsManager)) {
 			return;
 		}
+		const telemetryUrl = getInstallTelemetryUrl();
+		if (!telemetryUrl) {
+			return;
+		}
 
-		void fetch(`https://pi.dev/api/report-install?version=${encodeURIComponent(version)}`, {
+		const url = new URL(telemetryUrl);
+		url.searchParams.set("version", version);
+		void fetch(url, {
 			headers: {
 				"User-Agent": getPiUserAgent(version),
 			},
@@ -4262,7 +4270,7 @@ export class InteractiveMode {
 	showNewVersionNotification(release: LatestPiRelease): void {
 		const action = theme.fg("accent", `${APP_NAME} update`);
 		const updateInstruction = theme.fg("muted", `New version ${release.version} is available. Run `) + action;
-		const changelogUrl = "https://pi.dev/changelog";
+		const changelogUrl = "https://github.com/NomaDamas/Hi-Fi-Pi/blob/main/packages/coding-agent/CHANGELOG.md";
 		const changelogLink = getCapabilities().hyperlinks
 			? hyperlink(theme.fg("accent", changelogUrl), changelogUrl)
 			: theme.fg("accent", changelogUrl);
@@ -6056,6 +6064,13 @@ export class InteractiveMode {
 	}
 
 	private async handleShareCommand(): Promise<void> {
+		if (!getShareViewerBaseUrl()) {
+			this.showError(
+				"Session sharing is disabled until HIFI_PI_SHARE_VIEWER_URL points to a trusted session viewer.",
+			);
+			return;
+		}
+
 		// Check if gh is available and logged in
 		try {
 			const authResult = spawnSync("gh", ["auth", "status"], { encoding: "utf-8" });

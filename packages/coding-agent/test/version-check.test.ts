@@ -14,7 +14,7 @@ const originalHiFiSelfUpdateUrl = process.env.HIFI_PI_SELF_UPDATE_URL;
 
 beforeEach(() => {
 	allowNetwork();
-	process.env.HIFI_PI_SELF_UPDATE_URL = "https://pi.dev/api/latest-version";
+	process.env.HIFI_PI_SELF_UPDATE_URL = "https://releases.example.test/latest-version";
 });
 
 afterEach(() => {
@@ -49,16 +49,16 @@ describe("version checks", () => {
 		await expect(checkForNewPiVersion("1.2.2")).resolves.toEqual({ version: "1.2.3" });
 	});
 
-	it("uses the pi.dev version check api with a pi user agent", async () => {
+	it("uses the configured version endpoint with a Hi-Fi Pi user agent", async () => {
 		const fetchMock = vi.fn(async () => Response.json({ version: "1.2.4" }));
 		vi.stubGlobal("fetch", fetchMock);
 
 		await expect(getLatestPiVersion("1.2.3")).resolves.toBe("1.2.4");
 		expect(fetchMock).toHaveBeenCalledWith(
-			"https://pi.dev/api/latest-version",
+			"https://releases.example.test/latest-version",
 			expect.objectContaining({
 				headers: expect.objectContaining({
-					"User-Agent": expect.stringMatching(/^pi\/1\.2\.3 /),
+					"User-Agent": expect.stringMatching(/^hifi-pi\/1\.2\.3 /),
 					accept: "application/json",
 				}),
 			}),
