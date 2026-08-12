@@ -65,6 +65,7 @@ import { stripFrontmatter } from "../utils/frontmatter.ts";
 import { resolvePath } from "../utils/paths.ts";
 import { sleep } from "../utils/sleep.ts";
 import { normalizeToolResultImages } from "../utils/tool-result-images.ts";
+import { resolveAttachmentSourceRuntime } from "./attachments/attachment-runtime.ts";
 import { formatNoApiKeyFoundMessage, formatNoModelSelectedMessage } from "./auth-guidance.ts";
 import { type BashResult, executeBashWithOperations } from "./bash-executor.ts";
 import {
@@ -1900,8 +1901,10 @@ export class AgentSession {
 			attachments: this._attachmentRecords.values(),
 			target,
 			sourceAvailable: (attachment) =>
-				attachment.metadata?.sourceAvailable !== false &&
-				(attachment.source.type !== "path" || existsSync(attachment.source.path)),
+				resolveAttachmentSourceRuntime(attachment, {
+					now: Date.now(),
+					pathExists: existsSync,
+				}).status === "available",
 		});
 	}
 
