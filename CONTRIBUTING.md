@@ -1,102 +1,51 @@
-# Contributing to pi
+# Contributing to Hi-Fi Pi
 
-This guide exists to save both sides time.
+Hi-Fi Pi is a provider-aware fork of Pi. Contributions must preserve the Pi extension, skill, prompt, theme, package, session, SDK, and RPC compatibility contracts unless a breaking change is explicitly approved.
 
-## Philosophy
+## Design boundary
 
-First things first: **pi's core is minimal**.
+Keep the common agent experience small. Provider-specific capability belongs behind typed provider modules and additive sidecars, not in legacy text/image message shapes or TUI components.
 
-If your feature does not belong in the core, it should be an extension. PRs that bloat the core will likely be rejected.
+Before changing core behavior, state:
 
-Pi's core exists to be minimal and to be extensible so that it can be influenced and manipulated by extensions.  Even hook points for extensions however should be well considered and discussed to avoid adding unmaintainable bloat and complex interactions.
+- the concrete capability or bug;
+- the existing Pi compatibility contract affected;
+- the legacy fast path that must remain unchanged;
+- the scenario tests proving both the new behavior and legacy equivalence.
 
-## The One Rule
+Do not silently convert unsupported native inputs. An unsupported provider/model/transport combination must fail before the network request with an actionable error.
 
-**You must understand your code.** If you cannot explain what your changes do and how they interact with the rest of the system, your PR will be closed.
+## Contribution gate
 
-Using AI to write code is fine. Submitting AI-generated slop without understanding it is not.
+Use the repository issue and pull-request templates. Keep reports concrete and reproducible. AI-assisted issues, comments, and reviews must be clearly labeled as AI-generated.
 
-If you use an agent, run it from the `pi` root directory so it picks up `AGENTS.md` automatically. Your agent must follow the rules and guidelines in that file.
+Pull requests require review attestation pinned to the current head SHA. A new commit invalidates earlier approval. Follow the instructions reported by the Review Gate check.
 
-## Contribution Gate
+## Before submitting a pull request
 
-All issues and PRs from new contributors are auto-closed by default.
-
-Issues submitted Friday through Sunday are not guaranteed to be reviewed.  If something is urgent, ask on Discord: https://discord.com/invite/3cU7Bz4UPx
-
-Maintainers review auto-closed issues daily and reopen worthwhile ones. Issues that do not meet the quality bar below will not be reopened or receive a reply.
-
-Approval happens through maintainer replies on issues:
-
-- `lgtmi`: your future issues will not be auto-closed
-- `lgtm`: your future issues and PRs will not be auto-closed
-
-The command must be at the start of the reply (optionally after one or more `@username` mentions) or at the end. `lgtmi` does not grant rights to submit PRs. Only `lgtm` grants rights to submit PRs.
-
-## Quality Bar For Issues
-
-If you open an issue, you must use one of the two GitHub issue templates.
-
-If you open an issue, keep it short, concrete, and worth reading.
-
-- Keep it concise. If it does not fit on one screen, it is too long.
-- Write in your own voice (do not use an LLM to generate text, if you must, follow up with a clearly AI labeled comment).
-- State the bug or request clearly.
-- Explain why it matters.
-- If you want to implement the change yourself, say so.
-
-If the issue is real and written well, a maintainer may reopen it or reply with `lgtmi` or `lgtm` in the command position described above.
-
-## Blocking
-
-If you ignore this document twice, or if you spam the tracker with agent-generated issues, your GitHub account will be permanently blocked.
-
-If you send a large volume of issues through automation, your GitHub account will be permanently blocked. No taksies backsies.
-
-## Before Submitting a PR
-
-Do not open a PR unless you have already been approved by a maintainer using `lgtm` in the command position described above.
-
-Before submitting a PR:
+Read [AGENTS.md](AGENTS.md), then run:
 
 ```bash
 npm run check
 ./test.sh
 ```
 
-Both must pass.
+Add focused regression tests for changed behavior. Provider API tests must use fixtures or faux transports unless a live opt-in contract explicitly requires credentials. Never commit credentials, personal endpoint configuration, or generated secrets.
 
-Do not edit `CHANGELOG.md`. Changelog entries are added by maintainers.
+Dependency and lockfile changes require explicit review. Direct dependencies remain exactly pinned, and generated shrinkwrap/install-lock artifacts must be regenerated atomically with package identity changes.
 
-If you are adding a new provider to `packages/ai`, see `AGENTS.md` for required tests.
+## Pull-request scope
 
-## Questions?
+Prefer independently reviewable slices:
 
-Ask on [Discord](https://discord.com/invite/nKXTsAcmbT).
+- shared IR and contracts;
+- provider lowering;
+- coding-agent input/session propagation;
+- presentation;
+- distribution and release changes.
 
-## FAQ
+Do not combine an externally visible release with unrelated code changes. Release publication is reviewed and executed only after its prerequisite changes are on `main`.
 
-### Why are new issues and PRs auto-closed?
+## Attribution
 
-pi receives more issues than the maintainers can responsibly review in real time. Many reports do not meet the quality bar in this guide or do not follow CONTRIBUTING.md. Some are slung at the repository mindlessly via an agent instead of being reviewed and shaped by the person submitting them. Auto-closing creates a buffer so maintainers can review the tracker on their own schedule and reopen the issues that meet the quality bar.
-
-### Why are weekend issues lower priority?
-
-We triage the tracker during working hours. That means more issues can accumulate over the weekend. Anything submitted Friday through Sunday may be missed or given lower priority in the Monday review queue. If a problem is urgent, ask on Discord and include the short version, a repro, and the relevant logs.
-
-### Why do some issues get no reply?
-
-A reply is maintenance work too. Low-signal issues, unclear reports, duplicates, and issues that do not follow this guide may be closed without discussion. This keeps time available for reproducible bugs, thoughtful requests, and contributors who have done the work to make their report actionable.
-
-### Why not let AI triage everything?
-
-AI can help group duplicates, summarize reports, and spot missing information. It is not trusted to make final maintainer decisions. Polished AI-generated issues can still be wrong, misleading, or expensive to investigate. Human review remains the final gate.
-
-### Is this hostile to contributors?
-
-No. It is a guardrail against burnout and tracker spam. Short, concrete, reproducible issues are welcome. Thoughtful contributions are welcome. Automated slop, entitlement, and large volumes of low-effort reports are not.
-
-## Where can I learn about plans?
-
-Earendil uses RFCs to discuss larger changes.  Not all of them are public, but
-quite a few are.  They can be found at [rfc.earendil.com](https://rfc.earendil.com/keyword/pi/).
+Hi-Fi Pi is an unofficial fork of [pi](https://github.com/earendil-works/pi) by Mario Zechner under the MIT License. Preserve [LICENSE](LICENSE) and upstream history when porting changes.
