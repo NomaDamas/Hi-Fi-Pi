@@ -40,7 +40,7 @@ hifi-pi --version
 Download the archive for your platform from the [GitHub Releases](https://github.com/NomaDamas/Hi-Fi-Pi/releases) page and verify it against `SHA256SUMS`. For Apple Silicon macOS:
 
 ```bash
-VERSION="v0.84.2-hifi.1"
+VERSION="v0.84.1-hifi.1"
 curl -LO "https://github.com/NomaDamas/Hi-Fi-Pi/releases/download/${VERSION}/hifi-pi-darwin-arm64.tar.gz"
 curl -LO "https://github.com/NomaDamas/Hi-Fi-Pi/releases/download/${VERSION}/SHA256SUMS"
 grep 'hifi-pi-darwin-arm64.tar.gz' SHA256SUMS | shasum -a 256 -c -

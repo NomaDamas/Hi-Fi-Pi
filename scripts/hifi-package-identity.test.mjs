@@ -5,6 +5,7 @@ import {
 	HIFI_PACKAGES,
 	rewriteHifiModuleSpecifiers,
 } from "./hifi-package-identity.mjs";
+import { readFileSync } from "node:fs";
 
 test("every published Hi-Fi artifact has a fork-owned package name", () => {
 	assert.equal(HIFI_PACKAGES.length, 9);
@@ -55,4 +56,9 @@ test("artifact lowering rewrites runtime imports but preserves canonical extensi
 	assert.match(rewritten, /require\.resolve\("@nomadamas\/hifi-pi-coding-agent\/rpc-entry"\)/);
 	assert.match(rewritten, /resolveWorkspaceOrImport\("ai\/dist\/compat\.js", "@nomadamas\/hifi-pi-ai\/compat"\)/);
 	assert.match(rewritten, /"@earendil-works\/pi-ai": bundled/);
+});
+
+test("the live ecosystem npm script has a useful default SDK directory", () => {
+	const source = readFileSync(new URL("./smoke-pi-ecosystem.mjs", import.meta.url), "utf8");
+	assert.match(source, /release-assets\/sdk/);
 });
