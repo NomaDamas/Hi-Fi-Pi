@@ -1297,7 +1297,7 @@
 			? ` · ${attachment.sizeBytes.toLocaleString()} bytes`
 			: '';
 		  const sourceType = attachment.source?.type || 'unknown';
-		  const sourceStatus = attachment.metadata?.sourceAvailable === false ? 'missing' : 'available';
+		  const sourceStatus = entry.attachmentRuntimeState?.source?.status || 'unknown';
 		  const remoteProviders = attachment.remotes ? Object.keys(attachment.remotes) : [];
 		  return `<div class="attachment-entry" id="${entryDomId}">${tsHtml}
 			<div class="attachment-name">${escapeHtml(attachment.filename || attachment.id || 'Attachment')}</div>

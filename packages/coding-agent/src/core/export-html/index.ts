@@ -10,8 +10,13 @@ import { basename, join } from "path";
 import { APP_NAME, getExportTemplateDir } from "../../config.ts";
 import { getResolvedThemeColors, getThemeExportColors } from "../../modes/interactive/theme/theme.ts";
 import { normalizePath, resolvePath } from "../../utils/paths.ts";
+import { resolveAttachmentForPresentation } from "../attachments/attachment-presentation.ts";
+import {
+	type AttachmentRuntimeState,
+	stripLegacyAttachmentRuntimeMetadata,
+} from "../attachments/attachment-runtime.ts";
 import type { ToolDefinition } from "../extensions/types.ts";
-import type { SessionEntry } from "../session-manager.ts";
+import type { AttachmentEntry, SessionEntry } from "../session-manager.ts";
 import { SessionManager } from "../session-manager.ts";
 
 /**
@@ -135,13 +140,17 @@ function generateThemeVars(themeName?: string): string {
 
 interface SessionData {
 	header: ReturnType<SessionManager["getHeader"]>;
-	entries: ReturnType<SessionManager["getEntries"]>;
+	entries: HtmlExportSessionEntry[];
 	leafId: string | null;
 	systemPrompt?: string;
 	tools?: Array<Pick<ToolDefinition, "name" | "description" | "parameters">>;
 	/** Pre-rendered HTML for custom tool calls/results, keyed by tool call ID */
 	renderedTools?: Record<string, RenderedToolHtml>;
 }
+
+export type HtmlExportSessionEntry =
+	| Exclude<SessionEntry, AttachmentEntry>
+	| (AttachmentEntry & { attachmentRuntimeState: AttachmentRuntimeState });
 
 function sanitizeExportAttachmentSource(source: AttachmentSource): AttachmentSource {
 	if (source.type !== "url" && source.type !== "cloud-uri") return structuredClone(source);
@@ -215,23 +224,19 @@ export function sanitizeSessionEntriesForExport(entries: SessionEntry[]): Sessio
 			return entry;
 		}
 		if (entry.type !== "attachment") return entry;
-		const sourceAvailable =
-			entry.attachment.source.type === "base64"
-				? false
-				: entry.attachment.source.type !== "path" || existsSync(entry.attachment.source.path);
+		const attachment = stripLegacyAttachmentRuntimeMetadata(entry.attachment);
 		return {
 			...entry,
 			attachment: {
-				...entry.attachment,
-				metadata: { ...entry.attachment.metadata, sourceAvailable },
+				...attachment,
 				source:
-					entry.attachment.source.type === "base64"
+					attachment.source.type === "base64"
 						? { type: "base64" as const, data: "[omitted from export]" }
-						: sanitizeExportAttachmentSource(entry.attachment.source),
-				...(entry.attachment.remotes
+						: sanitizeExportAttachmentSource(attachment.source),
+				...(attachment.remotes
 					? {
 							remotes: Object.fromEntries(
-								Object.entries(entry.attachment.remotes).map(([key, remote]) => [
+								Object.entries(attachment.remotes).map(([key, remote]) => [
 									key,
 									remote.uri
 										? {
@@ -250,6 +255,14 @@ export function sanitizeSessionEntriesForExport(entries: SessionEntry[]): Sessio
 					: {}),
 			},
 		};
+	});
+}
+
+export function resolveSessionEntriesForHtmlExport(entries: SessionEntry[]): HtmlExportSessionEntry[] {
+	return sanitizeSessionEntriesForExport(entries).map((entry) => {
+		if (entry.type !== "attachment") return entry;
+		const resolved = resolveAttachmentForPresentation(entry.attachment, undefined, { redactInlineData: true });
+		return { ...entry, attachmentRuntimeState: resolved.state };
 	});
 }
 
@@ -378,7 +391,7 @@ export async function exportSessionToHtml(
 
 	const sessionData: SessionData = {
 		header: sm.getHeader(),
-		entries: sanitizeSessionEntriesForExport(entries),
+		entries: resolveSessionEntriesForHtmlExport(entries),
 		leafId: sm.getLeafId(),
 		systemPrompt: state?.systemPrompt,
 		tools: state?.tools?.map((t) => ({ name: t.name, description: t.description, parameters: t.parameters })),
@@ -413,7 +426,7 @@ export async function exportFromFile(inputPath: string, options?: ExportOptions 
 
 	const sessionData: SessionData = {
 		header: sm.getHeader(),
-		entries: sanitizeSessionEntriesForExport(sm.getEntries()),
+		entries: resolveSessionEntriesForHtmlExport(sm.getEntries()),
 		leafId: sm.getLeafId(),
 		systemPrompt: undefined,
 		tools: undefined,

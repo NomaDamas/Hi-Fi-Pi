@@ -323,6 +323,13 @@ describe("Issue 5 attachment persistence", () => {
 			...attachment,
 			id: "att_inline",
 			source: { type: "base64", data: "JVBERi0xLjQ=" },
+			metadata: {
+				vendorTag: "preserved",
+				sourceAvailable: true,
+				preparationStatus: "ready",
+				nativeMethod: "stale-method",
+				unsupportedReason: "stale-reason",
+			},
 		};
 		manager.appendAttachment(inlineAttachment);
 		manager.appendMessage(userMessage("Analyze", inlineAttachment.id));
@@ -341,8 +348,12 @@ describe("Issue 5 attachment persistence", () => {
 				id: inlineAttachment.id,
 				filename: inlineAttachment.filename,
 				mediaType: inlineAttachment.mediaType,
-				metadata: { sourceAvailable: false },
+				metadata: { vendorTag: "preserved" },
 				source: { type: "base64", data: "[omitted from export]" },
+			},
+			attachmentRuntimeState: {
+				source: { status: "redacted", reason: "Inline data is omitted." },
+				transport: { status: "unresolved" },
 			},
 		});
 		expect(html).toContain("attachment-entry");
@@ -355,6 +366,7 @@ describe("Issue 5 attachment persistence", () => {
 			...attachment,
 			id: "att_json_inline",
 			source: { type: "base64", data: "JVBERi0xLjQ=SECRET" },
+			metadata: { vendorTag: "preserved", preparationStatus: "ready", sourceAvailable: true },
 		};
 		manager.appendAttachment(inlineAttachment);
 		manager.appendMessage(userMessage("Analyze", inlineAttachment.id));
@@ -368,6 +380,10 @@ describe("Issue 5 attachment persistence", () => {
 
 		expect(exported).toContain("[omitted from export]");
 		expect(exported).not.toContain("JVBERi0xLjQ=SECRET");
+		expect(exported).toContain('"vendorTag":"preserved"');
+		expect(exported).not.toContain("preparationStatus");
+		expect(exported).not.toContain("sourceAvailable");
+		expect(exported).not.toContain("attachmentRuntimeState");
 	});
 
 	it("redacts signed remote URLs from JSONL exports", async () => {

@@ -1,5 +1,6 @@
-import type { AttachmentRecord } from "@earendil-works/pi-ai/compat";
 import { Box, Container, Markdown, type MarkdownTheme, Text } from "@earendil-works/pi-tui";
+import { formatAttachmentSize, formatAttachmentStatus } from "../../../core/attachments/attachment-presentation.ts";
+import type { ResolvedAttachment } from "../../../core/attachments/attachment-runtime.ts";
 import type { MarkdownTransformer } from "../../../core/extensions/types.ts";
 import { getMarkdownTheme, theme } from "../theme/theme.ts";
 import { createMarkdownTransform } from "./markdown-transform.ts";
@@ -16,7 +17,7 @@ export class UserMessageComponent extends Container {
 	private markdownTheme: MarkdownTheme;
 	private outputPad: number;
 	private markdownTransformers: readonly MarkdownTransformer[];
-	private attachments: readonly AttachmentRecord[];
+	private attachments: readonly ResolvedAttachment[];
 	private unresolvedAttachmentIds: readonly string[];
 
 	constructor(
@@ -24,7 +25,7 @@ export class UserMessageComponent extends Container {
 		markdownTheme: MarkdownTheme = getMarkdownTheme(),
 		outputPad = 1,
 		markdownTransformers: readonly MarkdownTransformer[] = [],
-		attachments: readonly AttachmentRecord[] = [],
+		attachments: readonly ResolvedAttachment[] = [],
 		unresolvedAttachmentIds: readonly string[] = [],
 	) {
 		super();
@@ -70,15 +71,13 @@ export class UserMessageComponent extends Container {
 	private formatAttachments(): string {
 		const lines = [theme.bold("Attachments")];
 		for (const attachment of this.attachments) {
-			const details = [attachment.mediaType];
-			if (attachment.sizeBytes !== undefined) details.push(formatAttachmentSize(attachment.sizeBytes));
-			const nativeMethod = stringMetadata(attachment, "nativeMethod");
-			const status = stringMetadata(attachment, "preparationStatus");
-			if (nativeMethod) details.push(nativeMethod);
-			if (status) details.push(status);
-			lines.push(`• ${attachment.filename} · ${details.join(" · ")}`);
-			if (attachment.metadata?.sourceAvailable === false && attachment.source.type === "path") {
-				lines.push(`  source missing · ${attachment.source.path}`);
+			const details = [attachment.record.mediaType];
+			if (attachment.record.sizeBytes !== undefined) details.push(formatAttachmentSize(attachment.record.sizeBytes));
+			if (attachment.state.transport.nativeMethod) details.push(attachment.state.transport.nativeMethod);
+			details.push(formatAttachmentStatus(attachment));
+			lines.push(`• ${attachment.record.filename} · ${details.join(" · ")}`);
+			if (attachment.state.source.status === "missing" && attachment.record.source.type === "path") {
+				lines.push(`  source missing · ${attachment.record.source.path}`);
 			}
 		}
 		for (const attachmentId of this.unresolvedAttachmentIds) {
@@ -97,16 +96,4 @@ export class UserMessageComponent extends Container {
 		lines[lines.length - 1] = OSC133_ZONE_END + OSC133_ZONE_FINAL + lines[lines.length - 1];
 		return lines;
 	}
-}
-
-function stringMetadata(attachment: AttachmentRecord, key: string): string | undefined {
-	const value = attachment.metadata?.[key];
-	return typeof value === "string" && value.length > 0 ? value : undefined;
-}
-
-export function formatAttachmentSize(bytes: number): string {
-	if (bytes < 1024) return `${bytes} B`;
-	if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KB`;
-	if (bytes < 1024 ** 3) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
-	return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
 }

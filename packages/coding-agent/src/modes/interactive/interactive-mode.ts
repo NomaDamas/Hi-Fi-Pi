@@ -9,19 +9,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AuthEvent, AuthPrompt } from "@earendil-works/pi-ai";
-import {
-	getNativeAttachmentCapability,
-	getNativeInputCapabilityManifest,
-	PortabilityConfirmationRequiredError,
-} from "@earendil-works/pi-ai";
-import type {
-	Api,
-	AssistantMessage,
-	AttachmentRecord,
-	ImageContent,
-	Message,
-	Model,
-} from "@earendil-works/pi-ai/compat";
+import { PortabilityConfirmationRequiredError } from "@earendil-works/pi-ai";
+import type { AssistantMessage, AttachmentRecord, ImageContent, Message, Model } from "@earendil-works/pi-ai/compat";
 import type {
 	AutocompleteItem,
 	AutocompleteProvider,
@@ -71,6 +60,12 @@ import {
 } from "../../config.ts";
 import { type AgentSession, type AgentSessionEvent, parseSkillBlock } from "../../core/agent-session.ts";
 import { type AgentSessionRuntime, SessionImportFileNotFoundError } from "../../core/agent-session-runtime.ts";
+import {
+	formatAttachmentCapabilities,
+	formatAttachmentDetails,
+	formatAttachmentList,
+	resolveAttachmentReferencesForPresentation,
+} from "../../core/attachments/attachment-presentation.ts";
 import {
 	CACHE_TTL_MS,
 	type CacheMiss,
@@ -162,7 +157,7 @@ import {
 import { ToolExecutionComponent } from "./components/tool-execution.ts";
 import { TreeSelectorComponent } from "./components/tree-selector.ts";
 import { TrustSelectorComponent } from "./components/trust-selector.ts";
-import { formatAttachmentSize, UserMessageComponent } from "./components/user-message.ts";
+import { UserMessageComponent } from "./components/user-message.ts";
 import { UserMessageSelectorComponent } from "./components/user-message-selector.ts";
 import { editInExternalEditor } from "./external-editor.ts";
 import { getModelSearchText } from "./model-search.ts";
@@ -397,69 +392,10 @@ export function createInteractiveTuiReference(getTui: () => TUI): TUI {
 	});
 }
 
-function attachmentMetadataString(attachment: AttachmentRecord, key: string): string | undefined {
-	const value = attachment.metadata?.[key];
-	return typeof value === "string" && value.length > 0 ? value : undefined;
-}
-
-function formatAttachmentSource(attachment: AttachmentRecord): string {
-	switch (attachment.source.type) {
-		case "path":
-			return fs.existsSync(attachment.source.path) ? attachment.source.path : `${attachment.source.path} (missing)`;
-		case "url":
-			return attachment.source.url;
-		case "cloud-uri":
-			return attachment.source.uri;
-		case "base64":
-			return "inline base64 (data redacted)";
-		case "provider-file":
-			return `${attachment.source.provider} file ${attachment.source.fileId}`;
-	}
-}
-
-function prepareAttachmentForDisplay(attachment: AttachmentRecord, model: Model<Api> | undefined): AttachmentRecord {
-	const sourceAvailable =
-		attachment.metadata?.sourceAvailable !== false &&
-		(attachment.source.type !== "path" || fs.existsSync(attachment.source.path));
-	if (!model) {
-		return {
-			...attachment,
-			metadata: {
-				...attachment.metadata,
-				sourceAvailable,
-				preparationStatus: sourceAvailable ? "ready" : "source missing",
-			},
-		};
-	}
-	const matchingRemote = Object.values(attachment.remotes ?? {}).some(
-		(remote) =>
-			remote.provider === model.provider &&
-			remote.api === model.api &&
-			(remote.expiresAt === undefined || remote.expiresAt > Date.now()),
-	);
-	const capability = getNativeAttachmentCapability(
-		model,
-		attachment.mediaType,
-		matchingRemote ? "provider-file" : attachment.source.type,
-	);
-	const preparationStatus = !sourceAvailable
-		? "source missing"
-		: !capability.supported
-			? "unsupported"
-			: matchingRemote || attachment.source.type === "provider-file"
-				? "uploaded"
-				: "ready";
-	return {
-		...attachment,
-		metadata: {
-			...attachment.metadata,
-			sourceAvailable,
-			preparationStatus,
-			...(capability.method ? { nativeMethod: capability.method } : {}),
-			...(capability.reason ? { unsupportedReason: capability.reason } : {}),
-		},
-	};
-}
+const attachmentPresentationStyle = {
+	bold: (text: string) => theme.bold(text),
+	dim: (text: string) => theme.fg("dim", text),
+};
 
 export class InteractiveMode {
 	private runtimeHost: AgentSessionRuntime;
@@ -3685,13 +3621,12 @@ export class InteractiveMode {
 			}
 			case "user": {
 				const textContent = this.getUserMessageText(message);
-				const unresolvedAttachmentIds: string[] = [];
-				const attachmentRecords = (message.attachments ?? []).flatMap((reference) => {
-					const attachment = this.sessionManager.getAttachment(reference.attachmentId);
-					if (!attachment) unresolvedAttachmentIds.push(reference.attachmentId);
-					return attachment ? [prepareAttachmentForDisplay(attachment, this.session.model)] : [];
-				});
-				if (textContent || attachmentRecords.length > 0 || unresolvedAttachmentIds.length > 0) {
+				const { attachments, unresolvedAttachmentIds } = resolveAttachmentReferencesForPresentation(
+					message.attachments,
+					(id) => this.sessionManager.getAttachment(id),
+					this.session.model,
+				);
+				if (textContent || attachments.length > 0 || unresolvedAttachmentIds.length > 0) {
 					if (this.chatContainer.children.length > 0) {
 						this.chatContainer.addChild(new Spacer(1));
 					}
@@ -3705,14 +3640,14 @@ export class InteractiveMode {
 						component.setExpanded(this.toolOutputExpanded);
 						this.chatContainer.addChild(component);
 						// Render user message separately if present
-						if (skillBlock.userMessage || attachmentRecords.length > 0 || unresolvedAttachmentIds.length > 0) {
+						if (skillBlock.userMessage || attachments.length > 0 || unresolvedAttachmentIds.length > 0) {
 							this.chatContainer.addChild(new Spacer(1));
 							const userComponent = new UserMessageComponent(
 								skillBlock.userMessage ?? "",
 								this.getMarkdownThemeWithSettings(),
 								this.outputPad,
 								this.getMarkdownTransformers(),
-								attachmentRecords,
+								attachments,
 								unresolvedAttachmentIds,
 							);
 							this.chatContainer.addChild(userComponent);
@@ -3723,7 +3658,7 @@ export class InteractiveMode {
 							this.getMarkdownThemeWithSettings(),
 							this.outputPad,
 							this.getMarkdownTransformers(),
-							attachmentRecords,
+							attachments,
 							unresolvedAttachmentIds,
 						);
 						this.chatContainer.addChild(userComponent);
@@ -6321,89 +6256,40 @@ export class InteractiveMode {
 	}
 
 	private handleFilesCommand(): void {
-		const attachments = this.sessionManager.getAttachments();
-		let info = theme.bold("Session Attachments");
-		if (attachments.length === 0) {
-			info += `\n\n${theme.fg("dim", "No attachments in this session.")}`;
-		} else {
-			for (const [index, storedAttachment] of attachments.entries()) {
-				const attachment = prepareAttachmentForDisplay(storedAttachment, this.session.model);
-				const size =
-					attachment.sizeBytes === undefined ? "size unknown" : formatAttachmentSize(attachment.sizeBytes);
-				const status = attachmentMetadataString(attachment, "preparationStatus");
-				info += `\n${index + 1}. ${attachment.filename} · ${attachment.mediaType} · ${size}`;
-				if (status) info += ` · ${status}`;
-			}
-		}
+		const info = formatAttachmentList(
+			this.sessionManager.getAttachments(),
+			this.session.model,
+			attachmentPresentationStyle,
+		);
 		this.chatContainer.addChild(new Spacer(1));
 		this.chatContainer.addChild(new Text(info, 1, 0));
 		this.ui.requestRender();
 	}
 
 	private handleFileCommand(selector: string): void {
-		const attachments = this.sessionManager.getAttachments();
-		const numericIndex = /^\d+$/.test(selector) ? Number(selector) - 1 : -1;
-		const attachment = numericIndex >= 0 ? attachments[numericIndex] : this.sessionManager.getAttachment(selector);
-		if (!selector || !attachment) {
-			this.showWarning(selector ? `Attachment not found: ${selector}` : "Usage: /file <number-or-id>");
+		const result = formatAttachmentDetails(
+			this.sessionManager.getAttachments(),
+			selector,
+			this.session.model,
+			attachmentPresentationStyle,
+		);
+		if (result.type === "warning") {
+			this.showWarning(result.message);
 			return;
 		}
-
-		const displayAttachment = prepareAttachmentForDisplay(attachment, this.session.model);
-		const source = formatAttachmentSource(displayAttachment);
-		let info = `${theme.bold("Attachment Details")}\n\n`;
-		info += `${theme.fg("dim", "Filename:")} ${attachment.filename}\n`;
-		info += `${theme.fg("dim", "ID:")} ${attachment.id}\n`;
-		info += `${theme.fg("dim", "MIME:")} ${attachment.mediaType}\n`;
-		if (attachment.sizeBytes !== undefined) {
-			info += `${theme.fg("dim", "Size:")} ${formatAttachmentSize(attachment.sizeBytes)}\n`;
-		}
-		info += `${theme.fg("dim", "Source:")} ${source}`;
-		const nativeMethod = attachmentMetadataString(displayAttachment, "nativeMethod");
-		const status = attachmentMetadataString(displayAttachment, "preparationStatus");
-		const unsupportedReason = attachmentMetadataString(displayAttachment, "unsupportedReason");
-		if (nativeMethod) info += `\n${theme.fg("dim", "Native method:")} ${nativeMethod}`;
-		if (status) info += `\n${theme.fg("dim", "Status:")} ${status}`;
-		if (unsupportedReason) info += `\n${theme.fg("dim", "Reason:")} ${unsupportedReason}`;
-		for (const [provider, remote] of Object.entries(attachment.remotes ?? {})) {
-			info += `\n${theme.fg("dim", `Remote (${provider}):`)} ${remote.fileId}${remote.uri ? ` · ${remote.uri}` : ""}`;
-		}
 		this.chatContainer.addChild(new Spacer(1));
-		this.chatContainer.addChild(new Text(info, 1, 0));
+		this.chatContainer.addChild(new Text(result.text, 1, 0));
 		this.ui.requestRender();
 	}
 
 	private handleCapabilitiesCommand(): void {
-		const model = this.session.model;
-		if (!model) {
-			this.showWarning("No model is currently selected.");
+		const result = formatAttachmentCapabilities(this.session.model, attachmentPresentationStyle);
+		if (result.type === "warning") {
+			this.showWarning(result.message);
 			return;
 		}
-		let info = `${theme.bold("Current Input Capabilities")}\n\n`;
-		info += `${theme.fg("dim", "Provider:")} ${model.provider}\n`;
-		info += `${theme.fg("dim", "Model:")} ${model.id}\n`;
-		info += `${theme.fg("dim", "Transport:")} ${model.api}\n`;
-		info += `${theme.fg("dim", "Declared inputs:")} ${model.input.join(", ") || "none"}\n`;
-		const manifest = getNativeInputCapabilityManifest(model);
-		if (manifest) {
-			info += `${theme.fg("dim", "Endpoint profile:")} ${manifest.endpointProfile}\n`;
-			for (const capability of manifest.capabilities) {
-				const transports = capability.sources
-					.map((source) => `${source}→${capability.wireKinds[source] ?? "undeclared"}`)
-					.join(", ");
-				info += `${theme.fg("dim", `Native ${capability.id}:`)} ${
-					capability.supported ? "supported" : `unsupported${capability.reason ? ` · ${capability.reason}` : ""}`
-				} · ${capability.mediaTypes.join(", ")} · ${transports} · ${capability.provenance}\n`;
-			}
-		} else {
-			info += `${theme.fg("dim", "Endpoint profile:")} none (explicit opt-in required)\n`;
-		}
-		const pdfCapability = getNativeAttachmentCapability(model, "application/pdf");
-		info += `${theme.fg("dim", "PDF:")} ${
-			pdfCapability.supported ? `native via ${pdfCapability.method}` : `unsupported · ${pdfCapability.reason}`
-		}`;
 		this.chatContainer.addChild(new Spacer(1));
-		this.chatContainer.addChild(new Text(info, 1, 0));
+		this.chatContainer.addChild(new Text(result.text, 1, 0));
 		this.ui.requestRender();
 	}
 
