@@ -22,10 +22,7 @@ const EXPECTED_REGISTRATIONS = new Map([
 ]);
 
 const sdkIndex = process.argv.indexOf("--sdk-dir");
-if (sdkIndex === -1 || !process.argv[sdkIndex + 1]) {
-	throw new Error("Usage: node scripts/smoke-pi-ecosystem.mjs --sdk-dir <release-sdk-directory>");
-}
-const sdkDir = resolve(process.argv[sdkIndex + 1]);
+const sdkDir = resolve(sdkIndex === -1 ? "release-assets/sdk" : process.argv[sdkIndex + 1]);
 const manifest = JSON.parse(readFileSync(join(sdkDir, "hifi-pi-sdk-manifest.json"), "utf8"));
 const root = mkdtempSync(join(tmpdir(), "hifi-pi-ecosystem-smoke-"));
 

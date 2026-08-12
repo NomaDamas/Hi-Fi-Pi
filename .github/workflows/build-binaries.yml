@@ -242,12 +242,16 @@ jobs:
             gh release delete "${RELEASE_TAG}" --yes
           fi
 
-          gh release create "${RELEASE_TAG}" \
-            --verify-tag \
-            --draft \
-            --title "${RELEASE_TAG}" \
-            --notes-file RELEASE_NOTES.md \
-            "${release_assets[@]}"
+          release_flags=(
+            --verify-tag
+            --draft
+            --title "${RELEASE_TAG}"
+            --notes-file RELEASE_NOTES.md
+          )
+          if [[ "${VERSION}" == *-* ]]; then
+            release_flags+=(--prerelease)
+          fi
+          gh release create "${RELEASE_TAG}" "${release_flags[@]}" "${release_assets[@]}"
 
           expected_asset_names="$(printf '%s\n' "${release_assets[@]}" | sort)"
           actual_asset_names="$(gh release view "${RELEASE_TAG}" --json assets --jq '.assets[].name' | sort)"

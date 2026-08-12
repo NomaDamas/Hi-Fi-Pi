@@ -34,6 +34,12 @@ try {
 	if (JSON.stringify(installLock).includes("@earendil-works/")) {
 		throw new Error("Hi-Fi SDK install lock contains an upstream package identity");
 	}
+	const codingAgentArtifact = manifest.artifacts.find((artifact) => artifact.id === "coding-agent");
+	if (!codingAgentArtifact) throw new Error("Hi-Fi SDK manifest is missing the coding-agent artifact");
+	const tarListing = run("tar", ["-tzf", join(sdkDir, codingAgentArtifact.filename)], { cwd: root });
+	if (tarListing.split("\n").includes("package/npm-shrinkwrap.json")) {
+		throw new Error("Hi-Fi coding-agent artifact contains the canonical source shrinkwrap");
+	}
 
 	const binDir = join(root, "node_modules", ".bin");
 	const executable = process.platform === "win32" ? join(binDir, "hifi-pi.cmd") : join(binDir, "hifi-pi");

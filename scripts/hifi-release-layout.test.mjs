@@ -44,6 +44,11 @@ test("standalone and source artifacts use the Hi-Fi identity", () => {
 	assert.match(sourceScript, /\.github\/upstream-baseline\.json/);
 });
 
+test("hyphenated release tags are published as GitHub prereleases", () => {
+	assert.match(workflow, /if \[\[ "\$\{VERSION\}" == \*-\* \]\]/);
+	assert.match(workflow, /release_flags\+\=\(--prerelease\)/);
+});
+
 test("fork release metadata records the reviewed upstream base", () => {
 	assert.match(upstreamBaseline.baseCommit, /^[0-9a-f]{40}$/);
 	assert.match(sdkPackScript, /upstreamBaseCommit: upstreamBaseline\.baseCommit/);

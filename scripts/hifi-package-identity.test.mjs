@@ -3,8 +3,12 @@ import test from "node:test";
 import {
 	createHifiPackageManifest,
 	HIFI_PACKAGES,
+	prepareHifiPackageStage,
 	rewriteHifiModuleSpecifiers,
 } from "./hifi-package-identity.mjs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 test("every published Hi-Fi artifact has a fork-owned package name", () => {
 	assert.equal(HIFI_PACKAGES.length, 9);
@@ -55,4 +59,33 @@ test("artifact lowering rewrites runtime imports but preserves canonical extensi
 	assert.match(rewritten, /require\.resolve\("@nomadamas\/hifi-pi-coding-agent\/rpc-entry"\)/);
 	assert.match(rewritten, /resolveWorkspaceOrImport\("ai\/dist\/compat\.js", "@nomadamas\/hifi-pi-ai\/compat"\)/);
 	assert.match(rewritten, /"@earendil-works\/pi-ai": bundled/);
+});
+
+test("the live ecosystem npm script has a useful default SDK directory", () => {
+	const source = readFileSync(new URL("./smoke-pi-ecosystem.mjs", import.meta.url), "utf8");
+	assert.match(source, /release-assets\/sdk/);
+});
+
+test("artifact staging removes the canonical source shrinkwrap", () => {
+	const root = mkdtempSync(join(tmpdir(), "hifi-package-stage-test-"));
+	const packageDir = join(root, "packages", "coding-agent");
+	const stageDir = join(root, "stage");
+	try {
+		mkdirSync(join(packageDir, "dist"), { recursive: true });
+		writeFileSync(join(root, "LICENSE"), "test license\n");
+		writeFileSync(
+			join(packageDir, "package.json"),
+			`${JSON.stringify({ name: "@earendil-works/pi-coding-agent", version: "1.2.3" })}\n`,
+		);
+		writeFileSync(join(packageDir, "npm-shrinkwrap.json"), '{"name":"@earendil-works/pi-coding-agent"}\n');
+		writeFileSync(join(packageDir, "dist", "index.js"), "export {};\n");
+
+		prepareHifiPackageStage({ packageDir, stageDir, repoRoot: root, revision: "a".repeat(40) });
+
+		assert.equal(existsSync(join(stageDir, "npm-shrinkwrap.json")), false);
+		const stagedManifest = JSON.parse(readFileSync(join(stageDir, "package.json"), "utf8"));
+		assert.equal(stagedManifest.name, "@nomadamas/hifi-pi-coding-agent");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
 });
