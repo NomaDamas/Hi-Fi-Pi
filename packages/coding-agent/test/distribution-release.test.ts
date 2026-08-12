@@ -4,7 +4,11 @@ import { fileURLToPath } from "url";
 import { describe, expect, it } from "vitest";
 import {
 	APP_NAME,
+	getInstallTelemetryUrl,
+	getModelCatalogUrl,
 	getSelfUpdateUrl,
+	getShareViewerBaseUrl,
+	getShareViewerUrl,
 	getVersionString,
 	SELF_UPDATE_ENABLED,
 	SOURCE_REVISION,
@@ -34,6 +38,45 @@ describe("Hi-Fi Pi release identity", () => {
 		expect(getSelfUpdateUrl({ HIFI_PI_SELF_UPDATE_URL: "https://releases.example.test/latest" })).toBe(
 			"https://releases.example.test/latest",
 		);
+	});
+
+	it("requires explicit fork-owned service URLs", () => {
+		expect(getShareViewerBaseUrl({})).toBeUndefined();
+		expect(() => getShareViewerUrl("gist-123", {})).toThrow(/not configured/i);
+		expect(getModelCatalogUrl({})).toBeUndefined();
+		expect(getInstallTelemetryUrl({})).toBeUndefined();
+
+		expect(getShareViewerUrl("gist-123", { HIFI_PI_SHARE_VIEWER_URL: "https://share.example.test/session/" })).toBe(
+			"https://share.example.test/session/#gist-123",
+		);
+		expect(getShareViewerUrl("gist-123", { PI_SHARE_VIEWER_URL: "https://legacy.example.test/session/" })).toBe(
+			"https://legacy.example.test/session/#gist-123",
+		);
+		expect(getModelCatalogUrl({ HIFI_PI_MODEL_CATALOG_URL: "https://catalog.example.test/" })).toBe(
+			"https://catalog.example.test/",
+		);
+		expect(getInstallTelemetryUrl({ HIFI_PI_TELEMETRY_URL: "https://telemetry.example.test/report" })).toBe(
+			"https://telemetry.example.test/report",
+		);
+	});
+
+	it("does not advertise upstream branding or services in public READMEs", () => {
+		for (const readme of [join(packageDir, "../../README.md"), join(packageDir, "README.md")]) {
+			const contents = readFileSync(readme, "utf8");
+			expect(contents).not.toContain("pi.dev");
+			expect(contents).not.toContain("discord.com/invite/3cU7Bz4UPx");
+			expect(contents).not.toContain("logo-auto.svg");
+		}
+	});
+
+	it("preflights /share before checking GitHub auth or creating a gist", () => {
+		const source = readFileSync(join(packageDir, "src/modes/interactive/interactive-mode.ts"), "utf8");
+		const handlerStart = source.indexOf("private async handleShareCommand()");
+		const handlerEnd = source.indexOf("private async handleCopyCommand", handlerStart);
+		const handler = source.slice(handlerStart, handlerEnd);
+		expect(handler.indexOf("getShareViewerBaseUrl()")).toBeGreaterThanOrEqual(0);
+		expect(handler.indexOf("getShareViewerBaseUrl()")).toBeLessThan(handler.indexOf('spawnSync("gh"'));
+		expect(handler.indexOf("getShareViewerBaseUrl()")).toBeLessThan(handler.indexOf('spawn("gh"'));
 	});
 
 	it("names standalone artifacts without claiming the pi executable", () => {

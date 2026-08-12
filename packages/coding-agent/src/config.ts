@@ -506,7 +506,17 @@ export const SELF_UPDATE_ENABLED = pkg.piConfig?.selfUpdate ?? true;
 export function getSelfUpdateUrl(env: NodeJS.ProcessEnv = process.env): string | undefined {
 	const configured = env.HIFI_PI_SELF_UPDATE_URL?.trim();
 	if (configured) return configured;
-	return SELF_UPDATE_ENABLED ? "https://pi.dev/api/latest-version" : undefined;
+	return undefined;
+}
+
+/** Return the explicitly configured Hi-Fi model catalog endpoint. */
+export function getModelCatalogUrl(env: NodeJS.ProcessEnv = process.env): string | undefined {
+	return env.HIFI_PI_MODEL_CATALOG_URL?.trim() || undefined;
+}
+
+/** Return the explicitly configured Hi-Fi install telemetry endpoint. */
+export function getInstallTelemetryUrl(env: NodeJS.ProcessEnv = process.env): string | undefined {
+	return env.HIFI_PI_TELEMETRY_URL?.trim() || undefined;
 }
 
 function getSourceRevision(): string {
@@ -536,11 +546,19 @@ export function expandTildePath(path: string): string {
 	return normalizePath(path);
 }
 
-const DEFAULT_SHARE_VIEWER_URL = "https://pi.dev/session/";
+/** Resolve the configured session viewer without silently using an upstream service. */
+export function getShareViewerBaseUrl(env: NodeJS.ProcessEnv = process.env): string | undefined {
+	return env.HIFI_PI_SHARE_VIEWER_URL?.trim() || env.PI_SHARE_VIEWER_URL?.trim() || undefined;
+}
 
 /** Get the share viewer URL for a gist ID */
-export function getShareViewerUrl(gistId: string): string {
-	const baseUrl = process.env.PI_SHARE_VIEWER_URL || DEFAULT_SHARE_VIEWER_URL;
+export function getShareViewerUrl(gistId: string, env: NodeJS.ProcessEnv = process.env): string {
+	const baseUrl = getShareViewerBaseUrl(env);
+	if (!baseUrl) {
+		throw new Error(
+			"Session sharing is not configured. Set HIFI_PI_SHARE_VIEWER_URL to a trusted session viewer before using /share.",
+		);
+	}
 	return `${baseUrl}#${gistId}`;
 }
 

@@ -1,38 +1,14 @@
-<p align="center">
-  <a href="https://pi.dev">
-    <img alt="pi logo" src="https://pi.dev/logo-auto.svg" width="128">
-  </a>
-</p>
-<p align="center">
-  <a href="https://discord.com/invite/3cU7Bz4UPx"><img alt="Discord" src="https://img.shields.io/badge/discord-community-5865F2?style=flat-square&logo=discord&logoColor=white" /></a>
-  <a href="https://www.npmjs.com/package/@earendil-works/pi-coding-agent"><img alt="npm" src="https://img.shields.io/npm/v/@earendil-works/pi-coding-agent?style=flat-square" /></a>
-</p>
+# Hi-Fi Pi Coding Agent
 
-> New issues and PRs from new contributors are auto-closed by default. Maintainers review auto-closed issues daily. See [CONTRIBUTING.md](../../CONTRIBUTING.md).
+Hi-Fi Pi is a provider-aware, Pi-compatible terminal agent. It preserves Pi's extension, skill, prompt, theme, and package ecosystem while allowing provider-native attachments and controls to pass through the runtime without being reduced to text and images.
 
----
+This is an unofficial fork of [pi](https://github.com/earendil-works/pi) by Mario Zechner (MIT) and is not affiliated with earendil-works. Canonical Pi package imports remain supported for extension compatibility.
 
-Pi is a minimal terminal coding harness. Adapt pi to your workflows, not the other way around, without having to fork and modify pi internals. Extend it with TypeScript [Extensions](#extensions), [Skills](#skills), [Prompt Templates](#prompt-templates), and [Themes](#themes). Put your extensions, skills, prompt templates, and themes in [Pi Packages](#pi-packages) and share them with others via npm or git.
+Extend Hi-Fi Pi with TypeScript [Extensions](#extensions), [Skills](#skills), [Prompt Templates](#prompt-templates), and [Themes](#themes). Bundle those resources as [Pi Packages](#pi-packages) and share them through npm or git.
 
-Pi ships with powerful defaults but skips features like sub agents and plan mode. Instead, you can ask pi to build what you want or install a third party pi package that matches your workflow.
+Hi-Fi Pi inherits Pi's focused defaults and extension-first design. Features such as sub-agents and plan mode remain extension concerns.
 
-Pi runs in four modes: interactive, print or JSON, RPC for process integration, and an SDK for embedding in your own apps.
-
-## Share your OSS coding agent sessions
-
-If you use pi for open source work, please share your coding agent sessions.
-
-Public OSS session data helps improve models, prompts, tools, and evaluations using real development workflows.
-
-For the full explanation, see [this post on X](https://x.com/badlogicgames/status/2037811643774652911).
-
-To publish sessions, use [`badlogic/pi-share-hf`](https://github.com/badlogic/pi-share-hf). Read its README.md for setup instructions. All you need is a Hugging Face account, the Hugging Face CLI, and `pi-share-hf`.
-
-You can also watch [this video](https://x.com/badlogicgames/status/2041151967695634619), where I show how I publish my `pi-mono` sessions.
-
-I regularly publish my own `pi-mono` work sessions here:
-
-- [badlogicgames/pi-mono on Hugging Face](https://huggingface.co/datasets/badlogicgames/pi-mono)
+Hi-Fi Pi runs in four modes: interactive, print or JSON, RPC for process integration, and an SDK for embedding in your own apps.
 
 ## Table of Contents
 
@@ -62,33 +38,30 @@ I regularly publish my own `pi-mono` work sessions here:
 
 ## Quick Start
 
-```bash
-npm install -g --ignore-scripts @earendil-works/pi-coding-agent
-```
-
-`--ignore-scripts` disables dependency lifecycle scripts during install. Pi does not require install scripts for normal npm installs.
-
-Installer alternative:
+Until a verified release is available, install from a checkout:
 
 ```bash
-curl -fsSL https://pi.dev/install.sh | sh
+npm install --ignore-scripts
+npm run build
+npm install -g --ignore-scripts ./packages/coding-agent
+hifi-pi --version
 ```
 
 Authenticate with an API key:
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
-pi
+hifi-pi
 ```
 
 Or use your existing subscription:
 
 ```bash
-pi
+hifi-pi
 /login  # Then select provider
 ```
 
-Then just talk to pi. By default, pi gives the model four tools: `read`, `write`, `edit`, and `bash`. The model uses these to fulfill your requests. Add capabilities via [skills](#skills), [prompt templates](#prompt-templates), [extensions](#extensions), or [pi packages](#pi-packages).
+Then talk to Hi-Fi Pi. By default, the model receives the `read`, `write`, `edit`, and `bash` tools. Add capabilities with [skills](#skills), [prompt templates](#prompt-templates), [extensions](#extensions), or [Pi packages](#pi-packages).
 
 **Platform notes:** [Windows](docs/windows.md) | [Termux (Android)](docs/termux.md) | [tmux](docs/tmux.md) | [Terminal setup](docs/terminal-setup.md) | [Shell aliases](docs/shell-aliases.md)
 
@@ -245,12 +218,12 @@ Sessions are stored as JSONL files with a tree structure. Each entry has an `id`
 Sessions auto-save to `~/.pi/agent/sessions/` organized by working directory.
 
 ```bash
-pi -c                  # Continue most recent session
-pi -r                  # Browse and select from past sessions
-pi --no-session        # Ephemeral mode (don't save)
-pi --name "my task"    # Set session display name at startup
-pi --session <path|id> # Use specific session file or ID
-pi --fork <path|id>    # Fork specific session file or ID into a new session
+hifi-pi -c                  # Continue most recent session
+hifi-pi -r                  # Browse and select from past sessions
+hifi-pi --no-session        # Ephemeral mode (don't save)
+hifi-pi --name "my task"    # Set session display name at startup
+hifi-pi --session <path|id> # Use specific session file or ID
+hifi-pi --fork <path|id>    # Fork specific session file or ID into a new session
 ```
 
 Use `/session` in interactive mode to see the current session ID before reusing it with `--session <id>` or `--fork <id>`.
@@ -309,14 +282,11 @@ If no extension or saved decision applies, `defaultProjectTrust` controls the fa
 
 Use `/trust` in interactive mode to save a project trust decision for future sessions, including trust for the immediate parent folder. It writes `~/.pi/agent/trust.json` only; the current session is not reloaded, so restart pi for changes to take effect.
 
-### Telemetry and update checks
+### External services and update checks
 
-Pi has two separate startup features:
+Hi-Fi Pi does not configure a self-update channel, remote model catalog, install telemetry endpoint, or session viewer by default. Fork-owned endpoints can be enabled explicitly with `HIFI_PI_SELF_UPDATE_URL`, `HIFI_PI_MODEL_CATALOG_URL`, `HIFI_PI_TELEMETRY_URL`, and `HIFI_PI_SHARE_VIEWER_URL`.
 
-- **Update check:** fetches `https://pi.dev/api/latest-version` to check whether a newer Pi version exists. Disable it with `PI_SKIP_VERSION_CHECK=1`. Disabling update checks only turns off this check.
-- **Install/update telemetry:** after first install or a changelog-detected update, sends an anonymous version ping to `https://pi.dev/api/report-install`. This setting also controls optional provider attribution headers for OpenRouter, Cloudflare, and direct NVIDIA NIM requests. Opt out by setting `enableInstallTelemetry` to `false` in `settings.json`, or by setting `PI_TELEMETRY=0`. This does not disable update checks; Pi may still contact `pi.dev` for the latest version unless update checks are disabled or offline mode is enabled.
-
-Use `--offline` or `PI_OFFLINE=1` to disable all startup network operations described here, including update checks, package update checks, and install/update telemetry.
+`PI_TELEMETRY` still controls whether an explicitly configured telemetry endpoint and provider attribution headers are enabled. Use `--offline` or `PI_OFFLINE=1` to disable startup network operations, including package and model catalog refreshes.
 
 ---
 
@@ -414,27 +384,27 @@ Bundle and share extensions, skills, prompts, and themes via npm or git. Find pa
 > **Security:** Pi packages run with full system access. Extensions execute arbitrary code, and skills can instruct the model to perform any action including running executables. Review source code before installing third-party packages.
 
 ```bash
-pi install npm:@foo/pi-tools
-pi install npm:@foo/pi-tools@1.2.3      # pinned version
-pi install git:github.com/user/repo
-pi install git:github.com/user/repo@v1  # tag or commit
-pi install git:git@github.com:user/repo
-pi install git:git@github.com:user/repo@v1  # tag or commit
-pi install https://github.com/user/repo
-pi install https://github.com/user/repo@v1      # tag or commit
-pi install ssh://git@github.com/user/repo
-pi install ssh://git@github.com/user/repo@v1    # tag or commit
-pi remove npm:@foo/pi-tools
-pi uninstall npm:@foo/pi-tools          # alias for remove
-pi list
-pi update                               # update pi only
-pi update --all                         # update pi and packages
-pi update --extensions                  # update packages only
-pi update --models                      # refresh model catalogs only
-pi update --self                        # update pi only
-pi update --self --force                # reinstall pi even if current
-pi update npm:@foo/pi-tools             # update one package
-pi config                               # enable/disable extensions, skills, prompts, themes
+hifi-pi install npm:@foo/pi-tools
+hifi-pi install npm:@foo/pi-tools@1.2.3      # pinned version
+hifi-pi install git:github.com/user/repo
+hifi-pi install git:github.com/user/repo@v1  # tag or commit
+hifi-pi install git:git@github.com:user/repo
+hifi-pi install git:git@github.com:user/repo@v1  # tag or commit
+hifi-pi install https://github.com/user/repo
+hifi-pi install https://github.com/user/repo@v1      # tag or commit
+hifi-pi install ssh://git@github.com/user/repo
+hifi-pi install ssh://git@github.com/user/repo@v1    # tag or commit
+hifi-pi remove npm:@foo/pi-tools
+hifi-pi uninstall npm:@foo/pi-tools          # alias for remove
+hifi-pi list
+hifi-pi update                               # update pi only
+hifi-pi update --all                         # update pi and packages
+hifi-pi update --extensions                  # update packages only
+hifi-pi update --models                      # refresh model catalogs only
+hifi-pi update --self                        # update pi only
+hifi-pi update --self --force                # reinstall pi even if current
+hifi-pi update npm:@foo/pi-tools             # update one package
+hifi-pi config                               # enable/disable extensions, skills, prompts, themes
 ```
 
 Packages install to `~/.pi/agent/git/` (git) or `~/.pi/agent/npm/` (npm). Use `-l` for project-local installs (`.pi/git/`, `.pi/npm/`). Git `@ref` values are pinned tags or commits; pinned packages are skipped by `pi update --extensions` and `pi update --all`, so use `pi install git:host/user/repo@new-ref` to move an existing package to a new ref. Git packages install dependencies with `npm install --omit=dev` by default, so runtime deps must be listed under `dependencies`; when `npmCommand` is configured, git packages use plain `install` for compatibility with wrappers. If you use a Node version manager and want package installs to reuse a stable npm context, set `npmCommand` in `settings.json`, for example `["mise", "exec", "node@20", "--", "npm"]`.
@@ -454,7 +424,7 @@ Create a package by adding a `pi` key to `package.json`:
 }
 ```
 
-Without a `pi` manifest, pi auto-discovers from conventional directories (`extensions/`, `skills/`, `prompts/`, `themes/`).
+Without a `pi` manifest, Hi-Fi Pi auto-discovers from conventional directories (`extensions/`, `skills/`, `prompts/`, `themes/`).
 
 See [docs/packages.md](docs/packages.md).
 
@@ -485,7 +455,7 @@ See [docs/sdk.md](docs/sdk.md) and [examples/sdk/](examples/sdk/).
 For non-Node.js integrations, use RPC mode over stdin/stdout:
 
 ```bash
-pi --mode rpc
+hifi-pi --mode rpc
 ```
 
 RPC mode uses strict LF-delimited JSONL framing. Clients must split records on `\n` only. Do not use generic line readers like Node `readline`, which also split on Unicode separators inside JSON payloads.
@@ -496,11 +466,11 @@ See [docs/rpc.md](docs/rpc.md) for the protocol.
 
 ## Philosophy
 
-Pi is aggressively extensible so it doesn't have to dictate your workflow. Features that other tools bake in can be built with [extensions](#extensions), [skills](#skills), or installed from third-party [pi packages](#pi-packages). This keeps the core minimal while letting you shape pi to fit how you work.
+Hi-Fi Pi preserves Pi's aggressively extensible philosophy so it does not have to dictate your workflow. Features that other tools bake in can be built with [extensions](#extensions), [skills](#skills), or installed from third-party [Pi packages](#pi-packages). This keeps the core minimal while letting you shape Hi-Fi Pi to fit how you work.
 
 **No MCP.** Build CLI tools with READMEs (see [Skills](#skills)), or build an extension that adds MCP support. [Why?](https://mariozechner.at/posts/2025-11-02-what-if-you-dont-need-mcp/)
 
-**No sub-agents.** There's many ways to do this. Spawn pi instances via tmux, or build your own with [extensions](#extensions), or install a package that does it your way.
+**No sub-agents.** There are many ways to do this. Spawn Hi-Fi Pi instances via tmux, build your own with [extensions](#extensions), or install a package that does it your way.
 
 **No permission popups.** Run in a container, or build your own confirmation flow with [extensions](#extensions) inline with your environment and security requirements.
 
@@ -517,24 +487,24 @@ Read the [blog post](https://mariozechner.at/posts/2025-11-30-pi-coding-agent/) 
 ## CLI Reference
 
 ```bash
-pi [options] [@files...] [messages...]
+hifi-pi [options] [@files...] [messages...]
 ```
 
 ### Package Commands
 
 ```bash
-pi install <source> [-l]     # Install package, -l for project-local
-pi remove <source> [-l]      # Remove package
-pi uninstall <source> [-l]   # Alias for remove
-pi update [source|self|pi]   # Update pi only, or one package source
-pi update --all              # Update pi and packages
-pi update --extensions       # Update packages only
-pi update --models           # Refresh model catalogs only
-pi update --self             # Update pi only
-pi update --self --force     # Reinstall pi even if current
-pi update --extension <src>  # Update one package
-pi list                      # List installed packages
-pi config                    # Enable/disable package resources
+hifi-pi install <source> [-l]     # Install package, -l for project-local
+hifi-pi remove <source> [-l]      # Remove package
+hifi-pi uninstall <source> [-l]   # Alias for remove
+hifi-pi update [source|self|pi]   # Update pi only, or one package source
+hifi-pi update --all              # Update pi and packages
+hifi-pi update --extensions       # Update packages only
+hifi-pi update --models           # Refresh model catalogs only
+hifi-pi update --self             # Update pi only
+hifi-pi update --self --force     # Reinstall pi even if current
+hifi-pi update --extension <src>  # Update one package
+hifi-pi list                      # List installed packages
+hifi-pi config                    # Enable/disable package resources
 ```
 
 `pi config` and project package commands accept `--approve`/`--no-approve` to trust or ignore project-local settings for one command. `pi update` never prompts for project trust.
@@ -623,46 +593,46 @@ Combine `--no-*` with explicit flags to load exactly what you need, ignoring set
 Prefix files with `@` to include in the message:
 
 ```bash
-pi @prompt.md "Answer this"
-pi -p @screenshot.png "What's in this image?"
-pi @code.ts @test.ts "Review these files"
+hifi-pi @prompt.md "Answer this"
+hifi-pi -p @screenshot.png "What's in this image?"
+hifi-pi @code.ts @test.ts "Review these files"
 ```
 
 ### Examples
 
 ```bash
 # Interactive with initial prompt
-pi "List all .ts files in src/"
+hifi-pi "List all .ts files in src/"
 
 # Non-interactive
-pi -p "Summarize this codebase"
+hifi-pi -p "Summarize this codebase"
 
 # Non-interactive with piped stdin
 cat README.md | pi -p "Summarize this text"
 
 # Named one-shot session
-pi --name "release audit" -p "Audit this repository"
+hifi-pi --name "release audit" -p "Audit this repository"
 
 # Different model
-pi --provider openai --model gpt-4o "Help me refactor"
+hifi-pi --provider openai --model gpt-4o "Help me refactor"
 
 # Model with provider prefix (no --provider needed)
-pi --model openai/gpt-4o "Help me refactor"
+hifi-pi --model openai/gpt-4o "Help me refactor"
 
 # Model with thinking level shorthand
-pi --model sonnet:high "Solve this complex problem"
+hifi-pi --model sonnet:high "Solve this complex problem"
 
 # Limit model cycling
-pi --models "claude-*,gpt-4o"
+hifi-pi --models "claude-*,gpt-4o"
 
 # Read-only mode
-pi --tools read,grep,find,ls -p "Review the code"
+hifi-pi --tools read,grep,find,ls -p "Review the code"
 
 # Disable one extension or built-in tool while keeping the rest available
-pi --exclude-tools ask_question
+hifi-pi --exclude-tools ask_question
 
 # High thinking level
-pi --thinking high "Solve this complex problem"
+hifi-pi --thinking high "Solve this complex problem"
 ```
 
 ### Environment Variables
@@ -675,8 +645,13 @@ pi --thinking high "Solve this complex problem"
 | `PI_CODING_AGENT_SESSION_DIR` | Override session storage directory (overridden by `--session-dir`) |
 | `PI_PACKAGE_DIR` | Override package directory (useful for Nix/Guix where store paths tokenize poorly) |
 | `PI_OFFLINE` | Disable startup network operations, including update checks, package update checks, and install/update telemetry |
-| `PI_SKIP_VERSION_CHECK` | Skip the Pi version update check at startup. This prevents the `pi.dev` latest-version request |
-| `PI_TELEMETRY` | Override install/update telemetry and provider attribution headers. Use `1`/`true`/`yes` to enable or `0`/`false`/`no` to disable. This does not disable update checks |
+| `HIFI_PI_SHARE_VIEWER_URL` | Trusted session viewer required to enable `/share` |
+| `HIFI_PI_SELF_UPDATE_URL` | Explicit Hi-Fi Pi release metadata endpoint |
+| `HIFI_PI_MODEL_CATALOG_URL` | Optional remote model catalog base URL |
+| `HIFI_PI_TELEMETRY_URL` | Optional install telemetry endpoint |
+| `PI_SHARE_VIEWER_URL` | Legacy explicit alias for `HIFI_PI_SHARE_VIEWER_URL` |
+| `PI_SKIP_VERSION_CHECK` | Skip the configured version update check at startup |
+| `PI_TELEMETRY` | Enable or disable an explicitly configured telemetry endpoint and provider attribution headers |
 | `PI_CACHE_RETENTION` | Set to `long` for extended prompt cache (Anthropic: 1h, OpenAI: 24h) |
 | `VISUAL`, `EDITOR` | Fallback external editor for Ctrl+G when `externalEditor` is unset; defaults to Notepad on Windows and `nano` elsewhere |
 
@@ -707,9 +682,3 @@ MIT
 - [@earendil-works/pi-ai](https://www.npmjs.com/package/@earendil-works/pi-ai): Core LLM toolkit
 - [@earendil-works/pi-agent-core](https://www.npmjs.com/package/@earendil-works/pi-agent-core): Agent framework
 - [@earendil-works/pi-tui](https://www.npmjs.com/package/@earendil-works/pi-tui): Terminal UI components
-
-<p align="center">
-  <a href="https://pi.dev">pi.dev</a> domain graciously donated by
-  <br /><br />
-  <a href="https://exe.dev"><img src="docs/images/exy.png" alt="Exy mascot" width="48" /><br />exe.dev</a>
-</p>

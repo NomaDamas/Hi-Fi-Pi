@@ -467,7 +467,10 @@ ${chalk.bold("Environment Variables:")}
   PI_PACKAGE_DIR                   - Override package directory (for Nix/Guix store paths)
   PI_OFFLINE                       - Disable startup network operations when set to 1/true/yes
   PI_TELEMETRY                     - Override install telemetry when set to 1/true/yes or 0/false/no
-  PI_SHARE_VIEWER_URL              - Base URL for /share command (default: https://pi.dev/session/)
+  HIFI_PI_SHARE_VIEWER_URL         - Trusted session viewer required to enable /share
+  PI_SHARE_VIEWER_URL              - Legacy explicit override for HIFI_PI_SHARE_VIEWER_URL
+  HIFI_PI_MODEL_CATALOG_URL        - Optional remote model catalog base URL
+  HIFI_PI_TELEMETRY_URL            - Optional install telemetry endpoint
 
 Project-local resources remain under ${CONFIG_DIR_NAME}/ for Pi package compatibility.
 
