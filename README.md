@@ -35,6 +35,23 @@ npm install -g --ignore-scripts ./packages/coding-agent
 hifi-pi --version
 ```
 
+## Install a GitHub release
+
+Download the archive for your platform from the [GitHub Releases](https://github.com/NomaDamas/Hi-Fi-Pi/releases) page and verify it against `SHA256SUMS`. For Apple Silicon macOS:
+
+```bash
+VERSION="v0.84.2-hifi.1"
+curl -LO "https://github.com/NomaDamas/Hi-Fi-Pi/releases/download/${VERSION}/hifi-pi-darwin-arm64.tar.gz"
+curl -LO "https://github.com/NomaDamas/Hi-Fi-Pi/releases/download/${VERSION}/SHA256SUMS"
+grep 'hifi-pi-darwin-arm64.tar.gz' SHA256SUMS | shasum -a 256 -c -
+tar -xzf hifi-pi-darwin-arm64.tar.gz
+mkdir -p ~/.local/bin
+cp hifi-pi/hifi-pi ~/.local/bin/hifi-pi
+~/.local/bin/hifi-pi --version
+```
+
+The same release contains Linux, Windows, Intel macOS, source, and fork-owned SDK artifacts. Replace the archive name with the matching platform asset.
+
 For development without a global install:
 
 ```bash
