@@ -1,4 +1,4 @@
-import { cpSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { cpSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 export const HIFI_PACKAGE_SCOPE = "@nomadamas";
@@ -91,6 +91,9 @@ export function prepareHifiPackageStage({ packageDir, stageDir, repoRoot, revisi
 	const sourceManifest = JSON.parse(readFileSync(join(stageDir, "package.json"), "utf8"));
 	const manifest = createHifiPackageManifest(sourceManifest, revision);
 	writeFileSync(join(stageDir, "package.json"), `${JSON.stringify(manifest, null, "\t")}\n`);
+	// The source coding-agent shrinkwrap resolves canonical upstream workspace
+	// identities. Release artifacts use the fork-only SDK install lock instead.
+	rmSync(join(stageDir, "npm-shrinkwrap.json"), { force: true });
 
 	const distDir = join(stageDir, "dist");
 	visitFiles(distDir, (path) => {
