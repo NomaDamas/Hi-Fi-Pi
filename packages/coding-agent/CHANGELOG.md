@@ -31,6 +31,7 @@
 
 - Fixed interactive `@` parsing so directories, scoped packages, dotted handles, text files, images, missing paths, templates, and skills retain legacy prompt semantics while supported binary files become attachments ([#6](https://github.com/NomaDamas/Hi-Fi-Pi/issues/6)).
 - Fixed concurrent cold-start `fd` and `rg` downloads to publish atomically and reuse compatible tools from the legacy Pi user directory ([#53](https://github.com/NomaDamas/Hi-Fi-Pi/issues/53)).
+- Fixed startup from an inaccessible or deleted current directory to report an actionable diagnostic instead of crashing during module loading with a raw `uv_cwd` stack ([#73](https://github.com/NomaDamas/Hi-Fi-Pi/issues/73)).
 
 ## [0.84.1] - 2026-08-07
 

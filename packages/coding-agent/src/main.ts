@@ -39,6 +39,7 @@ import {
 	ENV_AGENT_DIR,
 	ENV_SESSION_DIR,
 	expandTildePath,
+	getAccessibleCwd,
 	getAgentDir,
 	getPackageDir,
 	getVersionString,
@@ -608,7 +609,14 @@ export async function main(args: string[], options?: MainOptions) {
 		cleanupWindowsSelfUpdateQuarantine(getPackageDir());
 	}
 
-	const startupCwd = process.cwd();
+	let startupCwd: string;
+	try {
+		startupCwd = getAccessibleCwd();
+	} catch (error) {
+		console.error(chalk.red(`Error: ${error instanceof Error ? error.message : String(error)}`));
+		process.exit(1);
+		return;
+	}
 	const agentDir = getAgentDir();
 	const bootstrapSettingsManager = SettingsManager.create(startupCwd, agentDir, { projectTrusted: false });
 	applyHttpProxySettings(bootstrapSettingsManager.getGlobalSettings().httpProxy);
