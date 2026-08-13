@@ -2,17 +2,36 @@
 
 ## [Unreleased]
 
-### Fixed
+## [0.84.1-hifi.1] - 2026-08-13
 
-- Fixed startup from an inaccessible or deleted current directory to report an actionable diagnostic instead of crashing during module loading with a raw `uv_cwd` stack ([#73](https://github.com/NomaDamas/Hi-Fi-Pi/issues/73)).
+### New Features
+
+- **Vendor-native files and media** — Attach binary and structured `@file` inputs without local text extraction; Hi-Fi Pi validates the selected model transport and lowers supported inputs through the vendor's native API representation.
+- **Provider-deep controls and state** — Inspect capabilities and sanitized request traces, configure namespaced provider options, reuse uploaded files, and preserve supported citations, reasoning, continuation, and tool state.
+- **Reusable named agents** — Load versioned agent definitions through the CLI or SDK and host isolated, policy-checked sessions through the headless product runtime.
+- **Hi-Fi Pi distribution** — Use the `hifi-pi` executable, isolated `~/.hifipi` user state, fork-owned SDK artifacts, and existing Pi extensions, skills, prompts, themes, and project `.pi` manifests.
 
 ### Added
 
+- Added native attachments across CLI startup, interactive input, print mode, AgentSession, extension events, SDK, RPC, steering, follow-up queues, and tool results ([#3](https://github.com/NomaDamas/Hi-Fi-Pi/issues/3), [#4](https://github.com/NomaDamas/Hi-Fi-Pi/issues/4), [#12](https://github.com/NomaDamas/Hi-Fi-Pi/issues/12)).
+- Added attachment persistence across resume, fork, branch, compaction, JSON/HTML export, and provider-specific remote file lifecycle state ([#5](https://github.com/NomaDamas/Hi-Fi-Pi/issues/5), [#24](https://github.com/NomaDamas/Hi-Fi-Pi/issues/24), [#25](https://github.com/NomaDamas/Hi-Fi-Pi/issues/25)).
+- Added attachment rows and inspection commands for session files, transport capabilities, preparation status, source availability, and sanitized provider payload traces ([#6](https://github.com/NomaDamas/Hi-Fi-Pi/issues/6), [#10](https://github.com/NomaDamas/Hi-Fi-Pi/issues/10)).
+- Added provider-option controls and model-switch portability reports while retaining explicit user model selection ([#27](https://github.com/NomaDamas/Hi-Fi-Pi/issues/27), [#29](https://github.com/NomaDamas/Hi-Fi-Pi/issues/29), [#30](https://github.com/NomaDamas/Hi-Fi-Pi/issues/30)).
+- Added a reusable headless host, versioned named-agent definitions, tenant/user/agent/thread storage isolation, input and extension admission policies, and transport-neutral product session streams ([#40](https://github.com/NomaDamas/Hi-Fi-Pi/issues/40), [#41](https://github.com/NomaDamas/Hi-Fi-Pi/issues/41), [#42](https://github.com/NomaDamas/Hi-Fi-Pi/issues/42), [#43](https://github.com/NomaDamas/Hi-Fi-Pi/issues/43), [#44](https://github.com/NomaDamas/Hi-Fi-Pi/issues/44)).
+- Added fork-owned release artifacts and compatibility contracts for canonical Pi extension imports, including a pinned six-package ecosystem smoke matrix ([#20](https://github.com/NomaDamas/Hi-Fi-Pi/issues/20), [#22](https://github.com/NomaDamas/Hi-Fi-Pi/issues/22), [#23](https://github.com/NomaDamas/Hi-Fi-Pi/issues/23), [#62](https://github.com/NomaDamas/Hi-Fi-Pi/issues/62), [#68](https://github.com/NomaDamas/Hi-Fi-Pi/issues/68)).
 - Added a fullscreen exit output setting to choose between printing the final transcript and only a session resume hint.
 
 ### Changed
 
+- Changed distribution-owned remote services to explicit `HIFI_PI_*` opt-ins; session sharing, self-update, remote catalog, and install telemetry no longer silently use upstream services ([#68](https://github.com/NomaDamas/Hi-Fi-Pi/issues/68)).
+- Changed attachment runtime, presentation, and session coordination to typed fork-owned modules, reducing upstream synchronization conflicts without changing legacy extension behavior ([#63](https://github.com/NomaDamas/Hi-Fi-Pi/issues/63)).
 - Replaced the inherited Mistral SDK transport with a native Chat Completions HTTP stream, eliminating its generated client and schema runtime overhead.
+
+### Fixed
+
+- Fixed interactive `@` parsing so directories, scoped packages, dotted handles, text files, images, missing paths, templates, and skills retain legacy prompt semantics while supported binary files become attachments ([#6](https://github.com/NomaDamas/Hi-Fi-Pi/issues/6)).
+- Fixed concurrent cold-start `fd` and `rg` downloads to publish atomically and reuse compatible tools from the legacy Pi user directory ([#53](https://github.com/NomaDamas/Hi-Fi-Pi/issues/53)).
+- Fixed startup from an inaccessible or deleted current directory to report an actionable diagnostic instead of crashing during module loading with a raw `uv_cwd` stack ([#73](https://github.com/NomaDamas/Hi-Fi-Pi/issues/73)).
 
 ## [0.84.1] - 2026-08-07
 
