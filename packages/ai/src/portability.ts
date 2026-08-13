@@ -5,6 +5,8 @@ export type PortabilityClassification = "portable" | "reconstructable" | "provid
 
 export interface PortabilityItem {
 	id: string;
+	/** Stable identity used to persist an explicit loss decision across context reconstruction. */
+	stableId: string;
 	kind: "attachment" | "provider-native" | "reasoning-state" | "provider-state" | "tool-state";
 	classification: PortabilityClassification;
 	reason: string;
@@ -14,13 +16,35 @@ export interface PortabilityItem {
 	mediaType?: string;
 	attachmentId?: string;
 	stateId?: string;
+	partIndex?: number;
+}
+
+export interface PortabilityTarget {
+	provider: string;
+	api: Api;
+	modelId: string;
+	baseUrl: string;
 }
 
 export interface PortabilityReport {
-	target: { provider: string; api: Api; modelId: string; baseUrl: string };
+	target: PortabilityTarget;
 	items: PortabilityItem[];
 	counts: Record<PortabilityClassification, number>;
 	canSwitchWithoutLoss: boolean;
+}
+
+export interface ConversationProjection {
+	messages: Message[];
+	target: PortabilityTarget;
+	report: PortabilityReport;
+	activeAttachmentIds: string[];
+	suspendedAttachmentIds: string[];
+	suspendedItemIds: string[];
+	unapprovedItemIds: string[];
+}
+
+export interface ConversationProjectionOptions extends PortabilityAnalysisOptions {
+	approvedItemIds?: Iterable<string>;
 }
 
 export interface PortabilityAnalysisOptions {
@@ -61,6 +85,20 @@ function endpointIdentity(value: string): string {
 	}
 }
 
+export function getPortabilityTargetKey(target: PortabilityTarget): string {
+	return [target.provider, target.api, target.modelId, endpointIdentity(target.baseUrl)].join("\0");
+}
+
+function messageStableScope(message: Message): string {
+	return `${message.role}:${message.timestamp}`;
+}
+
+function nativePartStableId(message: Message, part: ProviderNativePart, partIndex: number): string {
+	return part.stateId
+		? `provider-native:${part.provider}:${part.api ?? ""}:${part.modelId ?? ""}:${part.kind}:${part.stateId}`
+		: `provider-native:${messageStableScope(message)}:${part.provider}:${part.api ?? ""}:${part.modelId ?? ""}:${part.kind}:${partIndex}`;
+}
+
 function classifyNativePart(
 	part: ProviderNativePart,
 	target: PortabilityAnalysisOptions["target"],
@@ -92,6 +130,7 @@ export function analyzeConversationPortability(options: PortabilityAnalysisOptio
 				if (!attachment) {
 					items.push({
 						id: `message:${messageIndex}:attachment:${reference.attachmentId}`,
+						stableId: `attachment:${reference.attachmentId}`,
 						kind: "attachment",
 						classification: "missing",
 						reason: `attachment ${reference.attachmentId} is not present in the registry`,
@@ -103,6 +142,7 @@ export function analyzeConversationPortability(options: PortabilityAnalysisOptio
 				if (options.sourceAvailable && !options.sourceAvailable(attachment)) {
 					items.push({
 						id: `message:${messageIndex}:attachment:${attachment.id}`,
+						stableId: `attachment:${attachment.id}`,
 						kind: "attachment",
 						classification: "missing",
 						reason: `${attachment.filename} source is unavailable`,
@@ -122,9 +162,10 @@ export function analyzeConversationPortability(options: PortabilityAnalysisOptio
 				) {
 					items.push({
 						id: `message:${messageIndex}:attachment:${attachment.id}`,
+						stableId: `attachment:${attachment.id}`,
 						kind: "attachment",
 						classification: "provider-locked",
-						reason: `${attachment.filename} source belongs to ${attachment.source.provider ?? "another"}/${attachment.source.api ?? "transport"}/${attachment.source.endpoint ?? "endpoint"}`,
+						reason: `${attachment.filename} source belongs to ${attachment.source.provider ?? "another"}/${attachment.source.api ?? "transport"}/${attachment.source.endpoint ? endpointIdentity(attachment.source.endpoint) : "endpoint"}`,
 						messageIndex,
 						attachmentId: attachment.id,
 						mediaType: attachment.mediaType,
@@ -135,6 +176,7 @@ export function analyzeConversationPortability(options: PortabilityAnalysisOptio
 				const reconstructable = attachment.source.type === "path" || attachment.source.type === "base64";
 				items.push({
 					id: `message:${messageIndex}:attachment:${attachment.id}`,
+					stableId: `attachment:${attachment.id}`,
 					kind: "attachment",
 					classification: capability.supported
 						? reconstructable
@@ -153,12 +195,14 @@ export function analyzeConversationPortability(options: PortabilityAnalysisOptio
 			}
 		}
 
-		for (const part of message.nativeParts ?? []) {
+		for (const [partIndex, part] of (message.nativeParts ?? []).entries()) {
 			const classification = classifyNativePart(part, options.target);
 			items.push({
 				id: `message:${messageIndex}:native:${part.stateId ?? part.kind}`,
+				stableId: nativePartStableId(message, part, partIndex),
 				kind: "provider-native",
 				messageIndex,
+				partIndex,
 				provider: part.provider,
 				api: part.api,
 				stateId: part.stateId,
@@ -171,6 +215,7 @@ export function analyzeConversationPortability(options: PortabilityAnalysisOptio
 				const isSame = sameBackend(state.provider, state.api, state.modelId, options.target);
 				items.push({
 					id: `message:${messageIndex}:reasoning:${index}`,
+					stableId: `reasoning:${messageStableScope(message)}:${state.provider}:${state.api ?? ""}:${state.modelId ?? ""}:${index}`,
 					kind: "reasoning-state",
 					classification: isSame ? "portable" : "provider-locked",
 					reason: isSame
@@ -179,6 +224,7 @@ export function analyzeConversationPortability(options: PortabilityAnalysisOptio
 					messageIndex,
 					provider: state.provider,
 					api: state.api,
+					partIndex: index,
 				});
 			}
 			if (message.providerState) {
@@ -186,6 +232,7 @@ export function analyzeConversationPortability(options: PortabilityAnalysisOptio
 				const isSame = sameBackend(state.provider, state.api, state.modelId, options.target);
 				items.push({
 					id: `message:${messageIndex}:provider-state`,
+					stableId: `provider-state:${messageStableScope(message)}:${state.provider}:${state.api ?? ""}:${state.modelId ?? ""}`,
 					kind: "provider-state",
 					classification: isSame ? "portable" : "provider-locked",
 					reason: isSame
@@ -201,12 +248,14 @@ export function analyzeConversationPortability(options: PortabilityAnalysisOptio
 				const isSame = message.provider === options.target.provider && message.api === options.target.api;
 				items.push({
 					id: `message:${messageIndex}:tool:${index}`,
+					stableId: `tool-state:${message.provider}:${message.api}:${toolCall.id}`,
 					kind: "tool-state",
 					classification: isSame ? "portable" : "provider-locked",
 					reason: isSame ? "tool metadata remains on its owning backend" : "tool metadata is backend-locked",
 					messageIndex,
 					provider: message.provider,
 					api: message.api,
+					partIndex: index,
 				});
 			}
 		}
@@ -230,6 +279,113 @@ export function analyzeConversationPortability(options: PortabilityAnalysisOptio
 		items,
 		counts,
 		canSwitchWithoutLoss: counts["provider-locked"] === 0 && counts.missing === 0 && counts.unsupported === 0,
+	};
+}
+
+function isLossyItem(item: PortabilityItem): boolean {
+	return (
+		item.classification === "provider-locked" ||
+		item.classification === "missing" ||
+		item.classification === "unsupported"
+	);
+}
+
+function unique(values: Iterable<string>): string[] {
+	return Array.from(new Set(values));
+}
+
+/**
+ * Materialize a target-specific conversation without mutating canonical messages.
+ * Only incompatible items whose stable identities were explicitly approved are removed.
+ */
+export function projectConversationForTarget(options: ConversationProjectionOptions): ConversationProjection {
+	const report = analyzeConversationPortability(options);
+	const approvedItemIds = new Set(options.approvedItemIds ?? []);
+	const suspendedItems = report.items.filter((item) => isLossyItem(item) && approvedItemIds.has(item.stableId));
+	const unapprovedItems = report.items.filter((item) => isLossyItem(item) && !approvedItemIds.has(item.stableId));
+	const suspendedByMessage = new Map<number, PortabilityItem[]>();
+	for (const item of suspendedItems) {
+		const items = suspendedByMessage.get(item.messageIndex) ?? [];
+		items.push(item);
+		suspendedByMessage.set(item.messageIndex, items);
+	}
+
+	const messages = options.messages.map((message, messageIndex): Message => {
+		const suspended = suspendedByMessage.get(messageIndex);
+		if (!suspended?.length) return message;
+		const attachmentIds = new Set(
+			suspended.filter((item) => item.kind === "attachment").map((item) => item.attachmentId),
+		);
+		const nativePartIndexes = new Set(
+			suspended.filter((item) => item.kind === "provider-native").map((item) => item.partIndex),
+		);
+		let projected: Message = message;
+
+		if ((message.role === "user" || message.role === "toolResult") && attachmentIds.size > 0) {
+			const attachments = message.attachments?.filter((reference) => !attachmentIds.has(reference.attachmentId));
+			projected = {
+				...projected,
+				...(attachments?.length ? { attachments } : { attachments: undefined }),
+			} as Message;
+		}
+		if (nativePartIndexes.size > 0) {
+			const nativeParts = message.nativeParts?.filter((_part, index) => !nativePartIndexes.has(index));
+			projected = {
+				...projected,
+				...(nativeParts?.length ? { nativeParts } : { nativeParts: undefined }),
+			} as Message;
+		}
+		if (message.role === "assistant") {
+			const reasoningIndexes = new Set(
+				suspended.filter((item) => item.kind === "reasoning-state").map((item) => item.partIndex),
+			);
+			const toolIndexes = new Set(
+				suspended.filter((item) => item.kind === "tool-state").map((item) => item.partIndex),
+			);
+			if (reasoningIndexes.size > 0) {
+				const reasoningState = message.reasoningState?.filter((_state, index) => !reasoningIndexes.has(index));
+				projected = {
+					...projected,
+					...(reasoningState?.length ? { reasoningState } : { reasoningState: undefined }),
+				} as Message;
+			}
+			if (suspended.some((item) => item.kind === "provider-state")) {
+				projected = { ...projected, providerState: undefined } as Message;
+			}
+			if (toolIndexes.size > 0) {
+				projected = {
+					...projected,
+					content: message.content.map((content, index) => {
+						if (content.type !== "toolCall" || !toolIndexes.has(index)) return content;
+						const { providerMetadata: _providerMetadata, ...portableToolCall } = content;
+						return portableToolCall;
+					}),
+				} as Message;
+			}
+		}
+		return projected;
+	});
+
+	const suspendedStableIds = new Set(suspendedItems.map((item) => item.stableId));
+	return {
+		messages,
+		target: report.target,
+		report,
+		activeAttachmentIds: unique(
+			report.items
+				.filter(
+					(item) =>
+						item.kind === "attachment" &&
+						!suspendedStableIds.has(item.stableId) &&
+						(item.classification === "portable" || item.classification === "reconstructable"),
+				)
+				.flatMap((item) => (item.attachmentId ? [item.attachmentId] : [])),
+		),
+		suspendedAttachmentIds: unique(
+			suspendedItems.flatMap((item) => (item.kind === "attachment" && item.attachmentId ? [item.attachmentId] : [])),
+		),
+		suspendedItemIds: unique(suspendedItems.map((item) => item.stableId)),
+		unapprovedItemIds: unique(unapprovedItems.map((item) => item.stableId)),
 	};
 }
 

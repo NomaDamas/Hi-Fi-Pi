@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added stable, target-scoped conversation projection for explicitly suspended attachments and provider-native state without mutating canonical messages ([#76](https://github.com/NomaDamas/Hi-Fi-Pi/issues/76)).
+
 ## [0.84.1-hifi.1] - 2026-08-13
 
 ### Added
