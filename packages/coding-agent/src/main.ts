@@ -1017,6 +1017,7 @@ export async function main(args: string[], options?: MainOptions) {
 			initialMessage,
 			initialImages,
 			initialAttachments,
+			allowLossy: parsed.allowLossy,
 		});
 		stopThemeWatcher();
 		restoreStdout();

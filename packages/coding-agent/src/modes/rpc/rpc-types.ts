@@ -35,8 +35,22 @@ export type RpcCommand =
 			streamingBehavior?: "steer" | "followUp";
 			allowLossy?: boolean;
 	  }
-	| { id?: string; type: "steer"; message: string; images?: ImageContent[]; attachments?: AttachmentRecord[] }
-	| { id?: string; type: "follow_up"; message: string; images?: ImageContent[]; attachments?: AttachmentRecord[] }
+	| {
+			id?: string;
+			type: "steer";
+			message: string;
+			images?: ImageContent[];
+			attachments?: AttachmentRecord[];
+			allowLossy?: boolean;
+	  }
+	| {
+			id?: string;
+			type: "follow_up";
+			message: string;
+			images?: ImageContent[];
+			attachments?: AttachmentRecord[];
+			allowLossy?: boolean;
+	  }
 	| { id?: string; type: "abort" }
 	| { id?: string; type: "new_session"; parentSession?: string }
 
@@ -48,6 +62,7 @@ export type RpcCommand =
 	| { id?: string; type: "cycle_model"; allowLossy?: boolean }
 	| { id?: string; type: "get_portability_report"; provider: string; modelId: string }
 	| { id?: string; type: "get_portability_projection"; provider?: string; modelId?: string }
+	| { id?: string; type: "resolve_portability_confirmation"; allowLossy: boolean }
 	| { id?: string; type: "get_available_models" }
 	| { id?: string; type: "get_provider_options" }
 	| { id?: string; type: "set_provider_option"; key: string; value: unknown }
@@ -171,6 +186,12 @@ export type RpcResponse =
 			command: "get_portability_projection";
 			success: true;
 			data: Omit<AppliedPortabilityProjection, "messages">;
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "resolve_portability_confirmation";
+			success: true;
 	  }
 	| {
 			id?: string;

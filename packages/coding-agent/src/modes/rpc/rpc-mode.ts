@@ -418,12 +418,16 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			}
 
 			case "steer": {
-				await session.steer(command.message, command.images, command.attachments);
+				await session.steer(command.message, command.images, command.attachments, {
+					allowLossy: command.allowLossy,
+				});
 				return success(id, "steer");
 			}
 
 			case "follow_up": {
-				await session.followUp(command.message, command.images, command.attachments);
+				await session.followUp(command.message, command.images, command.attachments, {
+					allowLossy: command.allowLossy,
+				});
 				return success(id, "follow_up");
 			}
 
@@ -515,6 +519,11 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				}
 				const { messages: _messages, ...projection } = session.getPortabilityProjection(model);
 				return success(id, "get_portability_projection", projection);
+			}
+
+			case "resolve_portability_confirmation": {
+				await session.resolvePendingPortabilityConfirmation(command.allowLossy);
+				return success(id, "resolve_portability_confirmation");
 			}
 
 			case "get_available_models": {

@@ -80,7 +80,10 @@ function createSession(options: {
 			getCwd: () => "/tmp/project",
 		},
 		getContextUsage: () => ({ contextWindow: 200_000, percent: 12.3 }),
-		getAppliedPortabilityProjection: () => options.projection,
+		getPortabilityStatusCounts: () => ({
+			active: options.projection?.activeAttachmentIds.length ?? 0,
+			suspended: options.projection?.suspendedAttachmentIds.length ?? 0,
+		}),
 		modelRuntime: {
 			isUsingSubscription: () => options.usingSubscription ?? false,
 		},

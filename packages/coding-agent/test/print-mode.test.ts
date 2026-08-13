@@ -18,6 +18,8 @@ type FakeSession = {
 	bindExtensions: ReturnType<typeof vi.fn>;
 	subscribe: ReturnType<typeof vi.fn>;
 	prompt: ReturnType<typeof vi.fn>;
+	getPendingPortabilityConfirmation: ReturnType<typeof vi.fn>;
+	resolvePendingPortabilityConfirmation: ReturnType<typeof vi.fn>;
 	reload: ReturnType<typeof vi.fn>;
 };
 
@@ -71,6 +73,8 @@ function createRuntimeHost(assistantMessage: AssistantMessage): FakeRuntimeHost 
 		bindExtensions: vi.fn(async () => {}),
 		subscribe: vi.fn(() => () => {}),
 		prompt: vi.fn(async () => {}),
+		getPendingPortabilityConfirmation: vi.fn(() => undefined),
+		resolvePendingPortabilityConfirmation: vi.fn(async () => {}),
 		reload: vi.fn(async () => {}),
 	};
 
@@ -159,5 +163,40 @@ describe("runPrintMode", () => {
 		expect(errorSpy).toHaveBeenCalledWith("provider failure");
 		expect(session.extensionRunner.emit).toHaveBeenCalledTimes(1);
 		expect(session.extensionRunner.emit).toHaveBeenCalledWith({ type: "session_shutdown", reason: "quit" });
+	});
+
+	it("fails headless continuation explicitly when portability consent is unavailable", async () => {
+		const runtimeHost = createRuntimeHost(createAssistantMessage({ text: "tool finished" }));
+		runtimeHost.session.getPendingPortabilityConfirmation.mockReturnValue({ source: "mid-turn" });
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+		const exitCode = await runPrintMode(runtimeHost as unknown as Parameters<typeof runPrintMode>[0], {
+			mode: "text",
+			initialMessage: "run tool",
+		});
+
+		expect(exitCode).toBe(1);
+		expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining("Portability confirmation required"));
+		expect(runtimeHost.session.resolvePendingPortabilityConfirmation).not.toHaveBeenCalled();
+	});
+
+	it("continues a headless run only with explicit lossy opt-in", async () => {
+		const runtimeHost = createRuntimeHost(createAssistantMessage({ text: "done" }));
+		runtimeHost.session.getPendingPortabilityConfirmation
+			.mockReturnValueOnce({ source: "mid-turn" })
+			.mockReturnValueOnce(undefined);
+
+		const exitCode = await runPrintMode(runtimeHost as unknown as Parameters<typeof runPrintMode>[0], {
+			mode: "text",
+			initialMessage: "run tool",
+			allowLossy: true,
+		});
+
+		expect(exitCode).toBe(0);
+		expect(runtimeHost.session.resolvePendingPortabilityConfirmation).toHaveBeenCalledWith(true);
+		expect(runtimeHost.session.prompt).toHaveBeenCalledWith("run tool", {
+			images: undefined,
+			allowLossy: true,
+		});
 	});
 });

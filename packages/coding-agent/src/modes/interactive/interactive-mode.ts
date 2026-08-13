@@ -500,6 +500,7 @@ export class InteractiveMode {
 
 	// Shutdown state
 	private shutdownRequested = false;
+	private portabilityConfirmationInFlight = false;
 
 	// Extension UI state
 	private extensionSelector: ExtensionSelectorComponent | undefined = undefined;
@@ -3428,7 +3429,12 @@ export class InteractiveMode {
 				break;
 
 			case "agent_settled":
+				await this.handlePendingPortabilityConfirmation();
 				await this.checkShutdownRequested();
+				break;
+
+			case "portability_confirmation_required":
+				this.showWarning("Provider continuation is waiting for attachment compatibility confirmation.");
 				break;
 
 			case "compaction_start": {
@@ -4509,17 +4515,24 @@ export class InteractiveMode {
 	): Promise<void> {
 		const processed = await this.processInteractiveFileReferences(message.text);
 		if (startPrompt) {
-			await this.session.prompt(processed.text, {
+			const sent = await this.promptWithPortabilityConfirmation(processed.text, {
 				streamingBehavior: message.mode,
 				...(processed.images.length > 0 ? { images: processed.images } : {}),
 				...(processed.attachments.length > 0 ? { attachments: processed.attachments } : {}),
 			});
+			if (!sent) throw new Error("Attachment compatibility confirmation was declined.");
 			return;
 		}
 		if (message.mode === "followUp") {
-			await this.session.followUp(processed.text, processed.images, processed.attachments);
+			await this.session.followUp(processed.text, processed.images, processed.attachments, {
+				confirmPortability: async (error) =>
+					await this.showExtensionConfirm("Attachment compatibility", this.formatPromptProjectionPrompt(error)),
+			});
 		} else {
-			await this.session.steer(processed.text, processed.images, processed.attachments);
+			await this.session.steer(processed.text, processed.images, processed.attachments, {
+				confirmPortability: async (error) =>
+					await this.showExtensionConfirm("Attachment compatibility", this.formatPromptProjectionPrompt(error)),
+			});
 		}
 	}
 
@@ -4835,17 +4848,34 @@ export class InteractiveMode {
 
 	private async promptWithPortabilityConfirmation(text: string, options?: PromptOptions): Promise<boolean> {
 		try {
-			await this.session.prompt(text, options);
+			await this.session.prompt(text, {
+				...options,
+				confirmPortability: async (error) =>
+					await this.showExtensionConfirm("Attachment compatibility", this.formatPromptProjectionPrompt(error)),
+			});
 			return true;
 		} catch (error) {
 			if (!(error instanceof PortabilityConfirmationRequiredError)) throw error;
+			return false;
+		}
+	}
+
+	private async handlePendingPortabilityConfirmation(): Promise<void> {
+		const pending = this.session.getPendingPortabilityConfirmation();
+		if (!pending || this.portabilityConfirmationInFlight) return;
+		this.portabilityConfirmationInFlight = true;
+		try {
+			const error = new PortabilityConfirmationRequiredError(pending.report);
 			const confirmed = await this.showExtensionConfirm(
 				"Attachment compatibility",
-				this.formatPromptProjectionPrompt(error),
+				`${this.formatPromptProjectionPrompt(error)}\n\nThe completed tool result will remain in session history.`,
 			);
-			if (!confirmed) return false;
-			await this.session.prompt(text, { ...options, allowLossy: true });
-			return true;
+			await this.session.resolvePendingPortabilityConfirmation(confirmed);
+			if (!confirmed) {
+				this.showWarning("Continuation cancelled. The compatibility choice will be requested again on new input.");
+			}
+		} finally {
+			this.portabilityConfirmationInFlight = false;
 		}
 	}
 

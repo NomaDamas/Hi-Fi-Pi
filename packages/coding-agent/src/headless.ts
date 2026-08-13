@@ -1,5 +1,10 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { Api, Model, ProviderTraceCallback } from "@earendil-works/pi-ai";
+import {
+	type Api,
+	type Model,
+	PortabilityConfirmationRequiredError,
+	type ProviderTraceCallback,
+} from "@earendil-works/pi-ai";
 import type { AgentSession, AgentSessionEventListener, PromptInput, PromptOptions } from "./core/agent-session.ts";
 import {
 	type AgentSessionRuntime,
@@ -60,9 +65,20 @@ export class HeadlessAgentHost {
 		return this.runtime.cwd;
 	}
 
-	prompt(input: string | PromptInput, options?: PromptOptions): Promise<void> {
-		if (this.disposed) return Promise.reject(new Error("Headless agent host is disposed"));
-		return this.session.prompt(input, { ...options, source: options?.source ?? "rpc" });
+	async prompt(input: string | PromptInput, options?: PromptOptions): Promise<void> {
+		if (this.disposed) throw new Error("Headless agent host is disposed");
+		await this.session.prompt(input, { ...options, source: options?.source ?? "rpc" });
+		let pending = this.session.getPendingPortabilityConfirmation();
+		while (pending) {
+			const error = new PortabilityConfirmationRequiredError(pending.report);
+			const confirmed = options?.allowLossy === true || (await options?.confirmPortability?.(error)) === true;
+			if (!confirmed) {
+				await this.session.resolvePendingPortabilityConfirmation(false);
+				throw error;
+			}
+			await this.session.resolvePendingPortabilityConfirmation(true);
+			pending = this.session.getPendingPortabilityConfirmation();
+		}
 	}
 
 	subscribe(listener: AgentSessionEventListener): () => void {
@@ -139,6 +155,7 @@ export {
 	AgentSession,
 	type AgentSessionEvent,
 	type AgentSessionEventListener,
+	type PortabilityConfirmationState,
 	type PromptInput,
 	type PromptOptions,
 } from "./core/agent-session.ts";

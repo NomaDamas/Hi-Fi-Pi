@@ -44,6 +44,7 @@ export {
 	type AgentSessionEventListener,
 	type ModelCycleResult,
 	type ParsedSkillBlock,
+	type PortabilityConfirmationState,
 	type PortabilityProjectionState,
 	type PromptInput,
 	type PromptOptions,
@@ -249,6 +250,7 @@ export {
 	createReadOnlyTools,
 	createReadTool,
 	createWriteTool,
+	PortabilityProjectionUnavailableError,
 	type PromptTemplate,
 } from "./core/sdk.ts";
 export {

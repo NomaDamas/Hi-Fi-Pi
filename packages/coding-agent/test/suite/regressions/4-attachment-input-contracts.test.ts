@@ -390,6 +390,30 @@ describe("Issue 4 attachment input contracts", () => {
 		]);
 	});
 
+	it("opts steer/follow-up into lossy projection and resolves pending RPC confirmation", async () => {
+		const client = new RpcClient();
+		const sent: unknown[] = [];
+		(client as unknown as { send(command: unknown): Promise<void> }).send = async (command) => {
+			sent.push(command);
+		};
+
+		await client.steer("Steer", undefined, [attachment], { allowLossy: true });
+		await client.followUp("Follow", undefined, [secondAttachment], { allowLossy: true });
+		await client.resolvePortabilityConfirmation(true);
+
+		expect(sent).toEqual([
+			{ type: "steer", message: "Steer", images: undefined, attachments: [attachment], allowLossy: true },
+			{
+				type: "follow_up",
+				message: "Follow",
+				images: undefined,
+				attachments: [secondAttachment],
+				allowLossy: true,
+			},
+			{ type: "resolve_portability_confirmation", allowLossy: true },
+		]);
+	});
+
 	it("keeps the attachment-free RPC wire payload unchanged", async () => {
 		const client = new RpcClient();
 		let serialized = "";

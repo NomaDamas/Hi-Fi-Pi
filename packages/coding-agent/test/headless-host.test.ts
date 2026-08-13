@@ -1,12 +1,14 @@
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { registerFauxProvider } from "@earendil-works/pi-ai/compat";
+import { PortabilityConfirmationRequiredError, registerFauxProvider } from "@earendil-works/pi-ai/compat";
 import { afterEach, describe, expect, it } from "vitest";
+import type { PortabilityConfirmationState } from "../src/core/agent-session.ts";
+import type { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import type { ExtensionFactory } from "../src/core/extensions/index.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
-import { createHeadlessAgentHost, type HeadlessAgentHost } from "../src/headless.ts";
+import { createHeadlessAgentHost, HeadlessAgentHost } from "../src/headless.ts";
 
 describe("headless agent host", () => {
 	const cleanups: Array<() => Promise<void> | void> = [];
@@ -123,5 +125,38 @@ describe("headless agent host", () => {
 		await host.dispose();
 		await host.dispose();
 		await expect(host.prompt("late prompt")).rejects.toThrow("disposed");
+	});
+
+	it("fails immediately when a mid-turn portability pause has no consent channel", async () => {
+		let pending: PortabilityConfirmationState | undefined = {
+			source: "mid-turn",
+			target: { provider: "faux", api: "openai-responses", modelId: "faux-2", baseUrl: "https://faux.test/v1" },
+			report: {
+				target: {
+					provider: "faux",
+					api: "openai-responses",
+					modelId: "faux-2",
+					baseUrl: "https://faux.test/v1",
+				},
+				items: [],
+				counts: { portable: 0, reconstructable: 0, "provider-locked": 1, missing: 0, unsupported: 0 },
+				canSwitchWithoutLoss: false,
+			},
+		};
+		const resolved: boolean[] = [];
+		const runtime = {
+			session: {
+				prompt: async () => {},
+				getPendingPortabilityConfirmation: () => pending,
+				resolvePendingPortabilityConfirmation: async (allowLossy: boolean) => {
+					resolved.push(allowLossy);
+					pending = undefined;
+				},
+			},
+		} as unknown as AgentSessionRuntime;
+		const host = new HeadlessAgentHost(runtime);
+
+		await expect(host.prompt("run tool")).rejects.toBeInstanceOf(PortabilityConfirmationRequiredError);
+		expect(resolved).toEqual([false]);
 	});
 });

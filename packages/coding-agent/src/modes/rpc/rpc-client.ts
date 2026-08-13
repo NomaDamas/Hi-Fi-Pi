@@ -213,15 +213,37 @@ export class RpcClient {
 	/**
 	 * Queue a steering message to interrupt the agent mid-run.
 	 */
-	async steer(message: string, images?: ImageContent[], attachments?: AttachmentRecord[]): Promise<void> {
-		await this.send({ type: "steer", message, images, ...(attachments ? { attachments } : {}) });
+	async steer(
+		message: string,
+		images?: ImageContent[],
+		attachments?: AttachmentRecord[],
+		options?: { allowLossy?: boolean },
+	): Promise<void> {
+		await this.send({
+			type: "steer",
+			message,
+			images,
+			...(attachments ? { attachments } : {}),
+			...(options?.allowLossy !== undefined ? { allowLossy: options.allowLossy } : {}),
+		});
 	}
 
 	/**
 	 * Queue a follow-up message to be processed after the agent finishes.
 	 */
-	async followUp(message: string, images?: ImageContent[], attachments?: AttachmentRecord[]): Promise<void> {
-		await this.send({ type: "follow_up", message, images, ...(attachments ? { attachments } : {}) });
+	async followUp(
+		message: string,
+		images?: ImageContent[],
+		attachments?: AttachmentRecord[],
+		options?: { allowLossy?: boolean },
+	): Promise<void> {
+		await this.send({
+			type: "follow_up",
+			message,
+			images,
+			...(attachments ? { attachments } : {}),
+			...(options?.allowLossy !== undefined ? { allowLossy: options.allowLossy } : {}),
+		});
 	}
 
 	/**
@@ -269,6 +291,10 @@ export class RpcClient {
 	async getPortabilityProjection(provider?: string, modelId?: string) {
 		const response = await this.send({ type: "get_portability_projection", provider, modelId });
 		return this.getData(response);
+	}
+
+	async resolvePortabilityConfirmation(allowLossy: boolean): Promise<void> {
+		await this.send({ type: "resolve_portability_confirmation", allowLossy });
 	}
 
 	/**

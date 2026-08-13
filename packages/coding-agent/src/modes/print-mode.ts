@@ -26,6 +26,8 @@ export interface PrintModeOptions {
 	initialImages?: ImageContent[];
 	/** Native attachments prepared for Issue 4 prompt propagation */
 	initialAttachments?: AttachmentRecord[];
+	/** Explicitly allow target-scoped suspension in non-interactive runs. */
+	allowLossy?: boolean;
 }
 
 /**
@@ -33,7 +35,7 @@ export interface PrintModeOptions {
  * Sends prompts to the agent and outputs the result.
  */
 export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: PrintModeOptions): Promise<number> {
-	const { mode, messages = [], initialMessage, initialImages, initialAttachments } = options;
+	const { mode, messages = [], initialMessage, initialImages, initialAttachments, allowLossy } = options;
 	let exitCode = 0;
 	let session = runtimeHost.session;
 	let unsubscribe: (() => void) | undefined;
@@ -121,6 +123,16 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 	};
 
 	try {
+		const resolvePendingPortability = async (): Promise<void> => {
+			while (session.getPendingPortabilityConfirmation()) {
+				if (!allowLossy) {
+					throw new Error(
+						"Portability confirmation required during a provider continuation. Re-run with --allow-lossy or use an interactive client.",
+					);
+				}
+				await session.resolvePendingPortabilityConfirmation(true);
+			}
+		};
 		if (mode === "json") {
 			const header = session.sessionManager.getHeader();
 			if (header) {
@@ -134,11 +146,15 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 			await session.prompt(initialMessage, {
 				images: initialImages,
 				...(initialAttachments?.length ? { attachments: initialAttachments } : {}),
+				...(allowLossy !== undefined ? { allowLossy } : {}),
 			});
+			await resolvePendingPortability();
 		}
 
 		for (const message of messages) {
-			await session.prompt(message);
+			if (allowLossy === undefined) await session.prompt(message);
+			else await session.prompt(message, { allowLossy });
+			await resolvePendingPortability();
 		}
 
 		if (mode === "text") {
