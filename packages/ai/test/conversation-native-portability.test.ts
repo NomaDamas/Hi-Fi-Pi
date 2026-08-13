@@ -292,4 +292,30 @@ describe("provider-native conversation IR and portability", () => {
 		expect(first.items[0].id).not.toBe(shifted.items[0].id);
 		expect(first.items[0].stableId).toBe(shifted.items[0].stableId);
 	});
+
+	it("does not make same-millisecond identity-less native state projectable", () => {
+		const messages: Message[] = [
+			assistant({
+				timestamp: 1,
+				nativeParts: [{ type: "provider-native", provider: "anthropic", kind: "opaque-a", payload: { value: 1 } }],
+			}),
+			assistant({
+				timestamp: 1,
+				nativeParts: [{ type: "provider-native", provider: "anthropic", kind: "opaque-b", payload: { value: 2 } }],
+			}),
+		];
+		const target = model("openai", "openai-responses", "gpt-5.6", "https://api.openai.com/v1");
+		const report = analyzeConversationPortability({ messages, target });
+
+		expect(report.items).toHaveLength(2);
+		expect(report.items.every((item) => item.projectable === false)).toBe(true);
+		const projected = projectConversationForTarget({
+			messages,
+			target,
+			approvedItemIds: report.items.map((item) => item.stableId),
+		});
+		expect(projected.suspendedItemIds).toEqual([]);
+		expect(projected.unapprovedItemIds).toHaveLength(2);
+		expect(projected.messages).toEqual(messages);
+	});
 });
