@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed confirmed lossy model switches to suspend only the approved incompatible files from provider and compaction contexts, preserve them in canonical history, restore them on compatible models, and expose the applied projection through TUI, SDK events, and RPC ([#76](https://github.com/NomaDamas/Hi-Fi-Pi/issues/76)).
+
 ## [0.84.1-hifi.1] - 2026-08-13
 
 ### New Features

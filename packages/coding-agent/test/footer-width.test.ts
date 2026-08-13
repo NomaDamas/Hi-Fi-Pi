@@ -25,6 +25,7 @@ function createSession(options: {
 	compactionUsage?: AssistantUsage;
 	toolUsage?: AssistantUsage;
 	usingSubscription?: boolean;
+	projection?: { activeAttachmentIds: string[]; suspendedAttachmentIds: string[] };
 }): AgentSession {
 	const usage = options.usage;
 	const entries: Array<Record<string, unknown>> = [];
@@ -79,6 +80,7 @@ function createSession(options: {
 			getCwd: () => "/tmp/project",
 		},
 		getContextUsage: () => ({ contextWindow: 200_000, percent: 12.3 }),
+		getAppliedPortabilityProjection: () => options.projection,
 		modelRuntime: {
 			isUsingSubscription: () => options.usingSubscription ?? false,
 		},
@@ -126,6 +128,16 @@ describe("FooterComponent width handling", () => {
 		for (const line of lines) {
 			expect(visibleWidth(line)).toBeLessThanOrEqual(width);
 		}
+	});
+
+	it("shows a compact persistent suspended-file count", () => {
+		const session = createSession({
+			sessionName: "",
+			projection: { activeAttachmentIds: ["att_1", "att_2"], suspendedAttachmentIds: ["att_3"] },
+		});
+		const footer = new FooterComponent(session, createFooterData(1));
+
+		expect(stripAnsi(footer.render(120)[1])).toContain("Files:2 active·1 suspended");
 	});
 
 	it("keeps stats line within width for wide model and provider names", () => {

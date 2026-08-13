@@ -400,6 +400,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 						images: command.images,
 						attachments: command.attachments,
 						streamingBehavior: command.streamingBehavior,
+						allowLossy: command.allowLossy,
 						source: "rpc",
 						preflightResult: (didSucceed) => {
 							if (didSucceed) {
@@ -493,6 +494,27 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					return error(id, "get_portability_report", `Model not found: ${command.provider}/${command.modelId}`);
 				}
 				return success(id, "get_portability_report", session.getPortabilityReport(model));
+			}
+
+			case "get_portability_projection": {
+				const models = session.modelRuntime.getAvailableSnapshot();
+				const model =
+					command.provider && command.modelId
+						? models.find(
+								(candidate) => candidate.provider === command.provider && candidate.id === command.modelId,
+							)
+						: session.model;
+				if (!model) {
+					return error(
+						id,
+						"get_portability_projection",
+						command.provider && command.modelId
+							? `Model not found: ${command.provider}/${command.modelId}`
+							: "No model selected",
+					);
+				}
+				const { messages: _messages, ...projection } = session.getPortabilityProjection(model);
+				return success(id, "get_portability_projection", projection);
 			}
 
 			case "get_available_models": {

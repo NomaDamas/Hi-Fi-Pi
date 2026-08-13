@@ -143,6 +143,12 @@ export class FooterComponent implements Component {
 			const costStr = `$${usageTotals.cost.toFixed(3)}${usingSubscription ? " (sub)" : ""}`;
 			statsParts.push(costStr);
 		}
+		const projection = this.session.getAppliedPortabilityProjection();
+		if (projection?.suspendedAttachmentIds.length) {
+			statsParts.push(
+				`Files:${projection.activeAttachmentIds.length} active·${projection.suspendedAttachmentIds.length} suspended`,
+			);
+		}
 
 		// Colorize context percentage based on usage
 		let contextPercentStr: string;

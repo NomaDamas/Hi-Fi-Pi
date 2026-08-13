@@ -195,8 +195,19 @@ export class RpcClient {
 	 * Returns immediately after sending; use onEvent() to receive streaming events.
 	 * Use waitForIdle() to wait for completion.
 	 */
-	async prompt(message: string, images?: ImageContent[], attachments?: AttachmentRecord[]): Promise<void> {
-		await this.send({ type: "prompt", message, images, ...(attachments ? { attachments } : {}) });
+	async prompt(
+		message: string,
+		images?: ImageContent[],
+		attachments?: AttachmentRecord[],
+		options?: { allowLossy?: boolean },
+	): Promise<void> {
+		await this.send({
+			type: "prompt",
+			message,
+			images,
+			...(attachments ? { attachments } : {}),
+			...(options?.allowLossy !== undefined ? { allowLossy: options.allowLossy } : {}),
+		});
 	}
 
 	/**
@@ -252,6 +263,11 @@ export class RpcClient {
 
 	async getPortabilityReport(provider: string, modelId: string) {
 		const response = await this.send({ type: "get_portability_report", provider, modelId });
+		return this.getData(response);
+	}
+
+	async getPortabilityProjection(provider?: string, modelId?: string) {
+		const response = await this.send({ type: "get_portability_projection", provider, modelId });
 		return this.getData(response);
 	}
 

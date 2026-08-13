@@ -109,6 +109,7 @@ type CommandContext = {
 	session: {
 		model?: { provider: string; id: string; api: string; baseUrl: string; input: string[] };
 		getProviderTraceEvents: () => ProviderTraceEvent[];
+		getPortabilityProjection: () => { suspendedAttachmentIds: string[] };
 	};
 	chatContainer: Container;
 	ui: { requestRender: ReturnType<typeof vi.fn> };
@@ -143,6 +144,7 @@ function createCommandContext(attachments: AttachmentRecord[] = [pdf]): CommandC
 		session: {
 			model: openAiModel,
 			getProviderTraceEvents: () => [],
+			getPortabilityProjection: () => ({ suspendedAttachmentIds: [] }),
 		},
 		chatContainer: new Container(),
 		ui: { requestRender: vi.fn() },
@@ -409,6 +411,16 @@ describe("Issue 6 attachment TUI contracts", () => {
 		expect(output).toContain("2. results.xlsx");
 		expect(output).toContain("source missing");
 		expect(context.ui.requestRender).toHaveBeenCalledOnce();
+	});
+
+	it("shows transport-scoped suspended attachments", () => {
+		const context = createCommandContext([pdf, spreadsheet]);
+		context.session.getPortabilityProjection = () => ({ suspendedAttachmentIds: [spreadsheet.id] });
+		const prototype = InteractiveMode.prototype as unknown as InteractiveModePrivate;
+		prototype.handleFilesCommand.call(context);
+
+		expect(renderCommandOutput(context)).toContain("results.xlsx");
+		expect(renderCommandOutput(context)).toContain("suspended");
 	});
 
 	it("renders a useful empty attachment list", () => {

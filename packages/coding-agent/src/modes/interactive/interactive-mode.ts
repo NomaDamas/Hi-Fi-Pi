@@ -60,7 +60,12 @@ import {
 	getShareViewerUrl,
 	VERSION,
 } from "../../config.ts";
-import { type AgentSession, type AgentSessionEvent, parseSkillBlock } from "../../core/agent-session.ts";
+import {
+	type AgentSession,
+	type AgentSessionEvent,
+	type PromptOptions,
+	parseSkillBlock,
+} from "../../core/agent-session.ts";
 import { type AgentSessionRuntime, SessionImportFileNotFoundError } from "../../core/agent-session-runtime.ts";
 import {
 	formatAttachmentCapabilities,
@@ -1116,7 +1121,7 @@ export class InteractiveMode {
 		// Process initial messages
 		if (initialMessage) {
 			try {
-				await this.session.prompt(initialMessage, {
+				await this.promptWithPortabilityConfirmation(initialMessage, {
 					images: initialImages,
 					...(initialAttachments?.length ? { attachments: initialAttachments } : {}),
 				});
@@ -1129,7 +1134,7 @@ export class InteractiveMode {
 		if (initialMessages) {
 			for (const message of initialMessages) {
 				try {
-					await this.session.prompt(message);
+					await this.promptWithPortabilityConfirmation(message);
 				} catch (error: unknown) {
 					const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
 					this.showError(errorMessage);
@@ -1142,10 +1147,11 @@ export class InteractiveMode {
 			const userInput = await this.getUserInput();
 			try {
 				const processed = await this.processInteractiveFileReferences(userInput);
-				await this.session.prompt(processed.text, {
+				const sent = await this.promptWithPortabilityConfirmation(processed.text, {
 					...(processed.images.length > 0 ? { images: processed.images } : {}),
 					...(processed.attachments.length > 0 ? { attachments: processed.attachments } : {}),
 				});
+				if (!sent) this.editor.setText(userInput);
 			} catch (error: unknown) {
 				this.handleInteractiveInputError(userInput, error);
 			}
@@ -3147,11 +3153,15 @@ export class InteractiveMode {
 				this.editor.setText("");
 				try {
 					const processed = await this.processInteractiveFileReferences(text);
-					await this.session.prompt(processed.text, {
+					const sent = await this.promptWithPortabilityConfirmation(processed.text, {
 						streamingBehavior: "steer",
 						...(processed.images.length > 0 ? { images: processed.images } : {}),
 						...(processed.attachments.length > 0 ? { attachments: processed.attachments } : {}),
 					});
+					if (!sent) {
+						this.editor.setText(text);
+						return;
+					}
 				} catch (error) {
 					this.handleInteractiveInputError(text, error);
 					return;
@@ -3249,6 +3259,11 @@ export class InteractiveMode {
 			case "thinking_level_changed":
 				this.footer.invalidate();
 				this.updateEditorBorderColor();
+				break;
+
+			case "portability_projection":
+				this.footer.invalidate();
+				this.ui.requestRender();
 				break;
 
 			case "message_start":
@@ -4109,11 +4124,15 @@ export class InteractiveMode {
 			this.editor.setText("");
 			try {
 				const processed = await this.processInteractiveFileReferences(text);
-				await this.session.prompt(processed.text, {
+				const sent = await this.promptWithPortabilityConfirmation(processed.text, {
 					streamingBehavior: "followUp",
 					...(processed.images.length > 0 ? { images: processed.images } : {}),
 					...(processed.attachments.length > 0 ? { attachments: processed.attachments } : {}),
 				});
+				if (!sent) {
+					this.editor.setText(text);
+					return;
+				}
 			} catch (error) {
 				this.handleInteractiveInputError(text, error);
 				return;
@@ -4180,7 +4199,10 @@ export class InteractiveMode {
 				this.updateEditorBorderColor();
 				const thinkingStr =
 					result.model.reasoning && result.thinkingLevel !== "off" ? ` (thinking: ${result.thinkingLevel})` : "";
-				this.showStatus(`Switched to ${result.model.name || result.model.id}${thinkingStr}`);
+				const suspendedCount = this.session.getPortabilityProjection().suspendedAttachmentIds.length;
+				const fileStatus =
+					suspendedCount > 0 ? ` · ${suspendedCount} file${suspendedCount === 1 ? "" : "s"} suspended` : "";
+				this.showStatus(`Switched to ${result.model.name || result.model.id}${thinkingStr}${fileStatus}`);
 				void this.maybeWarnAboutAnthropicSubscriptionAuth(result.model);
 			}
 		} catch (error) {
@@ -4802,9 +4824,43 @@ export class InteractiveMode {
 		return `Switch to ${error.report.target.provider}/${error.report.target.modelId} with native-state loss?\n\n${details}${remaining}`;
 	}
 
+	private formatPromptProjectionPrompt(error: PortabilityConfirmationRequiredError): string {
+		const details = error.report.items
+			.slice(0, 6)
+			.map((item) => `- ${item.classification}: ${item.reason}`)
+			.join("\n");
+		const remaining = error.report.items.length > 6 ? `\n- and ${error.report.items.length - 6} more` : "";
+		return `The current model cannot use the following new or changed context:\n\n${details}${remaining}\n\nExclude it from this model context and send the prompt?`;
+	}
+
+	private async promptWithPortabilityConfirmation(text: string, options?: PromptOptions): Promise<boolean> {
+		try {
+			await this.session.prompt(text, options);
+			return true;
+		} catch (error) {
+			if (!(error instanceof PortabilityConfirmationRequiredError)) throw error;
+			const confirmed = await this.showExtensionConfirm(
+				"Attachment compatibility",
+				this.formatPromptProjectionPrompt(error),
+			);
+			if (!confirmed) return false;
+			await this.session.prompt(text, { ...options, allowLossy: true });
+			return true;
+		}
+	}
+
+	private showSuspendedAttachmentNotice(): void {
+		const suspendedCount = this.session.getPortabilityProjection().suspendedAttachmentIds.length;
+		if (suspendedCount === 0) return;
+		this.showWarning(
+			`${suspendedCount} incompatible file${suspendedCount === 1 ? " is" : "s are"} suspended for this model. Use /files to inspect.`,
+		);
+	}
+
 	private async setModelWithPortabilityConfirmation(model: Model<any>): Promise<boolean> {
 		try {
 			await this.session.setModel(model);
+			this.showSuspendedAttachmentNotice();
 			return true;
 		} catch (error) {
 			if (!(error instanceof PortabilityConfirmationRequiredError)) throw error;
@@ -4814,6 +4870,7 @@ export class InteractiveMode {
 			);
 			if (!confirmed) return false;
 			await this.session.setModel(model, { allowLossy: true });
+			this.showSuspendedAttachmentNotice();
 			return true;
 		}
 	}
@@ -6271,10 +6328,15 @@ export class InteractiveMode {
 	}
 
 	private handleFilesCommand(): void {
+		const suspendedAttachmentIds = new Set(
+			this.session.model ? this.session.getPortabilityProjection().suspendedAttachmentIds : [],
+		);
 		const info = formatAttachmentList(
 			this.sessionManager.getAttachments(),
 			this.session.model,
 			attachmentPresentationStyle,
+			undefined,
+			{ suspendedAttachmentIds },
 		);
 		this.chatContainer.addChild(new Spacer(1));
 		this.chatContainer.addChild(new Text(info, 1, 0));
@@ -6282,11 +6344,16 @@ export class InteractiveMode {
 	}
 
 	private handleFileCommand(selector: string): void {
+		const suspendedAttachmentIds = new Set(
+			this.session.model ? this.session.getPortabilityProjection().suspendedAttachmentIds : [],
+		);
 		const result = formatAttachmentDetails(
 			this.sessionManager.getAttachments(),
 			selector,
 			this.session.model,
 			attachmentPresentationStyle,
+			undefined,
+			{ suspendedAttachmentIds },
 		);
 		if (result.type === "warning") {
 			this.showWarning(result.message);

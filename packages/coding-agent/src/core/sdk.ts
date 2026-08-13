@@ -107,6 +107,7 @@ export interface CreateAgentSessionResult {
 // Re-exports
 
 export * from "./agent-session-runtime.ts";
+export type { AppliedPortabilityProjection } from "./attachments/portability-projection.ts";
 export type {
 	ExtensionAPI,
 	ExtensionCommandContext,

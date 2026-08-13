@@ -335,6 +335,45 @@ describe("Issue 4 attachment input contracts", () => {
 		expect(sent).toEqual([{ type: "prompt", message: "Analyze this", images: undefined, attachments: [attachment] }]);
 	});
 
+	it("opts into a confirmed lossy RPC prompt without changing the legacy overload", async () => {
+		const client = new RpcClient();
+		const sent: unknown[] = [];
+		(client as unknown as { send(command: unknown): Promise<void> }).send = async (command) => {
+			sent.push(command);
+		};
+
+		await client.prompt("Continue without video", undefined, [attachment], { allowLossy: true });
+
+		expect(sent).toEqual([
+			{
+				type: "prompt",
+				message: "Continue without video",
+				images: undefined,
+				attachments: [attachment],
+				allowLossy: true,
+			},
+		]);
+	});
+
+	it("exposes the applied portability projection over RPC", async () => {
+		const client = new RpcClient();
+		const sent: unknown[] = [];
+		(client as unknown as { send(command: unknown): Promise<unknown> }).send = async (command) => {
+			sent.push(command);
+			return {
+				type: "response",
+				command: "get_portability_projection",
+				success: true,
+				data: { suspendedAttachmentIds: [attachment.id] },
+			};
+		};
+
+		const projection = await client.getPortabilityProjection("faux", "faux-2");
+
+		expect(sent).toEqual([{ type: "get_portability_projection", provider: "faux", modelId: "faux-2" }]);
+		expect(projection).toMatchObject({ suspendedAttachmentIds: [attachment.id] });
+	});
+
 	it("serializes attachments on RPC steering and follow-up commands", async () => {
 		const client = new RpcClient();
 		const sent: unknown[] = [];
