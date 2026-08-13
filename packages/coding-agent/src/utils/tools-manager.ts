@@ -9,7 +9,6 @@ import { pipeline } from "stream/promises";
 import { APP_NAME, CONFIG_DIR_NAME, getBinDir, resolveAgentDir, USER_CONFIG_DIR_NAME } from "../config.ts";
 import { fetchWithRetry } from "./management-http.ts";
 
-const TOOLS_DIR = getBinDir();
 const NETWORK_TIMEOUT_MS = 10_000;
 const DOWNLOAD_TIMEOUT_MS = 120_000;
 
@@ -99,7 +98,7 @@ export function getToolPath(tool: "fd" | "rg"): string | null {
 
 	// Check our tools directory first
 	const binaryFileName = config.binaryName + (platform() === "win32" ? ".exe" : "");
-	const localPath = join(TOOLS_DIR, binaryFileName);
+	const localPath = join(getBinDir(), binaryFileName);
 	if (existsSync(localPath)) {
 		return localPath;
 	}
@@ -266,6 +265,7 @@ async function downloadTool(tool: "fd" | "rg"): Promise<string> {
 
 	const plat = platform();
 	const architecture = arch();
+	const toolsDir = getBinDir();
 
 	// Get latest version
 	let version = await getLatestVersion(config.repo);
@@ -280,7 +280,7 @@ async function downloadTool(tool: "fd" | "rg"): Promise<string> {
 	}
 
 	// Create tools directory
-	mkdirSync(TOOLS_DIR, { recursive: true });
+	mkdirSync(toolsDir, { recursive: true });
 
 	const downloadUrl = `https://github.com/${config.repo}/releases/download/${config.tagPrefix}${version}/${assetName}`;
 	// Download and extract under unique per-attempt paths. Multiple processes can
@@ -288,14 +288,14 @@ async function downloadTool(tool: "fd" | "rg"): Promise<string> {
 	// sessions after a fresh install), and a shared archive path lets one process
 	// truncate the file while another is mid-extract.
 	const attemptId = `${process.pid}_${randomUUID()}`;
-	const archivePath = join(TOOLS_DIR, `${assetName}.${attemptId}.download`);
+	const archivePath = join(toolsDir, `${assetName}.${attemptId}.download`);
 	const binaryExt = plat === "win32" ? ".exe" : "";
-	const binaryPath = join(TOOLS_DIR, config.binaryName + binaryExt);
+	const binaryPath = join(toolsDir, config.binaryName + binaryExt);
 
 	// Download
 	await downloadFile(downloadUrl, archivePath);
 
-	const extractDir = join(TOOLS_DIR, `extract_tmp_${config.binaryName}_${attemptId}`);
+	const extractDir = join(toolsDir, `extract_tmp_${config.binaryName}_${attemptId}`);
 	mkdirSync(extractDir, { recursive: true });
 
 	try {

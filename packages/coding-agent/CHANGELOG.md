@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed startup from an inaccessible or deleted current directory to report an actionable diagnostic instead of crashing during module loading with a raw `uv_cwd` stack ([#73](https://github.com/NomaDamas/Hi-Fi-Pi/issues/73)).
+
 ### Added
 
 - Added a fullscreen exit output setting to choose between printing the final transcript and only a session resume hint.

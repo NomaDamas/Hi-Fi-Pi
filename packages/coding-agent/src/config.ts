@@ -581,22 +581,37 @@ export interface AgentDirResolution {
 
 function resolvePortableUserPath(
 	value: string,
-	options: Required<Pick<AgentDirResolutionOptions, "homeDir" | "cwd" | "platform">>,
+	options: Required<Pick<AgentDirResolutionOptions, "homeDir" | "platform">> & Pick<AgentDirResolutionOptions, "cwd">,
 ): string {
 	const pathApi = options.platform === "win32" ? win32 : posix;
 	if (value === "~") return options.homeDir;
 	if (value.startsWith("~/") || value.startsWith("~\\")) {
 		return pathApi.join(options.homeDir, value.slice(2));
 	}
-	return pathApi.isAbsolute(value) ? pathApi.normalize(value) : pathApi.resolve(options.cwd, value);
+	return pathApi.isAbsolute(value)
+		? pathApi.normalize(value)
+		: pathApi.resolve(options.cwd ?? getAccessibleCwd(), value);
+}
+
+export const INACCESSIBLE_CWD_MESSAGE =
+	"The current directory is not accessible. Change to an accessible directory or grant your terminal Files and Folders access in macOS System Settings.";
+
+/** Read cwd with a stable, actionable diagnostic for privacy and deleted-directory failures. */
+export function getAccessibleCwd(): string {
+	try {
+		return process.cwd();
+	} catch (cause) {
+		throw new Error(INACCESSIBLE_CWD_MESSAGE, { cause });
+	}
 }
 
 /** Resolve the active user state root without touching the filesystem. */
 export function resolveAgentDir(options: AgentDirResolutionOptions = {}): AgentDirResolution {
 	const env = options.env ?? process.env;
-	const context = {
+	const context: Required<Pick<AgentDirResolutionOptions, "homeDir" | "platform">> &
+		Pick<AgentDirResolutionOptions, "cwd"> = {
 		homeDir: options.homeDir ?? homedir(),
-		cwd: options.cwd ?? process.cwd(),
+		cwd: options.cwd,
 		platform: options.platform ?? process.platform,
 	};
 	const configuredDir = env[ENV_AGENT_DIR];
