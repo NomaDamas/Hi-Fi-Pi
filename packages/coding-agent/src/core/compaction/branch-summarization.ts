@@ -87,6 +87,8 @@ export interface GenerateBranchSummaryOptions {
 	retry?: RetryPolicy;
 	/** Optional callbacks for retry reporting (e.g. TUI retry indicators). */
 	callbacks?: RetryCallbacks;
+	/** Target-specific projection applied before summary serialization. */
+	projectMessages?: (messages: AgentMessage[]) => AgentMessage[];
 }
 
 // ============================================================================
@@ -306,6 +308,7 @@ export async function generateBranchSummary(
 		streamFn,
 		retry,
 		callbacks,
+		projectMessages,
 	} = options;
 
 	// Token budget = context window minus reserved space for prompt + response
@@ -320,7 +323,7 @@ export async function generateBranchSummary(
 
 	// Transform to LLM-compatible messages, then serialize to text
 	// Serialization prevents the model from treating it as a conversation to continue
-	const llmMessages = convertToLlm(messages);
+	const llmMessages = convertToLlm(projectMessages ? projectMessages(messages) : messages);
 	const conversationText = serializeConversation(llmMessages);
 
 	// Build prompt

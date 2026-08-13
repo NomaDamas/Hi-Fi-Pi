@@ -26,12 +26,11 @@ import type {
 } from "@earendil-works/pi-agent-core";
 import type { PortabilityReport, ProviderOptionDefinition } from "@earendil-works/pi-ai";
 import {
-	analyzeConversationPortability,
 	contentText,
 	getProviderOptionDefinitions,
 	getProviderOptionScope,
-	PortabilityConfirmationRequiredError,
 	resolveProviderOptions,
+	sanitizeProviderTraceValue,
 } from "@earendil-works/pi-ai";
 import type {
 	AssistantMessage,
@@ -65,6 +64,10 @@ import { resolvePath } from "../utils/paths.ts";
 import { sleep } from "../utils/sleep.ts";
 import { normalizeToolResultImages } from "../utils/tool-result-images.ts";
 import { AttachmentCoordinator } from "./attachments/attachment-coordinator.ts";
+import {
+	type AppliedPortabilityProjection,
+	PortabilityProjectionCoordinator,
+} from "./attachments/portability-projection.ts";
 import { formatNoApiKeyFoundMessage, formatNoModelSelectedMessage } from "./auth-guidance.ts";
 import { type BashResult, executeBashWithOperations } from "./bash-executor.ts";
 import {
@@ -170,6 +173,7 @@ export type AgentSessionEvent =
 	| { type: "entry_appended"; entry: SessionEntry }
 	| { type: "session_info_changed"; name: string | undefined }
 	| { type: "thinking_level_changed"; level: ThinkingLevel }
+	| { type: "portability_projection"; projection: PortabilityProjectionState }
 	| {
 			type: "compaction_end";
 			reason: "manual" | "threshold" | "overflow";
@@ -267,6 +271,8 @@ export interface PromptOptions {
 	source?: InputSource;
 	/** Internal hook used by RPC mode to observe prompt preflight acceptance or rejection. */
 	preflightResult?: (success: boolean) => void;
+	/** Explicitly exclude incompatible canonical items from this target context. */
+	allowLossy?: boolean;
 }
 
 /** Additive object-style prompt input for SDK consumers. */
@@ -288,6 +294,8 @@ export interface ModelSwitchOptions {
 	/** Explicitly accept provider-native state loss reported by getPortabilityReport(). */
 	allowLossy?: boolean;
 }
+
+export type PortabilityProjectionState = Omit<AppliedPortabilityProjection, "messages">;
 
 /** Session statistics for /session command */
 export interface SessionStats {
@@ -354,6 +362,9 @@ export class AgentSession {
 	/** Bounded, sanitized provider trace history for SDK, RPC, extensions, and TUI inspection. */
 	private readonly _providerTraceEvents: ProviderTraceEvent[] = [];
 	private readonly _attachmentCoordinator: AttachmentCoordinator;
+	private readonly _portabilityProjection: PortabilityProjectionCoordinator;
+	private _lastPortabilityProjectionSignature?: string;
+	private _lastPortabilityProjectionState?: PortabilityProjectionState;
 	/** Messages queued to be included with the next user prompt as context ("asides"). */
 	private _pendingNextTurnMessages: CustomMessage[] = [];
 
@@ -429,6 +440,17 @@ export class AgentSession {
 				this.agent.attachmentRegistry = registry;
 			},
 		});
+		this._portabilityProjection = new PortabilityProjectionCoordinator({
+			store: this.sessionManager,
+			listAttachments: () => this._attachmentCoordinator.listRecords(),
+			sourceAvailable: (attachment) => this._attachmentCoordinator.isSourceAvailable(attachment),
+		});
+		this._installPortabilityProjection();
+		if (this.model && this._portabilityProjection.hasDecision(this.model)) {
+			this._recordPortabilityProjection(
+				this._portabilityProjection.inspect(this._llmMessages(this.agent.state.messages), this.model),
+			);
+		}
 		this._restoreProviderOptions(config.providerOptions);
 		this._installProviderTraceBridge();
 
@@ -442,6 +464,101 @@ export class AgentSession {
 			activeToolNames: this._initialActiveToolNames,
 			includeAllExtensionTools: true,
 		});
+	}
+
+	private _installPortabilityProjection(): void {
+		const convertToLlm = this.agent.convertToLlm;
+		this.agent.convertToLlm = async (messages) => {
+			const converted = await convertToLlm(messages);
+			const model = this.model;
+			if (!model || !this._portabilityProjection.hasDecision(model)) return converted;
+			const projection = this._portabilityProjection.preflight(converted, model);
+			this._recordPortabilityProjection(projection);
+			return projection.messages;
+		};
+	}
+
+	private _recordPortabilityProjection(projection: AppliedPortabilityProjection): void {
+		const { messages: _messages, ...state } = projection;
+		const signature = JSON.stringify({
+			target: state.target,
+			activeAttachmentIds: state.activeAttachmentIds,
+			suspendedItemIds: state.suspendedItemIds,
+			unapprovedItemIds: state.unapprovedItemIds,
+			decisionEntryId: state.decisionEntryId,
+		});
+		if (signature === this._lastPortabilityProjectionSignature) return;
+		this._lastPortabilityProjectionSignature = signature;
+		this._lastPortabilityProjectionState = structuredClone(state);
+		const suspendedItemIds = new Set(state.suspendedItemIds);
+		const unapprovedItemIds = new Set(state.unapprovedItemIds);
+		this._providerTraceEvents.push({
+			type: "provider_trace",
+			traceId: `projection:${state.decisionEntryId ?? state.target.modelId}:${Date.now()}`,
+			sequence: 0,
+			timestamp: Date.now(),
+			stage: "context_projection",
+			provider: state.target.provider,
+			api: state.target.api,
+			modelId: state.target.modelId,
+			payload: sanitizeProviderTraceValue({
+				target: state.target,
+				activeItemIds: state.report.items
+					.filter(
+						(item) =>
+							!suspendedItemIds.has(item.stableId) &&
+							!unapprovedItemIds.has(item.stableId) &&
+							(item.classification === "portable" || item.classification === "reconstructable"),
+					)
+					.map((item) => item.stableId),
+				suspendedItemIds: state.suspendedItemIds,
+				unapprovedItemIds: state.unapprovedItemIds,
+				items: state.report.items.map((item) => ({
+					id: item.stableId,
+					kind: item.kind,
+					classification: item.classification,
+					reason: item.reason,
+					...(item.attachmentId ? { attachmentId: item.attachmentId } : {}),
+				})),
+				...(state.decisionEntryId ? { decisionEntryId: state.decisionEntryId } : {}),
+			}),
+		});
+		if (this._providerTraceEvents.length > 500) this._providerTraceEvents.shift();
+		this._emit({ type: "portability_projection", projection: structuredClone(state) });
+	}
+
+	private _llmMessages(messages: readonly AgentMessage[]): Message[] {
+		return messages.filter(
+			(message): message is Message =>
+				message.role === "user" || message.role === "assistant" || message.role === "toolResult",
+		);
+	}
+
+	private _projectAgentMessages(messages: readonly AgentMessage[], target: Model<any>): AgentMessage[] {
+		if (!this._portabilityProjection.hasDecision(target)) return [...messages];
+		const llmMessages = this._llmMessages(messages);
+		const projected = this._portabilityProjection.preflight(llmMessages, target).messages;
+		let llmIndex = 0;
+		return messages.map((message) => {
+			if (message.role !== "user" && message.role !== "assistant" && message.role !== "toolResult") return message;
+			const replacement = projected[llmIndex];
+			llmIndex += 1;
+			return replacement;
+		});
+	}
+
+	private _preflightPromptMessages(
+		additionalMessages: readonly AgentMessage[],
+		allowLossy: boolean | undefined,
+	): void {
+		const model = this.model;
+		if (!model || (!allowLossy && !this._portabilityProjection.hasDecision(model))) return;
+		const projection = this._portabilityProjection.preflight(
+			[...this._llmMessages(this.agent.state.messages), ...this._llmMessages(additionalMessages)],
+			model,
+			{ allowLossy },
+		);
+		this._recordPortabilityProjection(projection);
 	}
 
 	private _installProviderTraceBridge(): void {
@@ -1354,6 +1471,19 @@ export class AgentSession {
 						"Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.",
 					);
 				}
+				const queuedContent: (TextContent | ImageContent)[] = [{ type: "text", text: expandedText }];
+				if (currentImages) queuedContent.push(...currentImages);
+				this._preflightPromptMessages(
+					[
+						{
+							role: "user",
+							content: queuedContent,
+							...(currentAttachments?.length ? { attachments: currentAttachments } : {}),
+							timestamp: Date.now(),
+						},
+					],
+					options.allowLossy,
+				);
 				if (options.streamingBehavior === "followUp") {
 					this._attachmentCoordinator.persistReferences(currentAttachments);
 					await this._queueFollowUp(expandedText, currentImages, currentAttachments);
@@ -1397,8 +1527,6 @@ export class AgentSession {
 
 			// Build messages array (custom message if any, then user message)
 			messages = [];
-			this._attachmentCoordinator.persistReferences(currentAttachments);
-
 			// Add user message
 			const userContent: (TextContent | ImageContent)[] = [{ type: "text", text: expandedText }];
 			if (currentImages) {
@@ -1440,6 +1568,8 @@ export class AgentSession {
 					});
 				}
 			}
+			this._preflightPromptMessages(messages, options?.allowLossy);
+			this._attachmentCoordinator.persistReferences(currentAttachments);
 			// Apply extension-modified system prompt, or reset to base
 			if (result?.systemPrompt !== undefined) {
 				this._systemPromptOverride = result.systemPrompt;
@@ -1541,6 +1671,19 @@ export class AgentSession {
 		expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
 
 		const attachmentReferences = this._attachmentCoordinator.register(attachments);
+		const content: (TextContent | ImageContent)[] = [{ type: "text", text: expandedText }];
+		if (images) content.push(...images);
+		this._preflightPromptMessages(
+			[
+				{
+					role: "user",
+					content,
+					...(attachmentReferences?.length ? { attachments: attachmentReferences } : {}),
+					timestamp: Date.now(),
+				},
+			],
+			undefined,
+		);
 		this._attachmentCoordinator.persistReferences(attachmentReferences);
 		await this._queueSteer(expandedText, images, attachmentReferences);
 	}
@@ -1563,6 +1706,19 @@ export class AgentSession {
 		expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
 
 		const attachmentReferences = this._attachmentCoordinator.register(attachments);
+		const content: (TextContent | ImageContent)[] = [{ type: "text", text: expandedText }];
+		if (images) content.push(...images);
+		this._preflightPromptMessages(
+			[
+				{
+					role: "user",
+					content,
+					...(attachmentReferences?.length ? { attachments: attachmentReferences } : {}),
+					timestamp: Date.now(),
+				},
+			],
+			undefined,
+		);
 		this._attachmentCoordinator.persistReferences(attachmentReferences);
 		await this._queueFollowUp(expandedText, images, attachmentReferences);
 	}
@@ -1784,32 +1940,26 @@ export class AgentSession {
 	}
 
 	getPortabilityReport(target: Model<any>): PortabilityReport {
-		const messages = this.agent.state.messages.filter(
-			(message): message is Message =>
-				message.role === "user" || message.role === "assistant" || message.role === "toolResult",
-		);
-		return analyzeConversationPortability({
-			messages,
-			attachments: this._attachmentCoordinator.listRecords(),
-			target,
-			sourceAvailable: (attachment) => this._attachmentCoordinator.isSourceAvailable(attachment),
-		});
+		return this._portabilityProjection.inspect(this._llmMessages(this.agent.state.messages), target).report;
+	}
+
+	getPortabilityProjection(target: Model<any> | undefined = this.model): AppliedPortabilityProjection {
+		if (!target) throw new Error(formatNoModelSelectedMessage());
+		return this._portabilityProjection.inspect(this._llmMessages(this.agent.state.messages), target);
+	}
+
+	getAppliedPortabilityProjection(): PortabilityProjectionState | undefined {
+		return this._lastPortabilityProjectionState ? structuredClone(this._lastPortabilityProjectionState) : undefined;
 	}
 
 	private _preflightModelSwitch(target: Model<any>, options?: ModelSwitchOptions): PortabilityReport {
-		const report = this.getPortabilityReport(target);
-		if (!report.canSwitchWithoutLoss && !options?.allowLossy) {
-			throw new PortabilityConfirmationRequiredError(report);
-		}
-		if (!report.canSwitchWithoutLoss && options?.allowLossy) {
-			this.sessionManager.appendCustomEntry("hifi.portability-decision", {
-				version: 1,
-				acceptedLoss: true,
-				timestamp: Date.now(),
-				report,
-			});
-		}
-		return report;
+		const projection = this._portabilityProjection.preflight(
+			this._llmMessages(this.agent.state.messages),
+			target,
+			options,
+		);
+		this._recordPortabilityProjection(projection);
+		return projection.report;
 	}
 
 	/**
@@ -2100,8 +2250,13 @@ export class AgentSession {
 				details = extensionCompaction.details;
 			} else {
 				// Generate compaction result
+				const providerPreparation = {
+					...preparation,
+					messagesToSummarize: this._projectAgentMessages(preparation.messagesToSummarize, this.model),
+					turnPrefixMessages: this._projectAgentMessages(preparation.turnPrefixMessages, this.model),
+				};
 				const result = await compact(
-					preparation,
+					providerPreparation,
 					requestModel,
 					apiKey,
 					headers,
@@ -2372,8 +2527,13 @@ export class AgentSession {
 				details = extensionCompaction.details;
 			} else {
 				// Generate compaction result
+				const providerPreparation = {
+					...preparation,
+					messagesToSummarize: this._projectAgentMessages(preparation.messagesToSummarize, this.model),
+					turnPrefixMessages: this._projectAgentMessages(preparation.turnPrefixMessages, this.model),
+				};
 				const compactResult = await compact(
-					preparation,
+					providerPreparation,
 					requestModel,
 					apiKey,
 					headers,
@@ -3255,6 +3415,7 @@ export class AgentSession {
 					streamFn: this.agent.streamFunction,
 					retry: this.settingsManager.getRetrySettings(),
 					callbacks: this._summarizationRetryCallbacks({ source: "branchSummary" }),
+					projectMessages: (messages) => this._projectAgentMessages(messages, model),
 				});
 				if (result.aborted) {
 					return { cancelled: true, aborted: true };
