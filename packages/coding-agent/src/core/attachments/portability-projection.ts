@@ -54,9 +54,10 @@ function lossyItemIds(report: PortabilityReport): string[] {
 			report.items
 				.filter(
 					(item) =>
-						item.classification === "provider-locked" ||
-						item.classification === "missing" ||
-						item.classification === "unsupported",
+						item.projectable &&
+						(item.classification === "provider-locked" ||
+							item.classification === "missing" ||
+							item.classification === "unsupported"),
 				)
 				.map((item) => item.stableId),
 		),
@@ -115,6 +116,17 @@ export class PortabilityProjectionCoordinator {
 		const projection = this.inspect(messages, target);
 		if (projection.unapprovedItemIds.length === 0) return projection;
 		if (!options.allowLossy) throw new PortabilityConfirmationRequiredError(unapprovedReport(projection));
+		if (
+			projection.report.items.some(
+				(item) =>
+					!item.projectable &&
+					(item.classification === "provider-locked" ||
+						item.classification === "missing" ||
+						item.classification === "unsupported"),
+			)
+		) {
+			throw new PortabilityProjectionUnavailableError(unapprovedReport(projection));
+		}
 
 		const decision: StoredPortabilityDecision = {
 			version: 2,
@@ -125,7 +137,7 @@ export class PortabilityProjectionCoordinator {
 			report: projection.report,
 		};
 		const decisionEntryId = this.store.appendCustomEntry(DECISION_TYPE, decision);
-		return {
+		const confirmed = {
 			...projectConversationForTarget({
 				messages,
 				attachments: this.listAttachments(),
@@ -135,6 +147,10 @@ export class PortabilityProjectionCoordinator {
 			}),
 			decisionEntryId,
 		};
+		if (confirmed.unapprovedItemIds.length > 0) {
+			throw new PortabilityProjectionUnavailableError(unapprovedReport(confirmed));
+		}
+		return confirmed;
 	}
 
 	private findDecision(target: Model<any>): { entryId: string; decision: StoredPortabilityDecision } | undefined {
@@ -151,5 +167,15 @@ export class PortabilityProjectionCoordinator {
 			if (entry.data.targetKey === targetKey) return { entryId: entry.id, decision: entry.data };
 		}
 		return undefined;
+	}
+}
+
+export class PortabilityProjectionUnavailableError extends Error {
+	readonly report: PortabilityReport;
+
+	constructor(report: PortabilityReport) {
+		super("Some incompatible provider-native state has no stable identity and cannot be suspended safely.");
+		this.name = "PortabilityProjectionUnavailableError";
+		this.report = report;
 	}
 }
