@@ -10,6 +10,7 @@ import type {
 	AttachmentRecord,
 	AttachmentRegistry,
 	AttachmentSourcePolicy,
+	Message,
 	Model,
 	NativeAttachmentTransportSource,
 	NativeInputCapabilityProvenance,
@@ -205,6 +206,37 @@ export function recordProviderAttachmentLowering(
 			source: attachment.source.type === "base64" ? "inline" : attachment.source.type,
 		},
 	});
+}
+
+/**
+ * Fail-closed guard for API transports that do not implement native attachment
+ * lowering.
+ *
+ * Attachment-free requests are untouched, so legacy text and image payloads keep
+ * their exact shape. An attachment-bearing request is rejected before any
+ * network execution, so a transport can never serialize the text portion while
+ * silently dropping the attachment references a user believes the model saw.
+ *
+ * Diagnostics name the provider, transport, model, attachment id and media type.
+ * Local bytes, filesystem paths and credentials are never included.
+ */
+export function assertAttachmentsUnsupported(
+	model: Pick<Model<string>, "provider" | "api" | "id">,
+	messages: readonly Message[],
+	registry?: AttachmentRegistry,
+): void {
+	for (const message of messages) {
+		if (message.role !== "user" && message.role !== "toolResult") continue;
+		const attachments = (message as AttachmentMessage).attachments;
+		if (!attachments || attachments.length === 0) continue;
+		const { attachmentId } = attachments[0];
+		const mediaType = registry?.resolve(attachmentId)?.mediaType ?? "unknown media type";
+		throw new UnsupportedInputError(
+			model,
+			mediaType,
+			`the ${model.api} transport implements no native attachment lowering (attachment ${attachmentId} on a ${message.role} message)`,
+		);
+	}
 }
 
 export function resolveNativeAttachments(
