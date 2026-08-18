@@ -62,6 +62,10 @@ describe("InteractiveMode compaction events", () => {
 			InteractiveMode.prototype,
 			"sendAttachmentAwareCompactionMessage",
 		) as (message: { text: string; mode: "steer" | "followUp" }, startPrompt: boolean) => Promise<void>;
+		const promptWithPortabilityConfirmation = Reflect.get(
+			InteractiveMode.prototype,
+			"promptWithPortabilityConfirmation",
+		) as (text: string, options?: Record<string, unknown>) => Promise<boolean>;
 		const fakeThis = {
 			compactionQueuedMessages: [{ text: "change direction", mode: "steer" as const }],
 			session: {
@@ -73,6 +77,9 @@ describe("InteractiveMode compaction events", () => {
 			isExtensionCommand: vi.fn().mockReturnValue(false),
 			processInteractiveFileReferences: vi.fn(async (text: string) => ({ text, images: [], attachments: [] })),
 			sendAttachmentAwareCompactionMessage,
+			promptWithPortabilityConfirmation,
+			showExtensionConfirm: vi.fn().mockResolvedValue(true),
+			formatPromptProjectionPrompt: vi.fn().mockReturnValue("confirm?"),
 			updatePendingMessagesDisplay: vi.fn(),
 			showError: vi.fn(),
 		};
@@ -84,7 +91,10 @@ describe("InteractiveMode compaction events", () => {
 
 		await flushCompactionQueue.call(fakeThis, { willRetry: false });
 
-		expect(fakeThis.session.prompt).toHaveBeenCalledWith("change direction", { streamingBehavior: "steer" });
+		expect(fakeThis.session.prompt).toHaveBeenCalledWith(
+			"change direction",
+			expect.objectContaining({ streamingBehavior: "steer" }),
+		);
 		expect(fakeThis.compactionQueuedMessages).toEqual([]);
 		expect(fakeThis.showError).not.toHaveBeenCalled();
 	});

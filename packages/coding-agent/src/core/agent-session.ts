@@ -565,6 +565,28 @@ export class AgentSession {
 		});
 	}
 
+	/**
+	 * Synchronous mirror of the `_preflightPromptMessages` early return. Steering
+	 * and follow-up queueing must stay observable in the caller's tick, so those
+	 * paths only become asynchronous when portability work is actually pending.
+	 */
+	private _needsPortabilityPreflight(allowLossy: boolean | undefined): boolean {
+		const model = this.model;
+		if (!model) return false;
+		if (allowLossy) return true;
+		const deferred = this._deferredPortabilityConfirmation;
+		if (deferred) {
+			const targetKey = getPortabilityTargetKey({
+				provider: model.provider,
+				api: model.api,
+				modelId: model.id,
+				baseUrl: model.baseUrl,
+			});
+			if (getPortabilityTargetKey(deferred.target) === targetKey) return true;
+		}
+		return this._portabilityProjection.hasDecision(model);
+	}
+
 	private async _preflightPromptMessages(
 		additionalMessages: readonly AgentMessage[],
 		allowLossy: boolean | undefined,
@@ -1769,6 +1791,10 @@ export class AgentSession {
 		expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
 
 		const attachmentReferences = this._attachmentCoordinator.register(attachments);
+		if (!this._needsPortabilityPreflight(options?.allowLossy)) {
+			this._attachmentCoordinator.persistReferences(attachmentReferences);
+			return this._queueSteer(expandedText, images, attachmentReferences);
+		}
 		const content: (TextContent | ImageContent)[] = [{ type: "text", text: expandedText }];
 		if (images) content.push(...images);
 		try {
@@ -1815,6 +1841,10 @@ export class AgentSession {
 		expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
 
 		const attachmentReferences = this._attachmentCoordinator.register(attachments);
+		if (!this._needsPortabilityPreflight(options?.allowLossy)) {
+			this._attachmentCoordinator.persistReferences(attachmentReferences);
+			return this._queueFollowUp(expandedText, images, attachmentReferences);
+		}
 		const content: (TextContent | ImageContent)[] = [{ type: "text", text: expandedText }];
 		if (images) content.push(...images);
 		try {
@@ -2901,7 +2931,16 @@ export class AgentSession {
 				modelId: model.id,
 				baseUrl: model.baseUrl,
 			});
-		if (targetKey(refreshedModel) !== targetKey(currentModel)) return;
+		// A provider registration may legitimately change the effective target
+		// (a `registerProvider` baseUrl or api override is exactly that). Adopt the
+		// refreshed model, but never carry portability state across an identity
+		// change: the new target is re-evaluated from scratch, and the persisted
+		// per-target decisions stay keyed to the targets they were made for.
+		if (targetKey(refreshedModel) !== targetKey(currentModel)) {
+			this._lastPortabilityProjectionSignature = undefined;
+			this._lastPortabilityProjectionState = undefined;
+			this._pendingPortabilityConfirmation = undefined;
+		}
 
 		this.agent.state.model = refreshedModel;
 	}

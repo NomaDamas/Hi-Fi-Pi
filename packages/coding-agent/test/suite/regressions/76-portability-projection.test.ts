@@ -620,14 +620,35 @@ describe("issue #76 portability projection", () => {
 		expect(harness.session.messages.some((message) => message.role === "custom")).toBe(true);
 	});
 
-	it("does not bypass exact target projection when a registry refresh changes baseUrl", async () => {
-		const harness = await createHarness();
+	it("re-evaluates portability when a registry refresh changes the target identity", async () => {
+		const harness = await createHarness({
+			models: [
+				{ id: "faux-1", name: "Source" },
+				{ id: "faux-2", name: "Target" },
+			],
+		});
 		harnesses.push(harness);
-		const current = harness.session.model!;
-		const replacement = { ...current, baseUrl: "https://rotated.example/v1" };
+		const source = harness.getModel("faux-1")!;
+		const target = harness.getModel("faux-2")!;
+		allowInline(source, [XLSX, MP4]);
+		allowInline(target, [XLSX]);
+
+		const spreadsheet = attachment("att_xlsx", "results.xlsx", XLSX);
+		const video = attachment("att_mp4", "demo.mp4", MP4);
+		harness.setResponses([fauxAssistantMessage("source saw files"), fauxAssistantMessage("target response")]);
+
+		await harness.session.prompt({ text: "inspect both", attachments: [spreadsheet, video] });
+		await harness.session.setModel(target, { allowLossy: true });
+		expect(harness.session.getPortabilityProjection().decisionEntryId).toBeDefined();
+
+		// A `registerProvider` override reaches the active model through a registry
+		// refresh. The override must apply — that is the documented extension
+		// contract — but it produces a different portability target, so the decision
+		// approved for the previous identity must not carry over silently.
+		const rotated = { ...target, baseUrl: "https://rotated.example/v1" };
 		const runtime = harness.session.modelRuntime as unknown as { getModel: () => Model<any> };
 		const originalGetModel = runtime.getModel;
-		runtime.getModel = () => replacement;
+		runtime.getModel = () => rotated;
 
 		try {
 			(
@@ -635,9 +656,15 @@ describe("issue #76 portability projection", () => {
 					_refreshCurrentModelFromRegistry(): void;
 				}
 			)._refreshCurrentModelFromRegistry();
-			expect(harness.session.model).toBe(current);
 		} finally {
 			runtime.getModel = originalGetModel;
 		}
+
+		expect(harness.session.model?.baseUrl).toBe("https://rotated.example/v1");
+		const projection = harness.session.getPortabilityProjection();
+		expect(projection.decisionEntryId).toBeUndefined();
+		expect(projection.suspendedItemIds).toEqual([]);
+		expect(projection.unapprovedItemIds).toContain("attachment:att_mp4");
+		expect(harness.session.getPendingPortabilityConfirmation()).toBeUndefined();
 	});
 });
