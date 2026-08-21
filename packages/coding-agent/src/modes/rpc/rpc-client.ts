@@ -13,7 +13,7 @@ import type { CompactionResult } from "../../core/compaction/index.ts";
 import type { SessionEntry, SessionTreeNode } from "../../core/session-manager.ts";
 import type { JsonAgentSessionEvent } from "../json-event.ts";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
-import type { RpcCommand, RpcResponse, RpcSessionState, RpcSlashCommand } from "./rpc-types.ts";
+import type { RpcCommand, RpcErrorDetails, RpcResponse, RpcSessionState, RpcSlashCommand } from "./rpc-types.ts";
 
 // ============================================================================
 // Types
@@ -48,6 +48,16 @@ export interface ModelInfo {
 }
 
 export type RpcEventListener = (event: JsonAgentSessionEvent) => void;
+
+export class RpcRequestError extends Error {
+	readonly details?: RpcErrorDetails;
+
+	constructor(message: string, details?: RpcErrorDetails) {
+		super(message);
+		this.name = "RpcRequestError";
+		this.details = details;
+	}
+}
 
 // ============================================================================
 // RPC Client
@@ -201,13 +211,14 @@ export class RpcClient {
 		attachments?: AttachmentRecord[],
 		options?: { allowLossy?: boolean },
 	): Promise<void> {
-		await this.send({
+		const response = await this.send({
 			type: "prompt",
 			message,
 			images,
 			...(attachments ? { attachments } : {}),
 			...(options?.allowLossy !== undefined ? { allowLossy: options.allowLossy } : {}),
 		});
+		this.assertSuccess(response);
 	}
 
 	/**
@@ -219,13 +230,14 @@ export class RpcClient {
 		attachments?: AttachmentRecord[],
 		options?: { allowLossy?: boolean },
 	): Promise<void> {
-		await this.send({
+		const response = await this.send({
 			type: "steer",
 			message,
 			images,
 			...(attachments ? { attachments } : {}),
 			...(options?.allowLossy !== undefined ? { allowLossy: options.allowLossy } : {}),
 		});
+		this.assertSuccess(response);
 	}
 
 	/**
@@ -237,13 +249,14 @@ export class RpcClient {
 		attachments?: AttachmentRecord[],
 		options?: { allowLossy?: boolean },
 	): Promise<void> {
-		await this.send({
+		const response = await this.send({
 			type: "follow_up",
 			message,
 			images,
 			...(attachments ? { attachments } : {}),
 			...(options?.allowLossy !== undefined ? { allowLossy: options.allowLossy } : {}),
 		});
+		this.assertSuccess(response);
 	}
 
 	/**
@@ -291,10 +304,6 @@ export class RpcClient {
 	async getPortabilityProjection(provider?: string, modelId?: string) {
 		const response = await this.send({ type: "get_portability_projection", provider, modelId });
 		return this.getData(response);
-	}
-
-	async resolvePortabilityConfirmation(allowLossy: boolean): Promise<void> {
-		await this.send({ type: "resolve_portability_confirmation", allowLossy });
 	}
 
 	/**
@@ -669,13 +678,15 @@ export class RpcClient {
 	}
 
 	private getData<T>(response: RpcResponse): T {
-		if (!response.success) {
-			const errorResponse = response as Extract<RpcResponse, { success: false }>;
-			throw new Error(errorResponse.error);
-		}
+		this.assertSuccess(response);
 		// Type assertion: we trust response.data matches T based on the command sent.
 		// This is safe because each public method specifies the correct T for its command.
 		const successResponse = response as Extract<RpcResponse, { success: true; data: unknown }>;
 		return successResponse.data as T;
+	}
+
+	private assertSuccess(response: RpcResponse): asserts response is Extract<RpcResponse, { success: true }> {
+		if (response.success) return;
+		throw new RpcRequestError(response.error, response.details);
 	}
 }

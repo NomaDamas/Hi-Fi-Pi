@@ -42,6 +42,11 @@ describe("provider-native conversation IR and portability", () => {
 	it("keeps legacy message JSON byte-for-byte additive", () => {
 		const legacy: Message = { role: "user", content: "hello", timestamp: 1 };
 		expect(JSON.stringify(legacy)).toBe('{"role":"user","content":"hello","timestamp":1}');
+		const projected = projectConversationForTarget({
+			messages: [legacy],
+			target: model("openai", "openai-responses", "gpt-5.6", "https://api.openai.com/v1"),
+		});
+		expect(JSON.stringify(projected.messages[0])).toBe(JSON.stringify(legacy));
 	});
 
 	it("round-trips native reasoning, citations, tool metadata and provider state", () => {
@@ -264,9 +269,116 @@ describe("provider-native conversation IR and portability", () => {
 		expect(confirmed.activeAttachmentIds).toEqual(["att_pdf"]);
 		expect(confirmed.suspendedAttachmentIds).toEqual(["att_video"]);
 		expect(confirmed.messages[0]).toMatchObject({
+			content: [
+				{ type: "text", text: "compare" },
+				{
+					type: "text",
+					text: "(video/mp4 attachment omitted: target model does not support video/mp4)",
+				},
+			],
 			attachments: [{ type: "attachment", attachmentId: "att_pdf" }],
 		});
 		expect(messages).toEqual(before);
+	});
+
+	it("collapses suspended attachment disclosures into one safe user content block", () => {
+		const target = model("custom", "openai-responses", "target", "https://proxy.example/v1");
+		const attachments: AttachmentRecord[] = [
+			{
+				id: "att_video",
+				filename: "private-demo.mp4",
+				mediaType: "video/mp4",
+				source: { type: "path", path: "/secret/project/private-demo.mp4" },
+			},
+			{
+				id: "att_audio",
+				filename: "private-meeting.wav",
+				mediaType: "audio/wav",
+				source: { type: "base64", data: "c2VjcmV0LWJ5dGVz" },
+			},
+			{
+				id: "att_remote",
+				filename: "private-report.pdf",
+				mediaType: "application/pdf",
+				source: {
+					type: "provider-file",
+					provider: "other-provider",
+					api: "openai-responses",
+					endpoint: "https://secret-source.example/v1",
+					fileId: "file_secret",
+				},
+			},
+		];
+		const projected = projectConversationForTarget({
+			messages: [
+				{
+					role: "user",
+					content: [{ type: "text", text: "compare the files" }],
+					attachments: attachments.map((item) => ({ type: "attachment", attachmentId: item.id })),
+					timestamp: 1,
+				},
+			],
+			attachments,
+			target,
+			sourceAvailable: (item) => item.id !== "att_video",
+			approvedItemIds: attachments.map((item) => `attachment:${item.id}`),
+		});
+		const message = projected.messages[0];
+		expect(message?.role).toBe("user");
+		if (message?.role !== "user" || typeof message.content === "string")
+			throw new Error("projected user content missing");
+		expect(message.content).toHaveLength(2);
+		const disclosure = message.content[1];
+		expect(disclosure?.type).toBe("text");
+		if (disclosure?.type !== "text") throw new Error("omission disclosure missing");
+		expect(disclosure.text.match(/attachment omitted/g)).toHaveLength(3);
+		expect(disclosure.text).toContain("video/mp4");
+		expect(disclosure.text).toContain("audio/wav");
+		expect(disclosure.text).toContain("application/pdf");
+		expect(disclosure.text).toContain("source is unavailable");
+		expect(disclosure.text).toContain("target model does not support audio/wav");
+		expect(disclosure.text).toContain("source is bound to another provider transport");
+		expect(disclosure.text).not.toMatch(
+			/\/secret|private-demo|private-meeting|private-report|c2VjcmV0LWJ5dGVz|secret-source|file_secret/,
+		);
+	});
+
+	it("adds the same safe disclosure to suspended tool-result attachments", () => {
+		const target = model("custom", "openai-responses", "target", "https://proxy.example/v1");
+		const attachment: AttachmentRecord = {
+			id: "att_tool_video",
+			filename: "generated.mp4",
+			mediaType: "video/mp4",
+			source: { type: "base64", data: "Z2VuZXJhdGVkLWJ5dGVz" },
+		};
+		const projected = projectConversationForTarget({
+			messages: [
+				{
+					role: "toolResult",
+					toolCallId: "call_1",
+					toolName: "make_video",
+					content: [{ type: "text", text: "created" }],
+					attachments: [{ type: "attachment", attachmentId: attachment.id }],
+					isError: false,
+					timestamp: 1,
+				},
+			],
+			attachments: [attachment],
+			target,
+			approvedItemIds: [`attachment:${attachment.id}`],
+		});
+		const message = projected.messages[0];
+		expect(message?.role).toBe("toolResult");
+		if (message?.role !== "toolResult") throw new Error("projected tool result missing");
+		expect(message.attachments).toBeUndefined();
+		expect(message.content).toEqual([
+			{ type: "text", text: "created" },
+			{
+				type: "text",
+				text: "(video/mp4 attachment omitted: target model does not support video/mp4)",
+			},
+		]);
+		expect(JSON.stringify(message)).not.toMatch(/generated\.mp4|Z2VuZXJhdGVkLWJ5dGVz/);
 	});
 
 	it("keeps stable projection identities when message indexes shift", () => {

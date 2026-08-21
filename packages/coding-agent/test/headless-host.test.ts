@@ -1,10 +1,10 @@
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PortabilityConfirmationRequiredError, registerFauxProvider } from "@earendil-works/pi-ai/compat";
-import { afterEach, describe, expect, it } from "vitest";
-import type { PortabilityConfirmationState } from "../src/core/agent-session.ts";
+import { registerFauxProvider } from "@earendil-works/pi-ai/compat";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
+import { PortabilityProjectionUnavailableError } from "../src/core/attachments/portability-projection.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import type { ExtensionFactory } from "../src/core/extensions/index.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
@@ -127,36 +127,52 @@ describe("headless agent host", () => {
 		await expect(host.prompt("late prompt")).rejects.toThrow("disposed");
 	});
 
-	it("fails immediately when a mid-turn portability pause has no consent channel", async () => {
-		let pending: PortabilityConfirmationState | undefined = {
-			source: "mid-turn",
-			target: { provider: "faux", api: "openai-responses", modelId: "faux-2", baseUrl: "https://faux.test/v1" },
-			report: {
+	it("passes explicit lossy consent through without a second pause protocol", async () => {
+		const prompt = vi.fn(async () => {});
+		const runtime = {
+			session: {
+				prompt,
+			},
+		} as unknown as AgentSessionRuntime;
+		const host = new HeadlessAgentHost(runtime);
+
+		await host.prompt("run tool", { allowLossy: true });
+		expect(prompt).toHaveBeenCalledWith("run tool", { allowLossy: true, source: "rpc" });
+	});
+
+	it("preserves an actionable mid-run portability failure for headless callers", async () => {
+		const failure = new PortabilityProjectionUnavailableError(
+			{
 				target: {
 					provider: "faux",
 					api: "openai-responses",
 					modelId: "faux-2",
 					baseUrl: "https://faux.test/v1",
 				},
-				items: [],
-				counts: { portable: 0, reconstructable: 0, "provider-locked": 1, missing: 0, unsupported: 0 },
+				items: [
+					{
+						id: "attachment:att_video",
+						stableId: "attachment:att_video",
+						kind: "attachment",
+						classification: "unsupported",
+						reason: "video/mp4 is unsupported",
+						projectable: true,
+						attachmentId: "att_video",
+						filename: "generated.mp4",
+						messageIndex: 1,
+					},
+				],
+				counts: { portable: 0, reconstructable: 0, "provider-locked": 0, missing: 0, unsupported: 1 },
 				canSwitchWithoutLoss: false,
 			},
-		};
-		const resolved: boolean[] = [];
-		const runtime = {
-			session: {
-				prompt: async () => {},
-				getPendingPortabilityConfirmation: () => pending,
-				resolvePendingPortabilityConfirmation: async (allowLossy: boolean) => {
-					resolved.push(allowLossy);
-					pending = undefined;
-				},
-			},
-		} as unknown as AgentSessionRuntime;
-		const host = new HeadlessAgentHost(runtime);
+			"mid-run",
+		);
+		const prompt = vi.fn(async () => {
+			throw failure;
+		});
+		const host = new HeadlessAgentHost({ session: { prompt } } as unknown as AgentSessionRuntime);
 
-		await expect(host.prompt("run tool")).rejects.toBeInstanceOf(PortabilityConfirmationRequiredError);
-		expect(resolved).toEqual([false]);
+		await expect(host.prompt("run tool")).rejects.toBe(failure);
+		expect(failure.message).toMatch(/generated\.mp4.*not sent.*re-send.*switch/i);
 	});
 });

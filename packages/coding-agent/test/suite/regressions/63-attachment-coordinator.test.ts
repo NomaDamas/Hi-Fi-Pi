@@ -6,6 +6,25 @@ import { type AttachmentRecord, type AttachmentRegistry, fauxAssistantMessage } 
 import { afterEach, describe, expect, it } from "vitest";
 import { createHarness, type Harness } from "../harness.ts";
 
+async function createPdfHarness(): Promise<Harness> {
+	const harness = await createHarness();
+	const model = harness.getModel();
+	model.nativeInputs = {
+		profile: `${model.id}-issue-63-pdf`,
+		capabilities: [
+			{
+				id: "issue-63-pdf",
+				supported: true,
+				mediaTypes: ["application/pdf"],
+				sources: ["inline"],
+				wireKinds: { inline: "faux-file" },
+				provenance: "configured",
+			},
+		],
+	};
+	return harness;
+}
+
 const attachment: AttachmentRecord = {
 	id: "att_contract",
 	filename: "contract.pdf",
@@ -21,7 +40,7 @@ describe("Issue 63 attachment coordinator contracts", () => {
 	});
 
 	it("rejects conflicting records without replacing the registered attachment", async () => {
-		const harness = await createHarness();
+		const harness = await createPdfHarness();
 		harnesses.push(harness);
 		harness.setResponses([fauxAssistantMessage("stored")]);
 
@@ -36,7 +55,7 @@ describe("Issue 63 attachment coordinator contracts", () => {
 	});
 
 	it("validates attachment records before binding or persisting the registry", async () => {
-		const harness = await createHarness();
+		const harness = await createPdfHarness();
 		harnesses.push(harness);
 		const invalidAttachment = {
 			...attachment,
@@ -51,7 +70,7 @@ describe("Issue 63 attachment coordinator contracts", () => {
 	});
 
 	it("persists registry updates and exposes the updated record to the next provider turn", async () => {
-		const harness = await createHarness();
+		const harness = await createPdfHarness();
 		harnesses.push(harness);
 		let registry: AttachmentRegistry | undefined;
 		let resolvedOnNextTurn: AttachmentRecord | undefined;
@@ -87,7 +106,7 @@ describe("Issue 63 attachment coordinator contracts", () => {
 	});
 
 	it("rejects registry updates for unknown attachment identities", async () => {
-		const harness = await createHarness();
+		const harness = await createPdfHarness();
 		harnesses.push(harness);
 		let registry: AttachmentRegistry | undefined;
 		harness.setResponses([
@@ -105,7 +124,7 @@ describe("Issue 63 attachment coordinator contracts", () => {
 	});
 
 	it("keeps ordered lightweight references in the public user-message contract", async () => {
-		const harness = await createHarness();
+		const harness = await createPdfHarness();
 		harnesses.push(harness);
 		const second: AttachmentRecord = { ...attachment, id: "att_second", filename: "second.pdf" };
 		let userMessage: AgentMessage | undefined;
@@ -135,7 +154,7 @@ describe("Issue 63 attachment coordinator contracts", () => {
 			id: "att_local",
 			source: { type: "path", path: sourcePath },
 		};
-		const harness = await createHarness();
+		const harness = await createPdfHarness();
 		harnesses.push(harness);
 		harness.setResponses([fauxAssistantMessage("stored")]);
 

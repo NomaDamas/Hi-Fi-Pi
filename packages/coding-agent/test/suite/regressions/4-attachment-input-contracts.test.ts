@@ -11,15 +11,41 @@ import {
 import { Type } from "typebox";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionAPI } from "../../../src/core/extensions/types.ts";
-import { RpcClient } from "../../../src/modes/rpc/rpc-client.ts";
+import { RpcClient, type RpcRequestError } from "../../../src/modes/rpc/rpc-client.ts";
+import type { RpcErrorDetails } from "../../../src/modes/rpc/rpc-types.ts";
 import { createHarness, type Harness } from "../harness.ts";
+
+async function createPdfHarness(options?: Parameters<typeof createHarness>[0]): Promise<Harness> {
+	const harness = await createHarness(options);
+	for (const model of harness.models) {
+		model.nativeInputs = {
+			profile: `${model.id}-issue-4-pdf`,
+			capabilities: [
+				{
+					id: "issue-4-pdf",
+					supported: true,
+					mediaTypes: ["application/pdf"],
+					sources: ["inline", "url", "provider-file", "cloud-uri"],
+					wireKinds: {
+						inline: "faux-file",
+						url: "faux-file",
+						"provider-file": "faux-file",
+						"cloud-uri": "faux-file",
+					},
+					provenance: "configured",
+				},
+			],
+		};
+	}
+	return harness;
+}
 
 const attachment: AttachmentRecord = {
 	id: "att_pdf",
 	filename: "paper.pdf",
 	mediaType: "application/pdf",
 	sizeBytes: 12,
-	source: { type: "path", path: "/tmp/paper.pdf" },
+	source: { type: "base64", data: "JVBERi0xLjQ=" },
 };
 
 const reference: AttachmentReference = {
@@ -58,7 +84,7 @@ async function createWaitingHarness(): Promise<{
 			return { content: [{ type: "text", text: "released" }], details: {} };
 		},
 	};
-	const harness = await createHarness({ tools: [waitTool] });
+	const harness = await createPdfHarness({ tools: [waitTool] });
 	const waitForToolStart = new Promise<void>((resolve) => {
 		const unsubscribe = harness.session.subscribe((event) => {
 			if (event.type === "tool_execution_start" && event.toolName === "wait") {
@@ -87,7 +113,7 @@ describe("Issue 4 attachment input contracts", () => {
 	});
 
 	it("adds attachment references to the SDK prompt user message", async () => {
-		const harness = await createHarness();
+		const harness = await createPdfHarness();
 		harnesses.push(harness);
 		let providerMessages: readonly AgentMessage[] = [];
 		harness.setResponses([
@@ -108,7 +134,7 @@ describe("Issue 4 attachment input contracts", () => {
 	});
 
 	it("makes SDK prompt attachment records resolvable by the provider context", async () => {
-		const harness = await createHarness();
+		const harness = await createPdfHarness();
 		harnesses.push(harness);
 		let resolvedAttachment: AttachmentRecord | undefined;
 		harness.setResponses([
@@ -132,7 +158,7 @@ describe("Issue 4 attachment input contracts", () => {
 			...attachment,
 			source: { type: "path", path: filePath },
 		};
-		const harness = await createHarness();
+		const harness = await createPdfHarness();
 		harnesses.push(harness);
 		let providerBytes: Uint8Array | undefined;
 		harness.setResponses([
@@ -152,7 +178,7 @@ describe("Issue 4 attachment input contracts", () => {
 	});
 
 	it("supports object-style SDK prompts with multiple ordered attachments", async () => {
-		const harness = await createHarness();
+		const harness = await createPdfHarness();
 		harnesses.push(harness);
 		let providerUser: AgentMessage | undefined;
 		harness.setResponses([
@@ -173,9 +199,9 @@ describe("Issue 4 attachment input contracts", () => {
 		const providerFile: AttachmentRecord = {
 			...attachment,
 			id: "att_remote",
-			source: { type: "provider-file", provider: "openai", fileId: "file_123" },
+			source: { type: "provider-file", provider: "faux", fileId: "file_123" },
 		};
-		const harness = await createHarness();
+		const harness = await createPdfHarness();
 		harnesses.push(harness);
 		let resolvedAttachment: AttachmentRecord | undefined;
 		harness.setResponses([
@@ -192,7 +218,7 @@ describe("Issue 4 attachment input contracts", () => {
 
 	it("exposes attachment references on the input event", async () => {
 		let inputAttachments: readonly AttachmentReference[] | undefined;
-		const harness = await createHarness({
+		const harness = await createPdfHarness({
 			extensionFactories: [
 				(pi) => {
 					pi.on("input", async (event) => {
@@ -211,7 +237,7 @@ describe("Issue 4 attachment input contracts", () => {
 	});
 
 	it("preserves attachments when an input extension transforms only text", async () => {
-		const harness = await createHarness({
+		const harness = await createPdfHarness({
 			extensionFactories: [
 				(pi) => {
 					pi.on("input", async (event) => ({
@@ -239,7 +265,7 @@ describe("Issue 4 attachment input contracts", () => {
 	});
 
 	it("allows an input transform to explicitly remove attachments", async () => {
-		const harness = await createHarness({
+		const harness = await createPdfHarness({
 			extensionFactories: [
 				(pi) => {
 					pi.on("input", async (event) => ({ action: "transform", text: event.text, attachments: [] }));
@@ -261,7 +287,7 @@ describe("Issue 4 attachment input contracts", () => {
 	});
 
 	it("rejects attachment IDs introduced by an input transform without a registry record", async () => {
-		const harness = await createHarness({
+		const harness = await createPdfHarness({
 			extensionFactories: [
 				(pi) => {
 					pi.on("input", async (event) => ({
@@ -281,7 +307,7 @@ describe("Issue 4 attachment input contracts", () => {
 
 	it("exposes attachment references on before_agent_start", async () => {
 		let beforeStartAttachments: readonly AttachmentReference[] | undefined;
-		const harness = await createHarness({
+		const harness = await createPdfHarness({
 			extensionFactories: [
 				(pi) => {
 					pi.on("before_agent_start", async (event) => {
@@ -300,7 +326,7 @@ describe("Issue 4 attachment input contracts", () => {
 
 	it("lets extensions submit attachment-aware messages", async () => {
 		let extensionApi: ExtensionAPI | undefined;
-		const harness = await createHarness({
+		const harness = await createPdfHarness({
 			extensionFactories: [
 				(pi) => {
 					extensionApi = pi;
@@ -326,8 +352,9 @@ describe("Issue 4 attachment input contracts", () => {
 	it("serializes attachments on RPC prompt commands", async () => {
 		const client = new RpcClient();
 		const sent: unknown[] = [];
-		(client as unknown as { send(command: unknown): Promise<void> }).send = async (command) => {
+		(client as unknown as { send(command: unknown): Promise<unknown> }).send = async (command) => {
 			sent.push(command);
+			return { type: "response", command: "prompt", success: true };
 		};
 
 		await client.prompt("Analyze this", undefined, [attachment]);
@@ -338,8 +365,9 @@ describe("Issue 4 attachment input contracts", () => {
 	it("opts into a confirmed lossy RPC prompt without changing the legacy overload", async () => {
 		const client = new RpcClient();
 		const sent: unknown[] = [];
-		(client as unknown as { send(command: unknown): Promise<void> }).send = async (command) => {
+		(client as unknown as { send(command: unknown): Promise<unknown> }).send = async (command) => {
 			sent.push(command);
+			return { type: "response", command: "prompt", success: true };
 		};
 
 		await client.prompt("Continue without video", undefined, [attachment], { allowLossy: true });
@@ -377,8 +405,9 @@ describe("Issue 4 attachment input contracts", () => {
 	it("serializes attachments on RPC steering and follow-up commands", async () => {
 		const client = new RpcClient();
 		const sent: unknown[] = [];
-		(client as unknown as { send(command: unknown): Promise<void> }).send = async (command) => {
+		(client as unknown as { send(command: unknown): Promise<unknown> }).send = async (command) => {
 			sent.push(command);
+			return { type: "response", command: (command as { type: string }).type, success: true };
 		};
 
 		await client.steer("Steer", undefined, [attachment]);
@@ -390,16 +419,16 @@ describe("Issue 4 attachment input contracts", () => {
 		]);
 	});
 
-	it("opts steer/follow-up into lossy projection and resolves pending RPC confirmation", async () => {
+	it("opts steer/follow-up into lossy projection", async () => {
 		const client = new RpcClient();
 		const sent: unknown[] = [];
-		(client as unknown as { send(command: unknown): Promise<void> }).send = async (command) => {
+		(client as unknown as { send(command: unknown): Promise<unknown> }).send = async (command) => {
 			sent.push(command);
+			return { type: "response", command: (command as { type: string }).type, success: true };
 		};
 
 		await client.steer("Steer", undefined, [attachment], { allowLossy: true });
 		await client.followUp("Follow", undefined, [secondAttachment], { allowLossy: true });
-		await client.resolvePortabilityConfirmation(true);
 
 		expect(sent).toEqual([
 			{ type: "steer", message: "Steer", images: undefined, attachments: [attachment], allowLossy: true },
@@ -410,20 +439,45 @@ describe("Issue 4 attachment input contracts", () => {
 				attachments: [secondAttachment],
 				allowLossy: true,
 			},
-			{ type: "resolve_portability_confirmation", allowLossy: true },
 		]);
 	});
 
 	it("keeps the attachment-free RPC wire payload unchanged", async () => {
 		const client = new RpcClient();
 		let serialized = "";
-		(client as unknown as { send(command: unknown): Promise<void> }).send = async (command) => {
+		(client as unknown as { send(command: unknown): Promise<unknown> }).send = async (command) => {
 			serialized = JSON.stringify(command);
+			return { type: "response", command: "prompt", success: true };
 		};
 
 		await client.prompt("hello");
 
 		expect(serialized).toBe('{"type":"prompt","message":"hello"}');
+	});
+
+	it("preserves structured portability details on RPC prompt errors", async () => {
+		const client = new RpcClient();
+		const report: RpcErrorDetails["report"] = {
+			target: { provider: "faux", api: "faux", modelId: "faux-2", baseUrl: "http://localhost:0" },
+			items: [],
+			counts: { portable: 0, reconstructable: 0, "provider-locked": 0, missing: 0, unsupported: 1 },
+			canSwitchWithoutLoss: false,
+		};
+		(client as unknown as { send(command: unknown): Promise<unknown> }).send = async () => ({
+			type: "response",
+			command: "prompt",
+			success: false,
+			error: "confirmation required",
+			details: { kind: "portability_confirmation_required", report },
+		});
+
+		await expect(client.prompt("continue")).rejects.toEqual(
+			expect.objectContaining<RpcRequestError>({
+				name: "RpcRequestError",
+				message: "confirmation required",
+				details: { kind: "portability_confirmation_required", report },
+			}),
+		);
 	});
 
 	it("preserves attachments in a steering queue through the next provider call", async () => {
@@ -470,7 +524,7 @@ describe("Issue 4 attachment input contracts", () => {
 	});
 
 	it("rejects malformed attachment sources before the provider call", async () => {
-		const harness = await createHarness();
+		const harness = await createPdfHarness();
 		harnesses.push(harness);
 		harness.setResponses([fauxAssistantMessage("must not run")]);
 		const malformed = {
@@ -485,7 +539,7 @@ describe("Issue 4 attachment input contracts", () => {
 	});
 
 	it("does not add attachment fields to legacy prompts", async () => {
-		const harness = await createHarness();
+		const harness = await createPdfHarness();
 		harnesses.push(harness);
 		let providerUser: AgentMessage | undefined;
 		let hasRegistry = false;

@@ -6,6 +6,7 @@ import { Container } from "@earendil-works/pi-tui";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveAttachmentForPresentation } from "../../../src/core/attachments/attachment-presentation.ts";
 import type { ResolvedAttachment } from "../../../src/core/attachments/attachment-runtime.ts";
+import { PortabilityProjectionUnavailableError } from "../../../src/core/attachments/portability-projection.ts";
 import { BUILTIN_SLASH_COMMANDS } from "../../../src/core/slash-commands.ts";
 import { UserMessageComponent } from "../../../src/modes/interactive/components/user-message.ts";
 import { InteractiveMode } from "../../../src/modes/interactive/interactive-mode.ts";
@@ -99,6 +100,8 @@ type MessageContext = {
 	outputPad: number;
 	toolOutputExpanded: boolean;
 	editor: { addToHistory: ReturnType<typeof vi.fn> };
+	hideThinkingBlock?: boolean;
+	hiddenThinkingLabel?: string;
 };
 
 type CommandContext = {
@@ -317,6 +320,73 @@ describe("Issue 6 attachment TUI contracts", () => {
 
 		expect(context.editor.setText).toHaveBeenCalledWith("analyze @paper.pdf");
 		expect(context.showError).toHaveBeenCalledWith("read failed");
+	});
+
+	it("does not restore or duplicate a prompt that failed after it entered history", () => {
+		const context: MessageContext & InputErrorContext = {
+			chatContainer: new Container(),
+			session: createCommandContext().session,
+			sessionManager: { getAttachment: () => undefined },
+			getUserMessageText: () => "",
+			getMarkdownThemeWithSettings: () => getMarkdownTheme(),
+			getMarkdownTransformers: () => [],
+			outputPad: 1,
+			toolOutputExpanded: false,
+			editor: { addToHistory: vi.fn(), setText: vi.fn() },
+			showError: vi.fn(),
+		};
+		const prototype = InteractiveMode.prototype as unknown as InteractiveModePrivate;
+		const error = new PortabilityProjectionUnavailableError(
+			{
+				target: {
+					provider: "faux",
+					api: "openai-responses",
+					modelId: "faux-2",
+					baseUrl: "https://faux.test/v1",
+				},
+				items: [
+					{
+						id: "attachment:att_video",
+						stableId: "attachment:att_video",
+						kind: "attachment",
+						classification: "unsupported",
+						reason: "video/mp4 is unsupported",
+						projectable: true,
+						attachmentId: "att_video",
+						filename: "generated.mp4",
+						messageIndex: 1,
+					},
+				],
+				counts: { portable: 0, reconstructable: 0, "provider-locked": 0, missing: 0, unsupported: 1 },
+				canSwitchWithoutLoss: false,
+			},
+			"mid-run",
+		);
+		prototype.addMessageToChat.call(context, {
+			role: "assistant",
+			content: [],
+			api: "openai-responses",
+			provider: "faux",
+			model: "faux-2",
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "error",
+			errorMessage: error.message,
+			timestamp: Date.now(),
+		});
+
+		prototype.handleInteractiveInputError.call(context, "make a video", error);
+
+		expect(context.editor.setText).not.toHaveBeenCalled();
+		expect(context.showError).not.toHaveBeenCalled();
+		const output = context.chatContainer.render(100).map(stripAnsi).join("\n");
+		expect(output.match(/generated\.mp4/g)).toHaveLength(1);
 	});
 
 	it("routes /files without submitting it as a model prompt", async () => {

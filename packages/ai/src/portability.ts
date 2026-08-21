@@ -16,6 +16,7 @@ export interface PortabilityItem {
 	provider?: string;
 	api?: Api;
 	mediaType?: string;
+	filename?: string;
 	attachmentId?: string;
 	stateId?: string;
 	partIndex?: number;
@@ -172,6 +173,7 @@ export function analyzeConversationPortability(options: PortabilityAnalysisOptio
 						messageIndex,
 						attachmentId: attachment.id,
 						mediaType: attachment.mediaType,
+						filename: attachment.filename,
 					});
 					continue;
 				}
@@ -193,6 +195,7 @@ export function analyzeConversationPortability(options: PortabilityAnalysisOptio
 						messageIndex,
 						attachmentId: attachment.id,
 						mediaType: attachment.mediaType,
+						filename: attachment.filename,
 					});
 					continue;
 				}
@@ -216,6 +219,7 @@ export function analyzeConversationPortability(options: PortabilityAnalysisOptio
 					messageIndex,
 					attachmentId: attachment.id,
 					mediaType: attachment.mediaType,
+					filename: attachment.filename,
 				});
 			}
 		}
@@ -329,6 +333,20 @@ function unique(values: Iterable<string>): string[] {
 	return Array.from(new Set(values));
 }
 
+function attachmentOmissionPlaceholder(items: readonly PortabilityItem[]): string {
+	const uniqueItems = new Map(items.map((item) => [item.stableId, item]));
+	return Array.from(uniqueItems.values(), (item) => {
+		const mediaType = item.mediaType ?? "unknown media type";
+		if (item.classification === "missing") {
+			return `(${mediaType} attachment omitted: source is unavailable)`;
+		}
+		if (item.classification === "provider-locked") {
+			return `(${mediaType} attachment omitted: source is bound to another provider transport)`;
+		}
+		return `(${mediaType} attachment omitted: target model does not support ${mediaType})`;
+	}).join("\n");
+}
+
 /**
  * Materialize a target-specific conversation without mutating canonical messages.
  * Only incompatible items whose stable identities were explicitly approved are removed.
@@ -355,6 +373,7 @@ export function projectConversationForTarget(options: ConversationProjectionOpti
 		const attachmentIds = new Set(
 			suspended.filter((item) => item.kind === "attachment").map((item) => item.attachmentId),
 		);
+		const suspendedAttachments = suspended.filter((item) => item.kind === "attachment");
 		const nativePartIndexes = new Set(
 			suspended.filter((item) => item.kind === "provider-native").map((item) => item.partIndex),
 		);
@@ -362,8 +381,14 @@ export function projectConversationForTarget(options: ConversationProjectionOpti
 
 		if ((message.role === "user" || message.role === "toolResult") && attachmentIds.size > 0) {
 			const attachments = message.attachments?.filter((reference) => !attachmentIds.has(reference.attachmentId));
+			const placeholder = { type: "text" as const, text: attachmentOmissionPlaceholder(suspendedAttachments) };
+			const content =
+				message.role === "user" && typeof message.content === "string"
+					? [...(message.content ? [{ type: "text" as const, text: message.content }] : []), placeholder]
+					: [...message.content, placeholder];
 			projected = {
 				...projected,
+				content,
 				...(attachments?.length ? { attachments } : { attachments: undefined }),
 			} as Message;
 		}

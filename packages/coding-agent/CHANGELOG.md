@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- Fixed confirmed lossy model switches to suspend only the approved incompatible files from provider and compaction contexts, preserve them in canonical history, restore them on compatible models, and expose the applied projection through TUI, SDK events, and RPC ([#76](https://github.com/NomaDamas/Hi-Fi-Pi/issues/76)).
+- Fixed lossy portability projection to recheck current history and incoming content at every ingress, suspend only explicitly approved item IDs, disclose omitted attachments factually to the target model, keep `--allow-lossy` approval scoped to one run, require fresh confirmation when a local source disappears, preserve canonical history, fail closed on incompatible tool results, and expose structured diagnostics through TUI, SDK, and RPC ([#76](https://github.com/NomaDamas/Hi-Fi-Pi/issues/76)).
 
 ## [0.84.1-hifi.1] - 2026-08-13
 

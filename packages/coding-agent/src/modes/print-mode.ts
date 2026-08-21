@@ -6,8 +6,14 @@
  * - `pi --mode json "prompt"` - JSON event stream
  */
 
-import type { AssistantMessage, AttachmentRecord, ImageContent } from "@earendil-works/pi-ai";
+import {
+	type AssistantMessage,
+	type AttachmentRecord,
+	type ImageContent,
+	PortabilityConfirmationRequiredError,
+} from "@earendil-works/pi-ai";
 import type { AgentSessionRuntime } from "../core/agent-session-runtime.ts";
+import { PortabilityProjectionUnavailableError } from "../core/attachments/portability-projection.ts";
 import { flushRawStdout, waitForRawStdoutBackpressure, writeRawStdout } from "../core/output-guard.ts";
 import { killTrackedDetachedChildren } from "../utils/shell.ts";
 import { toJsonEvent } from "./json-event.ts";
@@ -26,7 +32,7 @@ export interface PrintModeOptions {
 	initialImages?: ImageContent[];
 	/** Native attachments prepared for Issue 4 prompt propagation */
 	initialAttachments?: AttachmentRecord[];
-	/** Explicitly allow target-scoped suspension in non-interactive runs. */
+	/** Exclude incompatible native context for this run without persisting newly approved IDs. */
 	allowLossy?: boolean;
 }
 
@@ -123,16 +129,6 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 	};
 
 	try {
-		const resolvePendingPortability = async (): Promise<void> => {
-			while (session.getPendingPortabilityConfirmation()) {
-				if (!allowLossy) {
-					throw new Error(
-						"Portability confirmation required during a provider continuation. Re-run with --allow-lossy or use an interactive client.",
-					);
-				}
-				await session.resolvePendingPortabilityConfirmation(true);
-			}
-		};
 		if (mode === "json") {
 			const header = session.sessionManager.getHeader();
 			if (header) {
@@ -148,13 +144,11 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 				...(initialAttachments?.length ? { attachments: initialAttachments } : {}),
 				...(allowLossy !== undefined ? { allowLossy } : {}),
 			});
-			await resolvePendingPortability();
 		}
 
 		for (const message of messages) {
 			if (allowLossy === undefined) await session.prompt(message);
 			else await session.prompt(message, { allowLossy });
-			await resolvePendingPortability();
 		}
 
 		if (mode === "text") {
@@ -178,7 +172,16 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 
 		return exitCode;
 	} catch (error: unknown) {
-		console.error(error instanceof Error ? error.message : String(error));
+		let message = error instanceof Error ? error.message : String(error);
+		if (
+			!allowLossy &&
+			(error instanceof PortabilityConfirmationRequiredError ||
+				(error instanceof PortabilityProjectionUnavailableError &&
+					error.report.items.some((item) => item.projectable)))
+		) {
+			message += " Re-run with --allow-lossy to exclude incompatible native context for this run.";
+		}
+		console.error(message);
 		return 1;
 	} finally {
 		for (const cleanup of signalCleanupHandlers) {

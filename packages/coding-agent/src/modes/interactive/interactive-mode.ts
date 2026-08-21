@@ -73,6 +73,7 @@ import {
 	formatAttachmentList,
 	resolveAttachmentReferencesForPresentation,
 } from "../../core/attachments/attachment-presentation.ts";
+import { PortabilityProjectionUnavailableError } from "../../core/attachments/portability-projection.ts";
 import {
 	CACHE_TTL_MS,
 	type CacheMiss,
@@ -500,7 +501,6 @@ export class InteractiveMode {
 
 	// Shutdown state
 	private shutdownRequested = false;
-	private portabilityConfirmationInFlight = false;
 
 	// Extension UI state
 	private extensionSelector: ExtensionSelectorComponent | undefined = undefined;
@@ -3196,6 +3196,7 @@ export class InteractiveMode {
 	}
 
 	private handleInteractiveInputError(text: string, error: unknown): void {
+		if (error instanceof PortabilityProjectionUnavailableError && error.phase === "mid-run") return;
 		this.editor.setText(text);
 		this.showError(error instanceof Error ? error.message : String(error));
 	}
@@ -3429,12 +3430,7 @@ export class InteractiveMode {
 				break;
 
 			case "agent_settled":
-				await this.handlePendingPortabilityConfirmation();
 				await this.checkShutdownRequested();
-				break;
-
-			case "portability_confirmation_required":
-				this.showWarning("Provider continuation is waiting for attachment compatibility confirmation.");
 				break;
 
 			case "compaction_start": {
@@ -4857,25 +4853,6 @@ export class InteractiveMode {
 		} catch (error) {
 			if (!(error instanceof PortabilityConfirmationRequiredError)) throw error;
 			return false;
-		}
-	}
-
-	private async handlePendingPortabilityConfirmation(): Promise<void> {
-		const pending = this.session.getPendingPortabilityConfirmation();
-		if (!pending || this.portabilityConfirmationInFlight) return;
-		this.portabilityConfirmationInFlight = true;
-		try {
-			const error = new PortabilityConfirmationRequiredError(pending.report);
-			const confirmed = await this.showExtensionConfirm(
-				"Attachment compatibility",
-				`${this.formatPromptProjectionPrompt(error)}\n\nThe completed tool result will remain in session history.`,
-			);
-			await this.session.resolvePendingPortabilityConfirmation(confirmed);
-			if (!confirmed) {
-				this.showWarning("Continuation cancelled. The compatibility choice will be requested again on new input.");
-			}
-		} finally {
-			this.portabilityConfirmationInFlight = false;
 		}
 	}
 

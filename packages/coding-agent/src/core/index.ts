@@ -13,7 +13,6 @@ export {
 	type AgentSessionEvent,
 	type AgentSessionEventListener,
 	type ModelCycleResult,
-	type PortabilityConfirmationState,
 	type PortabilityProjectionState,
 	type PromptOptions,
 	type SessionStats,

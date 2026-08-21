@@ -12,7 +12,9 @@
  */
 
 import * as crypto from "node:crypto";
+import { PortabilityConfirmationRequiredError } from "@earendil-works/pi-ai";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
+import { PortabilityProjectionUnavailableError } from "../../core/attachments/portability-projection.ts";
 import type {
 	ExtensionUIContext,
 	ExtensionUIDialogOptions,
@@ -31,6 +33,7 @@ import { toJsonEvent } from "../json-event.ts";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
 import type {
 	RpcCommand,
+	RpcErrorDetails,
 	RpcExtensionUIRequest,
 	RpcExtensionUIResponse,
 	RpcResponse,
@@ -72,8 +75,18 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		return { id, type: "response", command, success: true, data } as RpcResponse;
 	};
 
-	const error = (id: string | undefined, command: string, message: string): RpcResponse => {
-		return { id, type: "response", command, success: false, error: message };
+	const error = (id: string | undefined, command: string, message: string, details?: RpcErrorDetails): RpcResponse => {
+		return { id, type: "response", command, success: false, error: message, ...(details ? { details } : {}) };
+	};
+
+	const portabilityErrorDetails = (cause: unknown): RpcErrorDetails | undefined => {
+		if (cause instanceof PortabilityConfirmationRequiredError) {
+			return { kind: "portability_confirmation_required", report: cause.report };
+		}
+		if (cause instanceof PortabilityProjectionUnavailableError) {
+			return { kind: "portability_projection_unavailable", report: cause.report };
+		}
+		return undefined;
 	};
 
 	// Pending extension UI requests waiting for response
@@ -409,9 +422,10 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 							}
 						},
 					})
-					.catch((e) => {
+					.catch((cause: unknown) => {
 						if (!preflightSucceeded) {
-							output(error(id, "prompt", e.message));
+							const message = cause instanceof Error ? cause.message : String(cause);
+							output(error(id, "prompt", message, portabilityErrorDetails(cause)));
 						}
 					});
 				return undefined;
@@ -519,11 +533,6 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				}
 				const { messages: _messages, ...projection } = session.getPortabilityProjection(model);
 				return success(id, "get_portability_projection", projection);
-			}
-
-			case "resolve_portability_confirmation": {
-				await session.resolvePendingPortabilityConfirmation(command.allowLossy);
-				return success(id, "resolve_portability_confirmation");
 			}
 
 			case "get_available_models": {
@@ -853,13 +862,8 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			}
 			await checkShutdownRequested();
 		} catch (commandError: unknown) {
-			output(
-				error(
-					command.id,
-					command.type,
-					commandError instanceof Error ? commandError.message : String(commandError),
-				),
-			);
+			const message = commandError instanceof Error ? commandError.message : String(commandError);
+			output(error(command.id, command.type, message, portabilityErrorDetails(commandError)));
 			await waitForRawStdoutBackpressure();
 		}
 	};

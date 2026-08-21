@@ -33,6 +33,14 @@ export interface AppliedPortabilityProjection extends ConversationProjection {
 	decisionEntryId?: string;
 }
 
+export interface PortabilityPreflightOptions {
+	allowLossy?: boolean;
+	/** Persist newly approved IDs to the branch. Disable for one-run blanket opt-in. */
+	persistApproval?: boolean;
+	/** IDs disclosed and accepted by an interactive confirmation callback. */
+	approvedItemIds?: Iterable<string>;
+}
+
 function isStoredDecision(value: unknown): value is StoredPortabilityDecision {
 	if (!value || typeof value !== "object") return false;
 	const record = value as Partial<StoredPortabilityDecision>;
@@ -48,22 +56,6 @@ function isStoredDecision(value: unknown): value is StoredPortabilityDecision {
 	);
 }
 
-function lossyItemIds(report: PortabilityReport): string[] {
-	return Array.from(
-		new Set(
-			report.items
-				.filter(
-					(item) =>
-						item.projectable &&
-						(item.classification === "provider-locked" ||
-							item.classification === "missing" ||
-							item.classification === "unsupported"),
-				)
-				.map((item) => item.stableId),
-		),
-	);
-}
-
 function unapprovedReport(projection: ConversationProjection): PortabilityReport {
 	const unapproved = new Set(projection.unapprovedItemIds);
 	const items = projection.report.items.filter((item) => unapproved.has(item.stableId));
@@ -76,6 +68,46 @@ function unapprovedReport(projection: ConversationProjection): PortabilityReport
 	};
 	for (const item of items) counts[item.classification] += 1;
 	return { target: projection.target, items, counts, canSwitchWithoutLoss: false };
+}
+
+function unprojectableReport(projection: ConversationProjection): PortabilityReport {
+	const items = projection.report.items.filter(
+		(item) =>
+			!item.projectable &&
+			(item.classification === "provider-locked" ||
+				item.classification === "missing" ||
+				item.classification === "unsupported"),
+	);
+	const counts: PortabilityReport["counts"] = {
+		portable: 0,
+		reconstructable: 0,
+		"provider-locked": 0,
+		missing: 0,
+		unsupported: 0,
+	};
+	for (const item of items) counts[item.classification] += 1;
+	return { target: projection.target, items, counts, canSwitchWithoutLoss: false };
+}
+
+function hasLossyUnprojectableItem(projection: ConversationProjection): boolean {
+	return projection.report.items.some(
+		(item) =>
+			!item.projectable &&
+			(item.classification === "provider-locked" ||
+				item.classification === "missing" ||
+				item.classification === "unsupported"),
+	);
+}
+
+/** Cheap structural guard for the attachment-free legacy path. */
+export function hasPortabilityRelevantContent(messages: readonly Message[]): boolean {
+	return messages.some((message) => {
+		if ((message.role === "user" || message.role === "toolResult") && message.attachments?.length) return true;
+		if (message.nativeParts?.length) return true;
+		if (message.role !== "assistant") return false;
+		if (message.reasoningState?.length || message.providerState) return true;
+		return message.content.some((part) => part.type === "toolCall" && part.providerMetadata !== undefined);
+	});
 }
 
 /** Owns branch-scoped loss decisions while leaving canonical messages untouched. */
@@ -111,21 +143,28 @@ export class PortabilityProjectionCoordinator {
 	preflight(
 		messages: readonly Message[],
 		target: Model<any>,
-		options: { allowLossy?: boolean } = {},
+		options: PortabilityPreflightOptions = {},
 	): AppliedPortabilityProjection {
-		const projection = this.inspect(messages, target);
-		if (projection.unapprovedItemIds.length === 0) return projection;
-		if (!options.allowLossy) throw new PortabilityConfirmationRequiredError(unapprovedReport(projection));
-		if (
-			projection.report.items.some(
-				(item) =>
-					!item.projectable &&
-					(item.classification === "provider-locked" ||
-						item.classification === "missing" ||
-						item.classification === "unsupported"),
-			)
-		) {
+		const stored = this.findDecision(target);
+		const approvedItemIds = new Set(stored?.decision.approvedItemIds ?? []);
+		for (const itemId of options.approvedItemIds ?? []) approvedItemIds.add(itemId);
+		let projection = this.project(messages, target, approvedItemIds);
+		if (hasLossyUnprojectableItem(projection)) {
+			throw new PortabilityProjectionUnavailableError(unprojectableReport(projection));
+		}
+		if (projection.unapprovedItemIds.length > 0) {
+			if (!options.allowLossy) throw new PortabilityConfirmationRequiredError(unapprovedReport(projection));
+			for (const itemId of projection.unapprovedItemIds) approvedItemIds.add(itemId);
+			projection = this.project(messages, target, approvedItemIds);
+		}
+		if (projection.unapprovedItemIds.length > 0) {
 			throw new PortabilityProjectionUnavailableError(unapprovedReport(projection));
+		}
+		const approvedChanged = Array.from(approvedItemIds).some(
+			(itemId) => !stored?.decision.approvedItemIds.includes(itemId),
+		);
+		if (!approvedChanged || options.persistApproval === false) {
+			return stored ? { ...projection, decisionEntryId: stored.entryId } : projection;
 		}
 
 		const decision: StoredPortabilityDecision = {
@@ -133,24 +172,25 @@ export class PortabilityProjectionCoordinator {
 			acceptedLoss: true,
 			timestamp: Date.now(),
 			targetKey: getPortabilityTargetKey(projection.target),
-			approvedItemIds: lossyItemIds(projection.report),
+			approvedItemIds: Array.from(approvedItemIds),
 			report: projection.report,
 		};
 		const decisionEntryId = this.store.appendCustomEntry(DECISION_TYPE, decision);
-		const confirmed = {
-			...projectConversationForTarget({
-				messages,
-				attachments: this.listAttachments(),
-				target,
-				sourceAvailable: this.sourceAvailable,
-				approvedItemIds: decision.approvedItemIds,
-			}),
-			decisionEntryId,
-		};
-		if (confirmed.unapprovedItemIds.length > 0) {
-			throw new PortabilityProjectionUnavailableError(unapprovedReport(confirmed));
-		}
-		return confirmed;
+		return { ...projection, decisionEntryId };
+	}
+
+	private project(
+		messages: readonly Message[],
+		target: Model<any>,
+		approvedItemIds: Iterable<string>,
+	): AppliedPortabilityProjection {
+		return projectConversationForTarget({
+			messages,
+			attachments: this.listAttachments(),
+			target,
+			sourceAvailable: this.sourceAvailable,
+			approvedItemIds,
+		});
 	}
 
 	private findDecision(target: Model<any>): { entryId: string; decision: StoredPortabilityDecision } | undefined {
@@ -172,10 +212,18 @@ export class PortabilityProjectionCoordinator {
 
 export class PortabilityProjectionUnavailableError extends Error {
 	readonly report: PortabilityReport;
+	readonly phase: "preflight" | "mid-run";
 
-	constructor(report: PortabilityReport) {
-		super("Some incompatible provider-native state has no stable identity and cannot be suspended safely.");
+	constructor(report: PortabilityReport, phase: "preflight" | "mid-run" = "preflight") {
+		const item = report.items[0];
+		const subject = item?.filename ?? item?.attachmentId ?? item?.kind ?? "Provider-native context";
+		const reason = item?.reason ?? "it cannot be projected safely";
+		const nextAction = item?.projectable
+			? "Re-send a prompt and approve excluding it, or switch to a model that supports it."
+			: "It has no stable identity and cannot be excluded safely. Switch to its owning model or start a clean session.";
+		super(`${subject} was not sent to ${report.target.provider}/${report.target.modelId}: ${reason}. ${nextAction}`);
 		this.name = "PortabilityProjectionUnavailableError";
 		this.report = report;
+		this.phase = phase;
 	}
 }

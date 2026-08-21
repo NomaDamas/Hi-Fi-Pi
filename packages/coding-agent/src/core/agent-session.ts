@@ -22,7 +22,6 @@ import type {
 	AgentState,
 	AgentTool,
 	PrepareNextTurnContext,
-	ShouldStopAfterTurnContext,
 	ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
 import type { PortabilityReport, ProviderOptionDefinition } from "@earendil-works/pi-ai";
@@ -69,7 +68,9 @@ import { normalizeToolResultImages } from "../utils/tool-result-images.ts";
 import { AttachmentCoordinator } from "./attachments/attachment-coordinator.ts";
 import {
 	type AppliedPortabilityProjection,
+	hasPortabilityRelevantContent,
 	PortabilityProjectionCoordinator,
+	PortabilityProjectionUnavailableError,
 } from "./attachments/portability-projection.ts";
 import { formatNoApiKeyFoundMessage, formatNoModelSelectedMessage } from "./auth-guidance.ts";
 import { type BashResult, executeBashWithOperations } from "./bash-executor.ts";
@@ -177,7 +178,12 @@ export type AgentSessionEvent =
 	| { type: "session_info_changed"; name: string | undefined }
 	| { type: "thinking_level_changed"; level: ThinkingLevel }
 	| { type: "portability_projection"; projection: PortabilityProjectionState }
-	| { type: "portability_confirmation_required"; confirmation: PortabilityConfirmationState }
+	| {
+			type: "portability_error";
+			kind: "portability_projection_unavailable";
+			message: string;
+			report: PortabilityReport;
+	  }
 	| {
 			type: "compaction_end";
 			reason: "manual" | "threshold" | "overflow";
@@ -275,7 +281,7 @@ export interface PromptOptions {
 	source?: InputSource;
 	/** Internal hook used by RPC mode to observe prompt preflight acceptance or rejection. */
 	preflightResult?: (success: boolean) => void;
-	/** Explicitly exclude incompatible canonical items from this target context. */
+	/** Exclude incompatible canonical items for this run without persisting newly approved IDs. */
 	allowLossy?: boolean;
 	/** Consent callback used by interactive clients without replaying input/extension hooks. */
 	confirmPortability?: (error: PortabilityConfirmationRequiredError) => boolean | Promise<boolean>;
@@ -302,12 +308,6 @@ export interface ModelSwitchOptions {
 }
 
 export type PortabilityProjectionState = Omit<AppliedPortabilityProjection, "messages">;
-
-export interface PortabilityConfirmationState {
-	source: "mid-turn";
-	target: PortabilityReport["target"];
-	report: PortabilityReport;
-}
 
 /** Session statistics for /session command */
 export interface SessionStats {
@@ -377,8 +377,8 @@ export class AgentSession {
 	private readonly _portabilityProjection: PortabilityProjectionCoordinator;
 	private _lastPortabilityProjectionSignature?: string;
 	private _lastPortabilityProjectionState?: PortabilityProjectionState;
-	private _pendingPortabilityConfirmation?: PortabilityConfirmationState;
-	private _deferredPortabilityConfirmation?: PortabilityConfirmationState;
+	private _portabilityRunFailure?: PortabilityProjectionUnavailableError;
+	private _activeRunAllowLossy = false;
 	/** Messages queued to be included with the next user prompt as context ("asides"). */
 	private _pendingNextTurnMessages: CustomMessage[] = [];
 
@@ -475,7 +475,6 @@ export class AgentSession {
 		this._unsubscribeAgent = this.agent.subscribe(this._handleAgentEvent);
 		this._installAgentToolHooks();
 		this._installAgentNextTurnRefresh();
-		this._installPortabilityTurnBoundary();
 
 		this._buildRuntime({
 			activeToolNames: this._initialActiveToolNames,
@@ -488,11 +487,40 @@ export class AgentSession {
 		this.agent.convertToLlm = async (messages) => {
 			const converted = await convertToLlm(messages);
 			const model = this.model;
-			if (!model || !this._portabilityProjection.hasDecision(model)) return converted;
-			const projection = this._portabilityProjection.inspect(converted, model);
-			this._recordPortabilityProjection(projection);
-			return projection.messages;
+			if (!model || !hasPortabilityRelevantContent(converted)) return converted;
+			try {
+				return this._projectForProvider(converted, model);
+			} catch (error) {
+				if (error instanceof PortabilityProjectionUnavailableError && this._isAgentRunActive) {
+					const runFailure = new PortabilityProjectionUnavailableError(error.report, "mid-run");
+					this._portabilityRunFailure = runFailure;
+					throw runFailure;
+				}
+				throw error;
+			}
 		};
+	}
+
+	private _projectForProvider(messages: readonly Message[], target: Model<any>): Message[] {
+		try {
+			const projection = this._portabilityProjection.preflight(messages, target, {
+				allowLossy: this._activeRunAllowLossy,
+				persistApproval: !this._activeRunAllowLossy,
+			});
+			if (
+				projection.decisionEntryId ||
+				projection.suspendedItemIds.length > 0 ||
+				projection.unapprovedItemIds.length > 0
+			) {
+				this._recordPortabilityProjection(projection);
+			}
+			return projection.messages;
+		} catch (error) {
+			if (error instanceof PortabilityConfirmationRequiredError) {
+				throw new PortabilityProjectionUnavailableError(error.report);
+			}
+			throw error;
+		}
 	}
 
 	private _recordPortabilityProjection(projection: AppliedPortabilityProjection): void {
@@ -553,9 +581,13 @@ export class AgentSession {
 	}
 
 	private _projectAgentMessages(messages: readonly AgentMessage[], target: Model<any>): AgentMessage[] {
-		if (!this._portabilityProjection.hasDecision(target)) return [...messages];
 		const llmMessages = this._llmMessages(messages);
-		const projected = this._portabilityProjection.inspect(llmMessages, target).messages;
+		if (!hasPortabilityRelevantContent(llmMessages)) return [...messages];
+		const projection = this._portabilityProjection.inspect(llmMessages, target);
+		if (projection.decisionEntryId || projection.unapprovedItemIds.length > 0) {
+			this._recordPortabilityProjection(projection);
+		}
+		const projected = projection.messages;
 		let llmIndex = 0;
 		return messages.map((message) => {
 			if (message.role !== "user" && message.role !== "assistant" && message.role !== "toolResult") return message;
@@ -565,59 +597,69 @@ export class AgentSession {
 		});
 	}
 
-	/**
-	 * Synchronous mirror of the `_preflightPromptMessages` early return. Steering
-	 * and follow-up queueing must stay observable in the caller's tick, so those
-	 * paths only become asynchronous when portability work is actually pending.
-	 */
-	private _needsPortabilityPreflight(allowLossy: boolean | undefined): boolean {
+	private _preflightPromptMessages(
+		additionalMessages: readonly AgentMessage[],
+		allowLossy: boolean | undefined,
+		confirmPortability?: PromptOptions["confirmPortability"],
+	): void | Promise<void> {
+		try {
+			this._applyPromptPreflight(additionalMessages, {
+				allowLossy,
+				persistApproval: allowLossy !== true,
+			});
+		} catch (error) {
+			if (!(error instanceof PortabilityConfirmationRequiredError) || !confirmPortability) throw error;
+			return this._confirmPromptPortability(additionalMessages, confirmPortability, error);
+		}
+	}
+
+	private _applyPromptPreflight(
+		additionalMessages: readonly AgentMessage[],
+		options: { allowLossy?: boolean; persistApproval?: boolean; approvedItemIds?: Iterable<string> },
+	): void {
 		const model = this.model;
-		if (!model) return false;
-		if (allowLossy) return true;
-		const deferred = this._deferredPortabilityConfirmation;
-		if (deferred) {
-			const targetKey = getPortabilityTargetKey({
+		if (!model) return;
+		const messages = [...this._llmMessages(this.agent.state.messages), ...this._llmMessages(additionalMessages)];
+		if (!hasPortabilityRelevantContent(messages)) return;
+		const projection = this._portabilityProjection.preflight(messages, model, options);
+		if (projection.decisionEntryId || projection.suspendedItemIds.length > 0) {
+			this._recordPortabilityProjection(projection);
+		}
+	}
+
+	private async _confirmPromptPortability(
+		additionalMessages: readonly AgentMessage[],
+		confirmPortability: NonNullable<PromptOptions["confirmPortability"]>,
+		initialError: PortabilityConfirmationRequiredError,
+	): Promise<void> {
+		let error = initialError;
+		let targetKey = getPortabilityTargetKey(error.report.target);
+		const approvedItemIds = new Set<string>();
+		while (true) {
+			if (!(await confirmPortability(error))) throw error;
+			for (const item of error.report.items) approvedItemIds.add(item.stableId);
+
+			const model = this.model;
+			if (!model) return;
+			const currentTargetKey = getPortabilityTargetKey({
 				provider: model.provider,
 				api: model.api,
 				modelId: model.id,
 				baseUrl: model.baseUrl,
 			});
-			if (getPortabilityTargetKey(deferred.target) === targetKey) return true;
-		}
-		return this._portabilityProjection.hasDecision(model);
-	}
-
-	private async _preflightPromptMessages(
-		additionalMessages: readonly AgentMessage[],
-		allowLossy: boolean | undefined,
-		confirmPortability?: PromptOptions["confirmPortability"],
-	): Promise<void> {
-		const model = this.model;
-		if (!model) return;
-		const targetKey = getPortabilityTargetKey({
-			provider: model.provider,
-			api: model.api,
-			modelId: model.id,
-			baseUrl: model.baseUrl,
-		});
-		const deferred = this._deferredPortabilityConfirmation;
-		const deferredMatches = deferred ? getPortabilityTargetKey(deferred.target) === targetKey : false;
-		if (!allowLossy && !deferredMatches && !this._portabilityProjection.hasDecision(model)) return;
-		const messages = [...this._llmMessages(this.agent.state.messages), ...this._llmMessages(additionalMessages)];
-		let projection: AppliedPortabilityProjection;
-		try {
-			if (deferred && deferredMatches && !allowLossy) {
-				throw new PortabilityConfirmationRequiredError(deferred.report);
+			if (currentTargetKey !== targetKey) {
+				approvedItemIds.clear();
+				targetKey = currentTargetKey;
 			}
-			projection = this._portabilityProjection.preflight(messages, model, { allowLossy });
-		} catch (error) {
-			if (!(error instanceof PortabilityConfirmationRequiredError) || !confirmPortability) throw error;
-			if (!(await confirmPortability(error))) throw error;
-			projection = this._portabilityProjection.preflight(messages, model, { allowLossy: true });
+
+			try {
+				this._applyPromptPreflight(additionalMessages, { approvedItemIds });
+				return;
+			} catch (nextError) {
+				if (!(nextError instanceof PortabilityConfirmationRequiredError)) throw nextError;
+				error = nextError;
+			}
 		}
-		this._pendingPortabilityConfirmation = undefined;
-		if (deferredMatches) this._deferredPortabilityConfirmation = undefined;
-		this._recordPortabilityProjection(projection);
 	}
 
 	private _installProviderTraceBridge(): void {
@@ -797,51 +839,6 @@ export class AgentSession {
 				model: this.agent.state.model,
 				thinkingLevel: this.agent.state.thinkingLevel,
 			};
-		};
-	}
-
-	private _installPortabilityTurnBoundary(): void {
-		const previousShouldStop = this.agent.shouldStopAfterTurn;
-		this.agent.shouldStopAfterTurn = async (turn: ShouldStopAfterTurnContext, signal?: AbortSignal) => {
-			if (await previousShouldStop?.(turn, signal)) return true;
-			const model = this.model;
-			if (!model) return false;
-
-			const hasDecision = this._portabilityProjection.hasDecision(model);
-			const projection = this._portabilityProjection.inspect(this._llmMessages(turn.context.messages), model);
-			// Preserve the legacy event stream for ordinary compatible turns. A
-			// projection becomes observable only when there is a persisted decision
-			// to apply or the new turn actually needs confirmation.
-			if (hasDecision || projection.unapprovedItemIds.length > 0) {
-				this._recordPortabilityProjection(projection);
-			}
-			if (projection.unapprovedItemIds.length === 0) return false;
-
-			const unapproved = new Set(projection.unapprovedItemIds);
-			const items = projection.report.items.filter((item) => unapproved.has(item.stableId));
-			const counts: PortabilityReport["counts"] = {
-				portable: 0,
-				reconstructable: 0,
-				"provider-locked": 0,
-				missing: 0,
-				unsupported: 0,
-			};
-			for (const item of items) counts[item.classification] += 1;
-			const report: PortabilityReport = {
-				target: projection.report.target,
-				items,
-				counts,
-				canSwitchWithoutLoss: false,
-			};
-			const confirmation: PortabilityConfirmationState = {
-				source: "mid-turn",
-				target: projection.target,
-				report,
-			};
-			this._pendingPortabilityConfirmation = confirmation;
-			this._deferredPortabilityConfirmation = undefined;
-			this._emit({ type: "portability_confirmation_required", confirmation: structuredClone(confirmation) });
-			return true;
 		};
 	}
 
@@ -1453,18 +1450,40 @@ export class AgentSession {
 	// Prompting
 	// =========================================================================
 
-	private async _runAgentPrompt(messages: AgentMessage | AgentMessage[]): Promise<void> {
+	private async _runAgentPrompt(
+		messages: AgentMessage | AgentMessage[],
+		options: { allowLossy?: boolean } = {},
+	): Promise<void> {
 		this._isAgentRunActive = true;
+		this._activeRunAllowLossy = options.allowLossy === true;
 		try {
 			await this.agent.prompt(messages);
+			this._throwPortabilityRunFailure();
 			while (await this._handlePostAgentRun()) {
 				await this.agent.continue();
+				this._throwPortabilityRunFailure();
 			}
+		} catch (error) {
+			if (error instanceof PortabilityProjectionUnavailableError && error.phase === "mid-run") {
+				this._emit({
+					type: "portability_error",
+					kind: "portability_projection_unavailable",
+					message: error.message,
+					report: structuredClone(error.report),
+				});
+			}
+			throw error;
 		} finally {
+			this._portabilityRunFailure = undefined;
+			this._activeRunAllowLossy = false;
 			this._systemPromptOverride = undefined;
 			this._flushPendingBashMessages();
 			await this._emitAgentSettled();
 		}
+	}
+
+	private _throwPortabilityRunFailure(): void {
+		if (this._portabilityRunFailure) throw this._portabilityRunFailure;
 	}
 
 	private async _handlePostAgentRun(): Promise<boolean> {
@@ -1704,7 +1723,7 @@ export class AgentSession {
 		}
 
 		preflightResult?.(true);
-		await this._runAgentPrompt(messages);
+		await this._runAgentPrompt(messages, { allowLossy: options?.allowLossy });
 	}
 
 	/**
@@ -1791,25 +1810,33 @@ export class AgentSession {
 		expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
 
 		const attachmentReferences = this._attachmentCoordinator.register(attachments);
-		if (!this._needsPortabilityPreflight(options?.allowLossy)) {
-			this._attachmentCoordinator.persistReferences(attachmentReferences);
-			return this._queueSteer(expandedText, images, attachmentReferences);
-		}
 		const content: (TextContent | ImageContent)[] = [{ type: "text", text: expandedText }];
 		if (images) content.push(...images);
+		const additionalMessages: AgentMessage[] = [
+			{
+				role: "user",
+				content,
+				...(attachmentReferences?.length ? { attachments: attachmentReferences } : {}),
+				timestamp: Date.now(),
+			},
+		];
+		let preflight: void | Promise<void>;
 		try {
-			await this._preflightPromptMessages(
-				[
-					{
-						role: "user",
-						content,
-						...(attachmentReferences?.length ? { attachments: attachmentReferences } : {}),
-						timestamp: Date.now(),
-					},
-				],
+			preflight = this._preflightPromptMessages(
+				additionalMessages,
 				options?.allowLossy,
 				options?.confirmPortability,
 			);
+		} catch (error) {
+			this._attachmentCoordinator.discardUnpersistedReferences(attachmentReferences);
+			throw error;
+		}
+		if (!preflight) {
+			this._attachmentCoordinator.persistReferences(attachmentReferences);
+			return this._queueSteer(expandedText, images, attachmentReferences);
+		}
+		try {
+			await preflight;
 			this._attachmentCoordinator.persistReferences(attachmentReferences);
 			await this._queueSteer(expandedText, images, attachmentReferences);
 		} catch (error) {
@@ -1841,25 +1868,33 @@ export class AgentSession {
 		expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
 
 		const attachmentReferences = this._attachmentCoordinator.register(attachments);
-		if (!this._needsPortabilityPreflight(options?.allowLossy)) {
-			this._attachmentCoordinator.persistReferences(attachmentReferences);
-			return this._queueFollowUp(expandedText, images, attachmentReferences);
-		}
 		const content: (TextContent | ImageContent)[] = [{ type: "text", text: expandedText }];
 		if (images) content.push(...images);
+		const additionalMessages: AgentMessage[] = [
+			{
+				role: "user",
+				content,
+				...(attachmentReferences?.length ? { attachments: attachmentReferences } : {}),
+				timestamp: Date.now(),
+			},
+		];
+		let preflight: void | Promise<void>;
 		try {
-			await this._preflightPromptMessages(
-				[
-					{
-						role: "user",
-						content,
-						...(attachmentReferences?.length ? { attachments: attachmentReferences } : {}),
-						timestamp: Date.now(),
-					},
-				],
+			preflight = this._preflightPromptMessages(
+				additionalMessages,
 				options?.allowLossy,
 				options?.confirmPortability,
 			);
+		} catch (error) {
+			this._attachmentCoordinator.discardUnpersistedReferences(attachmentReferences);
+			throw error;
+		}
+		if (!preflight) {
+			this._attachmentCoordinator.persistReferences(attachmentReferences);
+			return this._queueFollowUp(expandedText, images, attachmentReferences);
+		}
+		try {
+			await preflight;
 			this._attachmentCoordinator.persistReferences(attachmentReferences);
 			await this._queueFollowUp(expandedText, images, attachmentReferences);
 		} catch (error) {
@@ -2102,37 +2137,6 @@ export class AgentSession {
 			active: this._lastPortabilityProjectionState?.activeAttachmentIds.length ?? 0,
 			suspended: this._lastPortabilityProjectionState?.suspendedAttachmentIds.length ?? 0,
 		};
-	}
-
-	getPendingPortabilityConfirmation(): PortabilityConfirmationState | undefined {
-		return this._pendingPortabilityConfirmation ? structuredClone(this._pendingPortabilityConfirmation) : undefined;
-	}
-
-	async resolvePendingPortabilityConfirmation(allowLossy: boolean): Promise<void> {
-		const pending = this._pendingPortabilityConfirmation;
-		if (!pending) throw new Error("No portability confirmation is pending.");
-		if (!allowLossy) {
-			this._pendingPortabilityConfirmation = undefined;
-			this._deferredPortabilityConfirmation = pending;
-			return;
-		}
-		const model = this.model;
-		if (!model) throw new Error(formatNoModelSelectedMessage());
-		const projection = this._portabilityProjection.preflight(this._llmMessages(this.agent.state.messages), model, {
-			allowLossy: true,
-		});
-		this._recordPortabilityProjection(projection);
-		this._pendingPortabilityConfirmation = undefined;
-		this._deferredPortabilityConfirmation = undefined;
-		this._isAgentRunActive = true;
-		try {
-			await this.agent.continue();
-			while (await this._handlePostAgentRun()) await this.agent.continue();
-		} finally {
-			this._systemPromptOverride = undefined;
-			this._flushPendingBashMessages();
-			await this._emitAgentSettled();
-		}
 	}
 
 	private _preflightModelSwitch(target: Model<any>, options?: ModelSwitchOptions): PortabilityReport {
@@ -2939,7 +2943,6 @@ export class AgentSession {
 		if (targetKey(refreshedModel) !== targetKey(currentModel)) {
 			this._lastPortabilityProjectionSignature = undefined;
 			this._lastPortabilityProjectionState = undefined;
-			this._pendingPortabilityConfirmation = undefined;
 		}
 
 		this.agent.state.model = refreshedModel;

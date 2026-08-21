@@ -76,7 +76,7 @@ export interface CreateProductSessionOptions {
 export interface ProductPromptInput {
 	text: string;
 	attachmentIds?: string[];
-	/** Explicitly allow target-scoped omission if the run creates incompatible native context. */
+	/** Exclude incompatible native context for this run without persisting newly approved IDs. */
 	allowLossy?: boolean;
 }
 
@@ -552,7 +552,7 @@ export class ProductAgentServer {
 			this.emit(active, "run_end", { willRetry: event.willRetry });
 			return;
 		}
-		if (event.type === "agent_settled" && !active.host.session.getPendingPortabilityConfirmation()) {
+		if (event.type === "agent_settled") {
 			this.emit(active, "done", {});
 		}
 	}

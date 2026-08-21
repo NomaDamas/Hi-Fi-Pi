@@ -1,5 +1,6 @@
 import type { AssistantMessage, AttachmentRecord, ImageContent } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { PortabilityProjectionUnavailableError } from "../src/core/attachments/portability-projection.ts";
 import type { SessionShutdownEvent } from "../src/index.ts";
 import { runPrintMode } from "../src/modes/print-mode.ts";
 
@@ -18,8 +19,6 @@ type FakeSession = {
 	bindExtensions: ReturnType<typeof vi.fn>;
 	subscribe: ReturnType<typeof vi.fn>;
 	prompt: ReturnType<typeof vi.fn>;
-	getPendingPortabilityConfirmation: ReturnType<typeof vi.fn>;
-	resolvePendingPortabilityConfirmation: ReturnType<typeof vi.fn>;
 	reload: ReturnType<typeof vi.fn>;
 };
 
@@ -73,8 +72,6 @@ function createRuntimeHost(assistantMessage: AssistantMessage): FakeRuntimeHost 
 		bindExtensions: vi.fn(async () => {}),
 		subscribe: vi.fn(() => () => {}),
 		prompt: vi.fn(async () => {}),
-		getPendingPortabilityConfirmation: vi.fn(() => undefined),
-		resolvePendingPortabilityConfirmation: vi.fn(async () => {}),
 		reload: vi.fn(async () => {}),
 	};
 
@@ -165,26 +162,8 @@ describe("runPrintMode", () => {
 		expect(session.extensionRunner.emit).toHaveBeenCalledWith({ type: "session_shutdown", reason: "quit" });
 	});
 
-	it("fails headless continuation explicitly when portability consent is unavailable", async () => {
-		const runtimeHost = createRuntimeHost(createAssistantMessage({ text: "tool finished" }));
-		runtimeHost.session.getPendingPortabilityConfirmation.mockReturnValue({ source: "mid-turn" });
-		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-
-		const exitCode = await runPrintMode(runtimeHost as unknown as Parameters<typeof runPrintMode>[0], {
-			mode: "text",
-			initialMessage: "run tool",
-		});
-
-		expect(exitCode).toBe(1);
-		expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining("Portability confirmation required"));
-		expect(runtimeHost.session.resolvePendingPortabilityConfirmation).not.toHaveBeenCalled();
-	});
-
-	it("continues a headless run only with explicit lossy opt-in", async () => {
+	it("passes explicit lossy opt-in into a headless prompt", async () => {
 		const runtimeHost = createRuntimeHost(createAssistantMessage({ text: "done" }));
-		runtimeHost.session.getPendingPortabilityConfirmation
-			.mockReturnValueOnce({ source: "mid-turn" })
-			.mockReturnValueOnce(undefined);
 
 		const exitCode = await runPrintMode(runtimeHost as unknown as Parameters<typeof runPrintMode>[0], {
 			mode: "text",
@@ -193,10 +172,51 @@ describe("runPrintMode", () => {
 		});
 
 		expect(exitCode).toBe(0);
-		expect(runtimeHost.session.resolvePendingPortabilityConfirmation).toHaveBeenCalledWith(true);
 		expect(runtimeHost.session.prompt).toHaveBeenCalledWith("run tool", {
 			images: undefined,
 			allowLossy: true,
 		});
+	});
+
+	it("prints an actionable allow-lossy recovery for projectable mid-run failures", async () => {
+		const runtimeHost = createRuntimeHost(createAssistantMessage({ text: "unused" }));
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		runtimeHost.session.prompt.mockRejectedValue(
+			new PortabilityProjectionUnavailableError(
+				{
+					target: {
+						provider: "faux",
+						api: "openai-responses",
+						modelId: "faux-2",
+						baseUrl: "https://faux.test/v1",
+					},
+					items: [
+						{
+							id: "attachment:att_video",
+							stableId: "attachment:att_video",
+							kind: "attachment",
+							classification: "unsupported",
+							reason: "video/mp4 is unsupported",
+							projectable: true,
+							attachmentId: "att_video",
+							filename: "generated.mp4",
+							messageIndex: 1,
+						},
+					],
+					counts: { portable: 0, reconstructable: 0, "provider-locked": 0, missing: 0, unsupported: 1 },
+					canSwitchWithoutLoss: false,
+				},
+				"mid-run",
+			),
+		);
+
+		const exitCode = await runPrintMode(runtimeHost as unknown as Parameters<typeof runPrintMode>[0], {
+			mode: "text",
+			initialMessage: "make a video",
+		});
+
+		expect(exitCode).toBe(1);
+		expect(errorSpy).toHaveBeenCalledOnce();
+		expect(errorSpy).toHaveBeenCalledWith(expect.stringMatching(/generated\.mp4.*--allow-lossy/i));
 	});
 });

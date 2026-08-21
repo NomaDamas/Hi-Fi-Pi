@@ -62,7 +62,6 @@ export type RpcCommand =
 	| { id?: string; type: "cycle_model"; allowLossy?: boolean }
 	| { id?: string; type: "get_portability_report"; provider: string; modelId: string }
 	| { id?: string; type: "get_portability_projection"; provider?: string; modelId?: string }
-	| { id?: string; type: "resolve_portability_confirmation"; allowLossy: boolean }
 	| { id?: string; type: "get_available_models" }
 	| { id?: string; type: "get_provider_options" }
 	| { id?: string; type: "set_provider_option"; key: string; value: unknown }
@@ -190,12 +189,6 @@ export type RpcResponse =
 	| {
 			id?: string;
 			type: "response";
-			command: "resolve_portability_confirmation";
-			success: true;
-	  }
-	| {
-			id?: string;
-			type: "response";
 			command: "get_available_models";
 			success: true;
 			data: { models: Model<any>[] };
@@ -301,7 +294,19 @@ export type RpcResponse =
 	  }
 
 	// Error response (any command can fail)
-	| { id?: string; type: "response"; command: string; success: false; error: string };
+	| {
+			id?: string;
+			type: "response";
+			command: string;
+			success: false;
+			error: string;
+			details?: RpcErrorDetails;
+	  };
+
+export interface RpcErrorDetails {
+	kind: "portability_confirmation_required" | "portability_projection_unavailable";
+	report: PortabilityReport;
+}
 
 // ============================================================================
 // Extension UI Events (stdout)
