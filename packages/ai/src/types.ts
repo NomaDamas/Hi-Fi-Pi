@@ -117,6 +117,7 @@ export interface ProviderResponse {
 }
 
 export type ProviderTraceStage =
+	| "context_projection"
 	| "input_resolution"
 	| "capability_decision"
 	| "source_selection"

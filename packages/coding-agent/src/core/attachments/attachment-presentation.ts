@@ -1,5 +1,9 @@
 import { existsSync } from "node:fs";
-import { getNativeAttachmentCapability, getNativeInputCapabilityManifest } from "@earendil-works/pi-ai";
+import {
+	getNativeAttachmentCapability,
+	getNativeInputCapabilityManifest,
+	type PortabilityReport,
+} from "@earendil-works/pi-ai";
 import type { Api, AttachmentRecord, AttachmentReference, Model } from "@earendil-works/pi-ai/compat";
 import {
 	type ResolvedAttachment,
@@ -16,6 +20,15 @@ export interface AttachmentResolutionEnvironment {
 	now?: number;
 	pathExists?: (path: string) => boolean;
 	redactInlineData?: boolean;
+}
+
+export interface AttachmentProjectionPresentation {
+	suspendedAttachmentIds?: ReadonlySet<string>;
+}
+
+export interface PortabilityRunSummaryPresentation {
+	report: PortabilityReport;
+	suspendedItemIds: readonly string[];
 }
 
 export interface ResolvedAttachmentReferences {
@@ -82,10 +95,25 @@ export function formatAttachmentSource(attachment: ResolvedAttachment): string {
 	}
 }
 
-export function formatAttachmentStatus(attachment: ResolvedAttachment): string {
+export function formatAttachmentStatus(attachment: ResolvedAttachment, suspended = false): string {
+	if (suspended) return "suspended";
 	if (attachment.state.source.status === "missing") return "source missing";
 	if (attachment.state.source.status === "redacted") return "source redacted";
 	return attachment.state.transport.status;
+}
+
+export function formatPortabilityRunSummary(projection: PortabilityRunSummaryPresentation): string | undefined {
+	const suspendedItemIds = new Set(projection.suspendedItemIds);
+	const suspendedItems = projection.report.items.filter((item) => suspendedItemIds.has(item.stableId));
+	if (suspendedItems.length === 0) return undefined;
+	const labels = suspendedItems.map((item) => {
+		if (item.kind === "attachment") {
+			const filename = item.filename ?? item.attachmentId ?? "attachment";
+			return item.mediaType ? `${filename} (${item.mediaType})` : filename;
+		}
+		return item.kind;
+	});
+	return `${suspendedItems.length} incompatible item${suspendedItems.length === 1 ? " was" : "s were"} omitted from this run: ${labels.join(", ")}.`;
 }
 
 export function formatAttachmentList(
@@ -93,6 +121,7 @@ export function formatAttachmentList(
 	model: Model<Api> | undefined,
 	style: AttachmentPresentationStyle,
 	environment?: AttachmentResolutionEnvironment,
+	projection?: AttachmentProjectionPresentation,
 ): string {
 	let text = style.bold("Session Attachments");
 	if (records.length === 0) return `${text}\n\n${style.dim("No attachments in this session.")}`;
@@ -100,7 +129,10 @@ export function formatAttachmentList(
 	for (const [index, record] of records.entries()) {
 		const attachment = resolveAttachmentForPresentation(record, model, environment);
 		const size = record.sizeBytes === undefined ? "size unknown" : formatAttachmentSize(record.sizeBytes);
-		text += `\n${index + 1}. ${record.filename} · ${record.mediaType} · ${size} · ${formatAttachmentStatus(attachment)}`;
+		text += `\n${index + 1}. ${record.filename} · ${record.mediaType} · ${size} · ${formatAttachmentStatus(
+			attachment,
+			projection?.suspendedAttachmentIds?.has(record.id),
+		)}`;
 	}
 	return text;
 }
@@ -111,6 +143,7 @@ export function formatAttachmentDetails(
 	model: Model<Api> | undefined,
 	style: AttachmentPresentationStyle,
 	environment?: AttachmentResolutionEnvironment,
+	projection?: AttachmentProjectionPresentation,
 ): AttachmentCommandResult {
 	const numericIndex = /^\d+$/.test(selector) ? Number(selector) - 1 : -1;
 	const record = numericIndex >= 0 ? records[numericIndex] : records.find((candidate) => candidate.id === selector);
@@ -131,7 +164,10 @@ export function formatAttachmentDetails(
 	if (attachment.state.transport.nativeMethod) {
 		text += `\n${style.dim("Native method:")} ${attachment.state.transport.nativeMethod}`;
 	}
-	text += `\n${style.dim("Status:")} ${formatAttachmentStatus(attachment)}`;
+	text += `\n${style.dim("Status:")} ${formatAttachmentStatus(
+		attachment,
+		projection?.suspendedAttachmentIds?.has(record.id),
+	)}`;
 	if (attachment.state.transport.reason) {
 		text += `\n${style.dim("Reason:")} ${attachment.state.transport.reason}`;
 	}

@@ -1,7 +1,13 @@
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { registerFauxProvider } from "@earendil-works/pi-ai/compat";
+import {
+	type FauxProviderRegistration,
+	fauxAssistantMessage,
+	fauxToolCall,
+	registerFauxProvider,
+} from "@earendil-works/pi-ai/compat";
+import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import type { ExtensionFactory } from "../src/core/extensions/index.ts";
@@ -15,10 +21,14 @@ describe("headless agent host", () => {
 		while (cleanups.length > 0) await cleanups.pop()?.();
 	});
 
-	async function createHost(extensionFactory: ExtensionFactory): Promise<HeadlessAgentHost> {
+	async function createHost(
+		extensionFactory: ExtensionFactory,
+		configureFaux?: (faux: FauxProviderRegistration) => void,
+	): Promise<HeadlessAgentHost> {
 		const directory = join(tmpdir(), `hifi-headless-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 		mkdirSync(directory, { recursive: true });
 		const faux = registerFauxProvider();
+		configureFaux?.(faux);
 		const auth = AuthStorage.inMemory();
 		await auth.modify(faux.getModel().provider, async () => ({ type: "api_key", key: "faux-key" }));
 		const modelRuntime = await ModelRuntime.create({
@@ -40,6 +50,7 @@ describe("headless agent host", () => {
 					contextWindow: model.contextWindow,
 					maxTokens: model.maxTokens,
 					baseUrl: model.baseUrl,
+					nativeInputs: model.nativeInputs,
 				},
 			],
 		});
@@ -123,5 +134,83 @@ describe("headless agent host", () => {
 		await host.dispose();
 		await host.dispose();
 		await expect(host.prompt("late prompt")).rejects.toThrow("disposed");
+	});
+
+	it("fails closed on a real incompatible tool result and preserves actionable guidance", async () => {
+		const attachment = {
+			id: "att_headless_blocked",
+			filename: "generated.mp4",
+			mediaType: "video/mp4",
+			source: { type: "base64" as const, data: "Z2VuZXJhdGVk" },
+		};
+		const host = await createHost(
+			(pi) => {
+				pi.registerTool({
+					name: "make_video",
+					label: "Make video",
+					description: "Create a test video",
+					parameters: Type.Object({}),
+					execute: async () => ({
+						content: [{ type: "text", text: "created" }],
+						details: {},
+						attachments: [attachment],
+					}),
+				});
+			},
+			(faux) => {
+				faux.getModel().nativeInputs = { profile: "headless-no-files", capabilities: [] };
+				faux.setResponses([fauxAssistantMessage(fauxToolCall("make_video", {}), { stopReason: "toolUse" })]);
+			},
+		);
+
+		await expect(host.prompt("run tool")).rejects.toMatchObject({
+			name: "PortabilityProjectionUnavailableError",
+			phase: "mid-run",
+			message: expect.stringMatching(/generated\.mp4.*not sent.*re-send.*switch/i),
+		});
+	});
+
+	it("applies a headless lossy opt-in to the real provider request and reports the omission", async () => {
+		const attachment = {
+			id: "att_headless_allowed",
+			filename: "generated-allowed.mp4",
+			mediaType: "video/mp4",
+			source: { type: "base64" as const, data: "Z2VuZXJhdGVk" },
+		};
+		const host = await createHost(
+			(pi) => {
+				pi.registerTool({
+					name: "make_video",
+					label: "Make video",
+					description: "Create a test video",
+					parameters: Type.Object({}),
+					execute: async () => ({
+						content: [{ type: "text", text: "created" }],
+						details: {},
+						attachments: [attachment],
+					}),
+				});
+			},
+			(faux) => {
+				faux.getModel().nativeInputs = { profile: "headless-no-files", capabilities: [] };
+				faux.setResponses([
+					fauxAssistantMessage(fauxToolCall("make_video", {}), { stopReason: "toolUse" }),
+					(context) => {
+						const payload = JSON.stringify(context.messages);
+						expect(payload).not.toContain(attachment.id);
+						expect(payload).toContain("video/mp4 attachment omitted");
+						return fauxAssistantMessage("done");
+					},
+				]);
+			},
+		);
+		const summaries: string[] = [];
+		host.subscribe((event) => {
+			if (event.type === "portability_run_summary") summaries.push(event.projection.suspendedAttachmentIds[0] ?? "");
+		});
+
+		await expect(host.prompt("run tool", { allowLossy: true })).resolves.toBeUndefined();
+		expect(host.session.getLastAssistantText()).toBe("done");
+		expect(summaries).toEqual([attachment.id]);
 	});
 });

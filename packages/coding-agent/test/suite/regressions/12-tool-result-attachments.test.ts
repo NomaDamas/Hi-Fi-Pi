@@ -46,6 +46,19 @@ describe("Issue 12 tool-result attachment contracts", () => {
 			],
 		});
 		harnesses.push(harness);
+		harness.getModel().nativeInputs = {
+			profile: "faux-pdf",
+			capabilities: [
+				{
+					id: "pdf-inline",
+					supported: true,
+					mediaTypes: ["application/pdf"],
+					sources: ["inline"],
+					wireKinds: { inline: "faux-file" },
+					provenance: "configured",
+				},
+			],
+		};
 		let nextProviderMessages: readonly AgentMessage[] = [];
 		harness.setResponses([
 			fauxAssistantMessage(fauxToolCall("make_report", {}), { stopReason: "toolUse" }),

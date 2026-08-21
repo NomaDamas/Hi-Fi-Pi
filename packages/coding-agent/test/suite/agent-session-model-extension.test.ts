@@ -78,6 +78,7 @@ describe("AgentSession model and extension characterization", () => {
 						api: currentModel.api,
 						modelId: currentModel.id,
 						kind: "response-state",
+						stateId: "response_1",
 						payload: { responseId: "response_1" },
 					},
 				],

@@ -13,6 +13,7 @@ export {
 	type AgentSessionEvent,
 	type AgentSessionEventListener,
 	type ModelCycleResult,
+	type PortabilityProjectionState,
 	type PromptOptions,
 	type SessionStats,
 } from "./agent-session.ts";
@@ -30,6 +31,7 @@ export {
 	createAgentSessionFromServices,
 	createAgentSessionServices,
 } from "./agent-session-services.ts";
+export { PortabilityProjectionUnavailableError } from "./attachments/portability-projection.ts";
 export { type BashExecutorOptions, type BashResult, executeBashWithOperations } from "./bash-executor.ts";
 export type { CompactionResult } from "./compaction/index.ts";
 export { createEventBus, type EventBus, type EventBusController } from "./event-bus.ts";

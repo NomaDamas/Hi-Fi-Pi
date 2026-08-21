@@ -60,9 +60,9 @@ export class HeadlessAgentHost {
 		return this.runtime.cwd;
 	}
 
-	prompt(input: string | PromptInput, options?: PromptOptions): Promise<void> {
-		if (this.disposed) return Promise.reject(new Error("Headless agent host is disposed"));
-		return this.session.prompt(input, { ...options, source: options?.source ?? "rpc" });
+	async prompt(input: string | PromptInput, options?: PromptOptions): Promise<void> {
+		if (this.disposed) throw new Error("Headless agent host is disposed");
+		await this.session.prompt(input, { ...options, source: options?.source ?? "rpc" });
 	}
 
 	subscribe(listener: AgentSessionEventListener): () => void {

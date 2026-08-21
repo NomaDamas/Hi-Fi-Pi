@@ -1,11 +1,35 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { type AttachmentRecord, fauxAssistantMessage } from "@earendil-works/pi-ai";
+import {
+	type AttachmentRecord,
+	fauxAssistantMessage,
+	PortabilityConfirmationRequiredError,
+} from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it } from "vitest";
 import { exportFromFile } from "../../../src/core/export-html/index.ts";
 import { type SessionEntry, SessionManager } from "../../../src/core/session-manager.ts";
 import { createHarness, type Harness } from "../harness.ts";
+
+async function createPdfHarness(options?: Parameters<typeof createHarness>[0]): Promise<Harness> {
+	const harness = await createHarness(options);
+	for (const model of harness.models) {
+		model.nativeInputs = {
+			profile: `${model.id}-issue-5-pdf`,
+			capabilities: [
+				{
+					id: "issue-5-pdf",
+					supported: true,
+					mediaTypes: ["application/pdf"],
+					sources: ["inline"],
+					wireKinds: { inline: "faux-file" },
+					provenance: "configured",
+				},
+			],
+		};
+	}
+	return harness;
+}
 
 const attachment: AttachmentRecord = {
 	id: "att_paper",
@@ -142,28 +166,69 @@ describe("Issue 5 attachment persistence", () => {
 
 	it("reconstructs the provider attachment registry when AgentSession resumes", async () => {
 		const manager = createPersistentManager();
-		const firstHarness = await createHarness({ sessionManager: manager });
+		const availableAttachment: AttachmentRecord = {
+			...attachment,
+			source: { type: "base64", data: "JVBERi0xLjQ=" },
+		};
+		const firstHarness = await createPdfHarness({ sessionManager: manager });
 		harnesses.push(firstHarness);
 		firstHarness.setResponses([fauxAssistantMessage("stored")]);
 
-		await firstHarness.session.prompt("Analyze", { attachments: [attachment] });
+		await firstHarness.session.prompt("Analyze", { attachments: [availableAttachment] });
 		firstHarness.cleanup();
 		harnesses.splice(harnesses.indexOf(firstHarness), 1);
 
 		const resumedManager = SessionManager.open(manager.getSessionFile()!);
-		const resumedHarness = await createHarness({ sessionManager: resumedManager });
+		const resumedHarness = await createPdfHarness({ sessionManager: resumedManager });
 		harnesses.push(resumedHarness);
 		let resolved: AttachmentRecord | undefined;
 		resumedHarness.setResponses([
 			(context) => {
-				resolved = context.attachmentRegistry?.resolve(attachment.id);
+				resolved = context.attachmentRegistry?.resolve(availableAttachment.id);
 				return fauxAssistantMessage("done");
 			},
 		]);
 
 		await resumedHarness.session.prompt("Continue");
 
-		expect(resolved).toEqual(attachment);
+		expect(resolved).toEqual(availableAttachment);
+	});
+
+	it("requires fresh confirmation when a referenced local source disappears", async () => {
+		const sourceDir = mkdtempSync(join(tmpdir(), "pi-attachment-source-"));
+		tempDirs.push(sourceDir);
+		const sourcePath = join(sourceDir, "paper.pdf");
+		writeFileSync(sourcePath, "%PDF-1.4\n%%EOF\n");
+		const localAttachment: AttachmentRecord = {
+			id: "att_local_pdf",
+			filename: "paper.pdf",
+			mediaType: "application/pdf",
+			source: { type: "path", path: sourcePath },
+		};
+		const harness = await createPdfHarness();
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage("stored"), fauxAssistantMessage("continued without file")]);
+
+		await harness.session.prompt("Analyze", { attachments: [localAttachment] });
+		rmSync(sourcePath);
+
+		await expect(harness.session.prompt("Continue")).rejects.toBeInstanceOf(PortabilityConfirmationRequiredError);
+		let confirmations = 0;
+		await harness.session.prompt("Continue", {
+			confirmPortability: (error) => {
+				confirmations += 1;
+				expect(error.report.items).toEqual([
+					expect.objectContaining({
+						attachmentId: localAttachment.id,
+						classification: "missing",
+					}),
+				]);
+				return true;
+			},
+		});
+
+		expect(confirmations).toBe(1);
+		expect(harness.session.getLastAssistantText()).toBe("continued without file");
 	});
 
 	it("retains required attachment entries when creating a branched session", () => {
@@ -232,21 +297,25 @@ describe("Issue 5 attachment persistence", () => {
 
 	it("refreshes the provider attachment registry when AgentSession navigates between branches", async () => {
 		const manager = createPersistentManager();
+		const availableAttachment: AttachmentRecord = {
+			...attachment,
+			source: { type: "base64", data: "JVBERi0xLjQ=" },
+		};
 		manager.appendMessage(userMessage("branch point"));
 		const branchPoint = flushTurn(manager);
-		manager.appendAttachment(attachment);
-		manager.appendMessage(userMessage("branch A", attachment.id));
+		manager.appendAttachment(availableAttachment);
+		manager.appendMessage(userMessage("branch A", availableAttachment.id));
 		const branchALeaf = flushTurn(manager);
 
 		manager.branch(branchPoint);
 		manager.appendMessage(userMessage("branch B"));
 		flushTurn(manager);
-		const harness = await createHarness({ sessionManager: manager });
+		const harness = await createPdfHarness({ sessionManager: manager });
 		harnesses.push(harness);
 		let resolved: AttachmentRecord | undefined;
 		harness.setResponses([
 			(context) => {
-				resolved = context.attachmentRegistry?.resolve(attachment.id);
+				resolved = context.attachmentRegistry?.resolve(availableAttachment.id);
 				return fauxAssistantMessage("done");
 			},
 		]);
@@ -254,7 +323,7 @@ describe("Issue 5 attachment persistence", () => {
 		await harness.session.navigateTree(branchALeaf);
 		await harness.session.prompt("Continue branch A");
 
-		expect(resolved).toEqual(attachment);
+		expect(resolved).toEqual(availableAttachment);
 	});
 
 	it("retains attachment entries when forking a persisted session", () => {
@@ -371,7 +440,7 @@ describe("Issue 5 attachment persistence", () => {
 		manager.appendAttachment(inlineAttachment);
 		manager.appendMessage(userMessage("Analyze", inlineAttachment.id));
 		flushTurn(manager);
-		const harness = await createHarness({ sessionManager: manager });
+		const harness = await createPdfHarness({ sessionManager: manager });
 		harnesses.push(harness);
 		const outputPath = join(manager.getCwd(), "safe-export.jsonl");
 
@@ -408,7 +477,7 @@ describe("Issue 5 attachment persistence", () => {
 		manager.appendAttachment(remoteAttachment);
 		manager.appendMessage(userMessage("Analyze", remoteAttachment.id));
 		flushTurn(manager);
-		const harness = await createHarness({ sessionManager: manager });
+		const harness = await createPdfHarness({ sessionManager: manager });
 		harnesses.push(harness);
 		const outputPath = join(manager.getCwd(), "safe-remote-export.jsonl");
 
@@ -492,7 +561,7 @@ describe("Issue 5 attachment persistence", () => {
 			],
 			providerState: { provider: "faux", metadata: { password: "state-secret" } },
 		});
-		const harness = await createHarness({ sessionManager: manager });
+		const harness = await createPdfHarness({ sessionManager: manager });
 		harnesses.push(harness);
 		const outputPath = join(manager.getCwd(), "safe-native-export.jsonl");
 

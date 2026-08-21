@@ -4,8 +4,13 @@ import { join } from "node:path";
 import type { Api, AttachmentRecord, Model, ProviderTraceEvent } from "@earendil-works/pi-ai";
 import { Container } from "@earendil-works/pi-tui";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { resolveAttachmentForPresentation } from "../../../src/core/attachments/attachment-presentation.ts";
+import type { AgentSessionEvent, PortabilityProjectionState } from "../../../src/core/agent-session.ts";
+import {
+	formatPortabilityRunSummary,
+	resolveAttachmentForPresentation,
+} from "../../../src/core/attachments/attachment-presentation.ts";
 import type { ResolvedAttachment } from "../../../src/core/attachments/attachment-runtime.ts";
+import { PortabilityProjectionUnavailableError } from "../../../src/core/attachments/portability-projection.ts";
 import { BUILTIN_SLASH_COMMANDS } from "../../../src/core/slash-commands.ts";
 import { UserMessageComponent } from "../../../src/modes/interactive/components/user-message.ts";
 import { InteractiveMode } from "../../../src/modes/interactive/interactive-mode.ts";
@@ -68,6 +73,7 @@ type SubmitContext = {
 };
 
 type InteractiveModePrivate = {
+	handleEvent(this: EventContext, event: AgentSessionEvent): Promise<void>;
 	setupEditorSubmitHandler(this: SubmitContext): void;
 	handleFilesCommand(this: CommandContext): void;
 	handleFileCommand(this: CommandContext, selector: string): void;
@@ -76,6 +82,12 @@ type InteractiveModePrivate = {
 	addMessageToChat(this: MessageContext, message: unknown): void;
 	updateAttachmentPreview(this: PreviewContext, text: string): Promise<void>;
 	handleInteractiveInputError(this: InputErrorContext, text: string, error: unknown): void;
+};
+
+type EventContext = {
+	isInitialized: boolean;
+	footer: { invalidate: ReturnType<typeof vi.fn> };
+	showWarning: ReturnType<typeof vi.fn>;
 };
 
 type PreviewContext = {
@@ -99,6 +111,8 @@ type MessageContext = {
 	outputPad: number;
 	toolOutputExpanded: boolean;
 	editor: { addToHistory: ReturnType<typeof vi.fn> };
+	hideThinkingBlock?: boolean;
+	hiddenThinkingLabel?: string;
 };
 
 type CommandContext = {
@@ -109,6 +123,7 @@ type CommandContext = {
 	session: {
 		model?: { provider: string; id: string; api: string; baseUrl: string; input: string[] };
 		getProviderTraceEvents: () => ProviderTraceEvent[];
+		getPortabilityProjection: () => { suspendedAttachmentIds: string[] };
 	};
 	chatContainer: Container;
 	ui: { requestRender: ReturnType<typeof vi.fn> };
@@ -143,6 +158,7 @@ function createCommandContext(attachments: AttachmentRecord[] = [pdf]): CommandC
 		session: {
 			model: openAiModel,
 			getProviderTraceEvents: () => [],
+			getPortabilityProjection: () => ({ suspendedAttachmentIds: [] }),
 		},
 		chatContainer: new Container(),
 		ui: { requestRender: vi.fn() },
@@ -152,6 +168,45 @@ function createCommandContext(attachments: AttachmentRecord[] = [pdf]): CommandC
 
 function renderCommandOutput(context: CommandContext): string {
 	return context.chatContainer.render(100).map(stripAnsi).join("\n");
+}
+
+function createPortabilityRunSummaryProjection(): PortabilityProjectionState {
+	return {
+		target: {
+			provider: "openai",
+			api: "openai-responses",
+			modelId: "gpt-test",
+			baseUrl: "https://api.openai.com/v1",
+		},
+		report: {
+			target: {
+				provider: "openai",
+				api: "openai-responses",
+				modelId: "gpt-test",
+				baseUrl: "https://api.openai.com/v1",
+			},
+			items: [
+				{
+					id: "message:0:attachment:att_private_video",
+					stableId: "attachment:att_private_video",
+					projectable: true,
+					kind: "attachment",
+					classification: "unsupported",
+					reason: "video/mp4 is unsupported",
+					messageIndex: 0,
+					attachmentId: "att_private_video",
+					filename: "demo.mp4",
+					mediaType: "video/mp4",
+				},
+			],
+			counts: { portable: 0, reconstructable: 0, "provider-locked": 0, missing: 0, unsupported: 1 },
+			canSwitchWithoutLoss: false,
+		},
+		activeAttachmentIds: [],
+		suspendedAttachmentIds: ["att_private_video"],
+		suspendedItemIds: ["attachment:att_private_video"],
+		unapprovedItemIds: [],
+	};
 }
 
 describe("Issue 6 attachment TUI contracts", () => {
@@ -317,6 +372,73 @@ describe("Issue 6 attachment TUI contracts", () => {
 		expect(context.showError).toHaveBeenCalledWith("read failed");
 	});
 
+	it("does not restore or duplicate a prompt that failed after it entered history", () => {
+		const context: MessageContext & InputErrorContext = {
+			chatContainer: new Container(),
+			session: createCommandContext().session,
+			sessionManager: { getAttachment: () => undefined },
+			getUserMessageText: () => "",
+			getMarkdownThemeWithSettings: () => getMarkdownTheme(),
+			getMarkdownTransformers: () => [],
+			outputPad: 1,
+			toolOutputExpanded: false,
+			editor: { addToHistory: vi.fn(), setText: vi.fn() },
+			showError: vi.fn(),
+		};
+		const prototype = InteractiveMode.prototype as unknown as InteractiveModePrivate;
+		const error = new PortabilityProjectionUnavailableError(
+			{
+				target: {
+					provider: "faux",
+					api: "openai-responses",
+					modelId: "faux-2",
+					baseUrl: "https://faux.test/v1",
+				},
+				items: [
+					{
+						id: "attachment:att_video",
+						stableId: "attachment:att_video",
+						kind: "attachment",
+						classification: "unsupported",
+						reason: "video/mp4 is unsupported",
+						projectable: true,
+						attachmentId: "att_video",
+						filename: "generated.mp4",
+						messageIndex: 1,
+					},
+				],
+				counts: { portable: 0, reconstructable: 0, "provider-locked": 0, missing: 0, unsupported: 1 },
+				canSwitchWithoutLoss: false,
+			},
+			"mid-run",
+		);
+		prototype.addMessageToChat.call(context, {
+			role: "assistant",
+			content: [],
+			api: "openai-responses",
+			provider: "faux",
+			model: "faux-2",
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "error",
+			errorMessage: error.message,
+			timestamp: Date.now(),
+		});
+
+		prototype.handleInteractiveInputError.call(context, "make a video", error);
+
+		expect(context.editor.setText).not.toHaveBeenCalled();
+		expect(context.showError).not.toHaveBeenCalled();
+		const output = context.chatContainer.render(100).map(stripAnsi).join("\n");
+		expect(output.match(/generated\.mp4/g)).toHaveLength(1);
+	});
+
 	it("routes /files without submitting it as a model prompt", async () => {
 		const context = createSubmitContext();
 		const prototype = InteractiveMode.prototype as unknown as InteractiveModePrivate;
@@ -409,6 +531,41 @@ describe("Issue 6 attachment TUI contracts", () => {
 		expect(output).toContain("2. results.xlsx");
 		expect(output).toContain("source missing");
 		expect(context.ui.requestRender).toHaveBeenCalledOnce();
+	});
+
+	it("shows transport-scoped suspended attachments", () => {
+		const context = createCommandContext([pdf, spreadsheet]);
+		context.session.getPortabilityProjection = () => ({ suspendedAttachmentIds: [spreadsheet.id] });
+		const prototype = InteractiveMode.prototype as unknown as InteractiveModePrivate;
+		prototype.handleFilesCommand.call(context);
+
+		expect(renderCommandOutput(context)).toContain("results.xlsx");
+		expect(renderCommandOutput(context)).toContain("suspended");
+	});
+
+	it("formats the files omitted from one lossy run without exposing source details", () => {
+		const notice = formatPortabilityRunSummary(createPortabilityRunSummaryProjection());
+
+		expect(notice).toBe("1 incompatible item was omitted from this run: demo.mp4 (video/mp4).");
+		expect(notice).not.toMatch(/\/secret|base64|bytes/);
+	});
+
+	it("shows the completed lossy run summary when the session emits it", async () => {
+		const context: EventContext = {
+			isInitialized: true,
+			footer: { invalidate: vi.fn() },
+			showWarning: vi.fn(),
+		};
+		const prototype = InteractiveMode.prototype as unknown as InteractiveModePrivate;
+
+		await prototype.handleEvent.call(context, {
+			type: "portability_run_summary",
+			projection: createPortabilityRunSummaryProjection(),
+		});
+
+		expect(context.showWarning).toHaveBeenCalledWith(
+			"1 incompatible item was omitted from this run: demo.mp4 (video/mp4).",
+		);
 	});
 
 	it("renders a useful empty attachment list", () => {

@@ -99,6 +99,12 @@ describe("parseArgs", () => {
 			expect(result.provider).toBe("openai");
 			expect(result.messages).toEqual(["Say hi."]);
 		});
+
+		test("parses an explicit lossy-context opt-in", () => {
+			const result = parseArgs(["--print", "--allow-lossy", "Continue"]);
+			expect(result.allowLossy).toBe(true);
+			expect(result.messages).toEqual(["Continue"]);
+		});
 	});
 
 	describe("--continue flag", () => {

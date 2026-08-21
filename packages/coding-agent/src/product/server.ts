@@ -76,6 +76,8 @@ export interface CreateProductSessionOptions {
 export interface ProductPromptInput {
 	text: string;
 	attachmentIds?: string[];
+	/** Exclude incompatible native context for this run without persisting newly approved IDs. */
+	allowLossy?: boolean;
 }
 
 export interface ProductUploadInput {
@@ -340,6 +342,7 @@ export class ProductAgentServer {
 			await active.host.prompt(
 				{ text: input.text, attachments },
 				{
+					allowLossy: input.allowLossy,
 					preflightResult: (success) => {
 						if (success) {
 							this.emit(active, "input_accepted", {
@@ -549,6 +552,8 @@ export class ProductAgentServer {
 			this.emit(active, "run_end", { willRetry: event.willRetry });
 			return;
 		}
-		if (event.type === "agent_settled") this.emit(active, "done", {});
+		if (event.type === "agent_settled") {
+			this.emit(active, "done", {});
+		}
 	}
 }
