@@ -13,6 +13,7 @@ import {
 	PortabilityConfirmationRequiredError,
 } from "@earendil-works/pi-ai";
 import type { AgentSessionRuntime } from "../core/agent-session-runtime.ts";
+import { formatPortabilityRunSummary } from "../core/attachments/attachment-presentation.ts";
 import { PortabilityProjectionUnavailableError } from "../core/attachments/portability-projection.ts";
 import { flushRawStdout, waitForRawStdoutBackpressure, writeRawStdout } from "../core/output-guard.ts";
 import { killTrackedDetachedChildren } from "../utils/shell.ts";
@@ -118,6 +119,9 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 		unsubscribe = session.subscribe((event) => {
 			if (mode === "json") {
 				writeRawStdout(`${JSON.stringify(toJsonEvent(event))}\n`);
+			} else if (event.type === "portability_run_summary") {
+				const notice = formatPortabilityRunSummary(event.projection);
+				if (notice) console.error(notice);
 			}
 		});
 		unsubscribeBackpressure =

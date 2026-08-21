@@ -178,6 +178,7 @@ export type AgentSessionEvent =
 	| { type: "session_info_changed"; name: string | undefined }
 	| { type: "thinking_level_changed"; level: ThinkingLevel }
 	| { type: "portability_projection"; projection: PortabilityProjectionState }
+	| { type: "portability_run_summary"; projection: PortabilityProjectionState }
 	| {
 			type: "portability_error";
 			kind: "portability_projection_unavailable";
@@ -377,8 +378,11 @@ export class AgentSession {
 	private readonly _portabilityProjection: PortabilityProjectionCoordinator;
 	private _lastPortabilityProjectionSignature?: string;
 	private _lastPortabilityProjectionState?: PortabilityProjectionState;
+	private _currentRunAppliedPortabilityProjection?: PortabilityProjectionState;
 	private _portabilityRunFailure?: PortabilityProjectionUnavailableError;
 	private _activeRunAllowLossy = false;
+	private _activeRunUsesEphemeralLossyConsent = false;
+	private readonly _activeRunApprovedItemIds = new Set<string>();
 	/** Messages queued to be included with the next user prompt as context ("asides"). */
 	private _pendingNextTurnMessages: CustomMessage[] = [];
 
@@ -505,7 +509,8 @@ export class AgentSession {
 		try {
 			const projection = this._portabilityProjection.preflight(messages, target, {
 				allowLossy: this._activeRunAllowLossy,
-				persistApproval: !this._activeRunAllowLossy,
+				persistApproval: !this._activeRunAllowLossy && this._activeRunApprovedItemIds.size === 0,
+				approvedItemIds: this._activeRunApprovedItemIds,
 			});
 			if (
 				projection.decisionEntryId ||
@@ -513,6 +518,10 @@ export class AgentSession {
 				projection.unapprovedItemIds.length > 0
 			) {
 				this._recordPortabilityProjection(projection);
+			}
+			if (this._activeRunUsesEphemeralLossyConsent && projection.suspendedItemIds.length > 0) {
+				const { messages: _messages, ...state } = projection;
+				this._currentRunAppliedPortabilityProjection = structuredClone(state);
 			}
 			return projection.messages;
 		} catch (error) {
@@ -603,10 +612,11 @@ export class AgentSession {
 		confirmPortability?: PromptOptions["confirmPortability"],
 	): void | Promise<void> {
 		try {
-			this._applyPromptPreflight(additionalMessages, {
+			const projection = this._applyPromptPreflight(additionalMessages, {
 				allowLossy,
 				persistApproval: allowLossy !== true,
 			});
+			this._captureRunScopedPortabilityApproval(projection, allowLossy);
 		} catch (error) {
 			if (!(error instanceof PortabilityConfirmationRequiredError) || !confirmPortability) throw error;
 			return this._confirmPromptPortability(additionalMessages, confirmPortability, error);
@@ -616,15 +626,25 @@ export class AgentSession {
 	private _applyPromptPreflight(
 		additionalMessages: readonly AgentMessage[],
 		options: { allowLossy?: boolean; persistApproval?: boolean; approvedItemIds?: Iterable<string> },
-	): void {
+	): AppliedPortabilityProjection | undefined {
 		const model = this.model;
-		if (!model) return;
+		if (!model) return undefined;
 		const messages = [...this._llmMessages(this.agent.state.messages), ...this._llmMessages(additionalMessages)];
-		if (!hasPortabilityRelevantContent(messages)) return;
+		if (!hasPortabilityRelevantContent(messages)) return undefined;
 		const projection = this._portabilityProjection.preflight(messages, model, options);
 		if (projection.decisionEntryId || projection.suspendedItemIds.length > 0) {
 			this._recordPortabilityProjection(projection);
 		}
+		return projection;
+	}
+
+	private _captureRunScopedPortabilityApproval(
+		projection: AppliedPortabilityProjection | undefined,
+		allowLossy: boolean | undefined,
+	): void {
+		if (!this._isAgentRunActive || allowLossy !== true || !projection) return;
+		this._activeRunUsesEphemeralLossyConsent = true;
+		for (const itemId of projection.suspendedItemIds) this._activeRunApprovedItemIds.add(itemId);
 	}
 
 	private async _confirmPromptPortability(
@@ -1456,6 +1476,9 @@ export class AgentSession {
 	): Promise<void> {
 		this._isAgentRunActive = true;
 		this._activeRunAllowLossy = options.allowLossy === true;
+		this._activeRunUsesEphemeralLossyConsent = this._activeRunAllowLossy;
+		this._activeRunApprovedItemIds.clear();
+		this._currentRunAppliedPortabilityProjection = undefined;
 		try {
 			await this.agent.prompt(messages);
 			this._throwPortabilityRunFailure();
@@ -1474,12 +1497,26 @@ export class AgentSession {
 			}
 			throw error;
 		} finally {
+			const runSummary = this._takePortabilityRunSummary();
 			this._portabilityRunFailure = undefined;
 			this._activeRunAllowLossy = false;
+			this._activeRunUsesEphemeralLossyConsent = false;
+			this._activeRunApprovedItemIds.clear();
 			this._systemPromptOverride = undefined;
 			this._flushPendingBashMessages();
+			if (runSummary?.suspendedItemIds.length) {
+				this._emit({ type: "portability_run_summary", projection: structuredClone(runSummary) });
+			}
 			await this._emitAgentSettled();
 		}
+	}
+
+	private _takePortabilityRunSummary(): PortabilityProjectionState | undefined {
+		const runSummary = this._activeRunUsesEphemeralLossyConsent
+			? this._currentRunAppliedPortabilityProjection
+			: undefined;
+		this._currentRunAppliedPortabilityProjection = undefined;
+		return runSummary;
 	}
 
 	private _throwPortabilityRunFailure(): void {

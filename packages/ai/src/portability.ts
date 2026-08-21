@@ -334,17 +334,20 @@ function unique(values: Iterable<string>): string[] {
 }
 
 function attachmentOmissionPlaceholder(items: readonly PortabilityItem[]): string {
-	const uniqueItems = new Map(items.map((item) => [item.stableId, item]));
-	return Array.from(uniqueItems.values(), (item) => {
+	const placeholders = new Set<string>();
+	for (const item of items) {
 		const mediaType = item.mediaType ?? "unknown media type";
 		if (item.classification === "missing") {
-			return `(${mediaType} attachment omitted: source is unavailable)`;
+			placeholders.add(`(${mediaType} attachment omitted: source is unavailable)`);
+			continue;
 		}
 		if (item.classification === "provider-locked") {
-			return `(${mediaType} attachment omitted: source is bound to another provider transport)`;
+			placeholders.add(`(${mediaType} attachment omitted: source is bound to another provider transport)`);
+			continue;
 		}
-		return `(${mediaType} attachment omitted: target model does not support ${mediaType})`;
-	}).join("\n");
+		placeholders.add(`(${mediaType} attachment omitted: target model does not support ${mediaType})`);
+	}
+	return Array.from(placeholders).join("\n");
 }
 
 /**

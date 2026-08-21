@@ -71,6 +71,7 @@ import {
 	formatAttachmentCapabilities,
 	formatAttachmentDetails,
 	formatAttachmentList,
+	formatPortabilityRunSummary,
 	resolveAttachmentReferencesForPresentation,
 } from "../../core/attachments/attachment-presentation.ts";
 import { PortabilityProjectionUnavailableError } from "../../core/attachments/portability-projection.ts";
@@ -3267,6 +3268,12 @@ export class InteractiveMode {
 				this.footer.invalidate();
 				this.ui.requestRender();
 				break;
+
+			case "portability_run_summary": {
+				const notice = formatPortabilityRunSummary(event.projection);
+				if (notice) this.showWarning(notice);
+				break;
+			}
 
 			case "message_start":
 				if (event.message.role === "custom") {

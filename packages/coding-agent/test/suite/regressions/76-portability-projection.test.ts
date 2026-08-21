@@ -284,6 +284,73 @@ describe("issue #76 portability projection", () => {
 		);
 	});
 
+	it.each(["steer", "followUp"] as const)(
+		"keeps lossy consent on a %s delivered into a live run",
+		async (delivery) => {
+			let signalToolStarted = (): void => {};
+			const toolStarted = new Promise<void>((resolve) => {
+				signalToolStarted = resolve;
+			});
+			let releaseTool = (): void => {};
+			const toolReleased = new Promise<void>((resolve) => {
+				releaseTool = resolve;
+			});
+			const tool: AgentTool = {
+				name: "block",
+				label: "Block",
+				description: "Wait for a queued portability input",
+				parameters: Type.Object({}),
+				execute: async () => {
+					signalToolStarted();
+					await toolReleased;
+					return { content: [{ type: "text", text: "released" }], details: {} };
+				},
+			};
+			const harness = await createHarness({ tools: [tool] });
+			harnesses.push(harness);
+			allowInline(harness.session.model!, []);
+			const video = attachment(`att_live_${delivery}`, `${delivery}.mp4`, MP4);
+			const finalResponse = (context: Context) => {
+				expect(attachmentIds(context.messages)).toEqual([]);
+				const payload = JSON.stringify(context.messages);
+				expect(payload.match(/attachment omitted/g)).toHaveLength(1);
+				expect(payload).toContain(MP4);
+				return fauxAssistantMessage(`${delivery} delivered`);
+			};
+			harness.setResponses(
+				delivery === "steer"
+					? [fauxAssistantMessage(fauxToolCall("block", {}), { stopReason: "toolUse" }), finalResponse]
+					: [
+							fauxAssistantMessage(fauxToolCall("block", {}), { stopReason: "toolUse" }),
+							fauxAssistantMessage("tool turn complete"),
+							finalResponse,
+						],
+			);
+
+			const run = harness.session.prompt("start blocking tool");
+			await toolStarted;
+			await harness.session[delivery](delivery, undefined, [video], { allowLossy: true });
+			releaseTool();
+			await expect(run).resolves.toBeUndefined();
+
+			expect(harness.session.getLastAssistantText()).toBe(`${delivery} delivered`);
+			expect(harness.eventsOfType("portability_error")).toHaveLength(0);
+			expect(harness.eventsOfType("portability_run_summary")).toEqual([
+				expect.objectContaining({
+					projection: expect.objectContaining({
+						suspendedAttachmentIds: [video.id],
+						unapprovedItemIds: [],
+					}),
+				}),
+			]);
+			expect(
+				harness.sessionManager
+					.getBranch()
+					.filter((entry) => entry.type === "custom" && entry.customType === "hifi.portability-decision"),
+			).toHaveLength(0);
+		},
+	);
+
 	it("rechecks resumed history when the target has no stored decision", async () => {
 		const sessionDir = mkdtempSync(join(tmpdir(), "hifi-portability-unapproved-resume-"));
 		tempDirs.push(sessionDir);
@@ -511,6 +578,7 @@ describe("issue #76 portability projection", () => {
 
 		const serialized = serializeConversation(projection.messages);
 		expect(serialized.match(/attachment omitted/g)).toHaveLength(1);
+		expect(serialized).toContain("summarize the video\n(video/mp4 attachment omitted:");
 		expect(serialized).toContain("video/mp4");
 		expect(serialized).not.toMatch(/\/secret|private-demo/);
 	});
@@ -707,6 +775,15 @@ describe("issue #76 portability projection", () => {
 			suspendedAttachmentIds: [toolVideo.id],
 			unapprovedItemIds: [],
 		});
+		expect(harness.eventsOfType("portability_run_summary")).toEqual([
+			expect.objectContaining({
+				projection: expect.objectContaining({
+					suspendedAttachmentIds: [toolVideo.id],
+					unapprovedItemIds: [],
+				}),
+			}),
+		]);
+		expect(harness.session.getPortabilityProjection().suspendedAttachmentIds).toEqual([]);
 		expect(
 			harness.sessionManager
 				.getBranch()

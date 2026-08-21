@@ -111,7 +111,7 @@ export function serializeConversation(messages: Message[]): string {
 
 	for (const msg of messages) {
 		if (msg.role === "user") {
-			const content = contentText(msg.content, "");
+			const content = contentText(msg.content, "\n");
 			if (content) parts.push(`[User]: ${content}`);
 			if (msg.nativeParts?.length) {
 				parts.push(
@@ -155,7 +155,7 @@ export function serializeConversation(messages: Message[]): string {
 			];
 			if (nativeState.length > 0) parts.push(`[Provider-native state]: ${nativeState.join(", ")}`);
 		} else if (msg.role === "toolResult") {
-			const content = contentText(msg.content, "");
+			const content = contentText(msg.content, "\n");
 			if (content) {
 				parts.push(`[Tool result]: ${truncateForSummary(content, TOOL_RESULT_MAX_CHARS)}`);
 			}

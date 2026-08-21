@@ -1,14 +1,18 @@
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { registerFauxProvider } from "@earendil-works/pi-ai/compat";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import type { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
-import { PortabilityProjectionUnavailableError } from "../src/core/attachments/portability-projection.ts";
+import {
+	type FauxProviderRegistration,
+	fauxAssistantMessage,
+	fauxToolCall,
+	registerFauxProvider,
+} from "@earendil-works/pi-ai/compat";
+import { Type } from "typebox";
+import { afterEach, describe, expect, it } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import type { ExtensionFactory } from "../src/core/extensions/index.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
-import { createHeadlessAgentHost, HeadlessAgentHost } from "../src/headless.ts";
+import { createHeadlessAgentHost, type HeadlessAgentHost } from "../src/headless.ts";
 
 describe("headless agent host", () => {
 	const cleanups: Array<() => Promise<void> | void> = [];
@@ -17,10 +21,14 @@ describe("headless agent host", () => {
 		while (cleanups.length > 0) await cleanups.pop()?.();
 	});
 
-	async function createHost(extensionFactory: ExtensionFactory): Promise<HeadlessAgentHost> {
+	async function createHost(
+		extensionFactory: ExtensionFactory,
+		configureFaux?: (faux: FauxProviderRegistration) => void,
+	): Promise<HeadlessAgentHost> {
 		const directory = join(tmpdir(), `hifi-headless-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 		mkdirSync(directory, { recursive: true });
 		const faux = registerFauxProvider();
+		configureFaux?.(faux);
 		const auth = AuthStorage.inMemory();
 		await auth.modify(faux.getModel().provider, async () => ({ type: "api_key", key: "faux-key" }));
 		const modelRuntime = await ModelRuntime.create({
@@ -42,6 +50,7 @@ describe("headless agent host", () => {
 					contextWindow: model.contextWindow,
 					maxTokens: model.maxTokens,
 					baseUrl: model.baseUrl,
+					nativeInputs: model.nativeInputs,
 				},
 			],
 		});
@@ -127,52 +136,81 @@ describe("headless agent host", () => {
 		await expect(host.prompt("late prompt")).rejects.toThrow("disposed");
 	});
 
-	it("passes explicit lossy consent through without a second pause protocol", async () => {
-		const prompt = vi.fn(async () => {});
-		const runtime = {
-			session: {
-				prompt,
+	it("fails closed on a real incompatible tool result and preserves actionable guidance", async () => {
+		const attachment = {
+			id: "att_headless_blocked",
+			filename: "generated.mp4",
+			mediaType: "video/mp4",
+			source: { type: "base64" as const, data: "Z2VuZXJhdGVk" },
+		};
+		const host = await createHost(
+			(pi) => {
+				pi.registerTool({
+					name: "make_video",
+					label: "Make video",
+					description: "Create a test video",
+					parameters: Type.Object({}),
+					execute: async () => ({
+						content: [{ type: "text", text: "created" }],
+						details: {},
+						attachments: [attachment],
+					}),
+				});
 			},
-		} as unknown as AgentSessionRuntime;
-		const host = new HeadlessAgentHost(runtime);
+			(faux) => {
+				faux.getModel().nativeInputs = { profile: "headless-no-files", capabilities: [] };
+				faux.setResponses([fauxAssistantMessage(fauxToolCall("make_video", {}), { stopReason: "toolUse" })]);
+			},
+		);
 
-		await host.prompt("run tool", { allowLossy: true });
-		expect(prompt).toHaveBeenCalledWith("run tool", { allowLossy: true, source: "rpc" });
+		await expect(host.prompt("run tool")).rejects.toMatchObject({
+			name: "PortabilityProjectionUnavailableError",
+			phase: "mid-run",
+			message: expect.stringMatching(/generated\.mp4.*not sent.*re-send.*switch/i),
+		});
 	});
 
-	it("preserves an actionable mid-run portability failure for headless callers", async () => {
-		const failure = new PortabilityProjectionUnavailableError(
-			{
-				target: {
-					provider: "faux",
-					api: "openai-responses",
-					modelId: "faux-2",
-					baseUrl: "https://faux.test/v1",
-				},
-				items: [
-					{
-						id: "attachment:att_video",
-						stableId: "attachment:att_video",
-						kind: "attachment",
-						classification: "unsupported",
-						reason: "video/mp4 is unsupported",
-						projectable: true,
-						attachmentId: "att_video",
-						filename: "generated.mp4",
-						messageIndex: 1,
-					},
-				],
-				counts: { portable: 0, reconstructable: 0, "provider-locked": 0, missing: 0, unsupported: 1 },
-				canSwitchWithoutLoss: false,
+	it("applies a headless lossy opt-in to the real provider request and reports the omission", async () => {
+		const attachment = {
+			id: "att_headless_allowed",
+			filename: "generated-allowed.mp4",
+			mediaType: "video/mp4",
+			source: { type: "base64" as const, data: "Z2VuZXJhdGVk" },
+		};
+		const host = await createHost(
+			(pi) => {
+				pi.registerTool({
+					name: "make_video",
+					label: "Make video",
+					description: "Create a test video",
+					parameters: Type.Object({}),
+					execute: async () => ({
+						content: [{ type: "text", text: "created" }],
+						details: {},
+						attachments: [attachment],
+					}),
+				});
 			},
-			"mid-run",
+			(faux) => {
+				faux.getModel().nativeInputs = { profile: "headless-no-files", capabilities: [] };
+				faux.setResponses([
+					fauxAssistantMessage(fauxToolCall("make_video", {}), { stopReason: "toolUse" }),
+					(context) => {
+						const payload = JSON.stringify(context.messages);
+						expect(payload).not.toContain(attachment.id);
+						expect(payload).toContain("video/mp4 attachment omitted");
+						return fauxAssistantMessage("done");
+					},
+				]);
+			},
 		);
-		const prompt = vi.fn(async () => {
-			throw failure;
+		const summaries: string[] = [];
+		host.subscribe((event) => {
+			if (event.type === "portability_run_summary") summaries.push(event.projection.suspendedAttachmentIds[0] ?? "");
 		});
-		const host = new HeadlessAgentHost({ session: { prompt } } as unknown as AgentSessionRuntime);
 
-		await expect(host.prompt("run tool")).rejects.toBe(failure);
-		expect(failure.message).toMatch(/generated\.mp4.*not sent.*re-send.*switch/i);
+		await expect(host.prompt("run tool", { allowLossy: true })).resolves.toBeUndefined();
+		expect(host.session.getLastAssistantText()).toBe("done");
+		expect(summaries).toEqual([attachment.id]);
 	});
 });

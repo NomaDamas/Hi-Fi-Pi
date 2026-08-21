@@ -1,5 +1,6 @@
 import type { AssistantMessage, AttachmentRecord, ImageContent } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { AgentSessionEvent, PortabilityProjectionState } from "../src/core/agent-session.ts";
 import { PortabilityProjectionUnavailableError } from "../src/core/attachments/portability-projection.ts";
 import type { SessionShutdownEvent } from "../src/index.ts";
 import { runPrintMode } from "../src/modes/print-mode.ts";
@@ -24,12 +25,52 @@ type FakeSession = {
 
 type FakeRuntimeHost = {
 	session: FakeSession;
+	emitSessionEvent: (event: AgentSessionEvent) => void;
 	newSession: ReturnType<typeof vi.fn>;
 	fork: ReturnType<typeof vi.fn>;
 	switchSession: ReturnType<typeof vi.fn>;
 	dispose: ReturnType<typeof vi.fn>;
 	setRebindSession: ReturnType<typeof vi.fn>;
 };
+
+function createPortabilityRunSummary(): PortabilityProjectionState {
+	return {
+		target: {
+			provider: "faux",
+			api: "openai-responses",
+			modelId: "faux-2",
+			baseUrl: "https://faux.test/v1",
+		},
+		report: {
+			target: {
+				provider: "faux",
+				api: "openai-responses",
+				modelId: "faux-2",
+				baseUrl: "https://faux.test/v1",
+			},
+			items: [
+				{
+					id: "message:1:attachment:att_video",
+					stableId: "attachment:att_video",
+					projectable: true,
+					kind: "attachment",
+					classification: "unsupported",
+					reason: "video/mp4 is unsupported",
+					messageIndex: 1,
+					attachmentId: "att_video",
+					filename: "generated.mp4",
+					mediaType: "video/mp4",
+				},
+			],
+			counts: { portable: 0, reconstructable: 0, "provider-locked": 0, missing: 0, unsupported: 1 },
+			canSwitchWithoutLoss: false,
+		},
+		activeAttachmentIds: [],
+		suspendedAttachmentIds: ["att_video"],
+		suspendedItemIds: ["attachment:att_video"],
+		unapprovedItemIds: [],
+	};
+}
 
 function createAssistantMessage(options?: {
 	text?: string;
@@ -63,6 +104,7 @@ function createRuntimeHost(assistantMessage: AssistantMessage): FakeRuntimeHost 
 	};
 
 	const state = { messages: [assistantMessage] };
+	let listener: ((event: AgentSessionEvent) => void) | undefined;
 
 	const session: FakeSession = {
 		sessionManager: { getHeader: () => undefined },
@@ -70,13 +112,19 @@ function createRuntimeHost(assistantMessage: AssistantMessage): FakeRuntimeHost 
 		state,
 		extensionRunner,
 		bindExtensions: vi.fn(async () => {}),
-		subscribe: vi.fn(() => () => {}),
+		subscribe: vi.fn((next: (event: AgentSessionEvent) => void) => {
+			listener = next;
+			return () => {
+				if (listener === next) listener = undefined;
+			};
+		}),
 		prompt: vi.fn(async () => {}),
 		reload: vi.fn(async () => {}),
 	};
 
 	return {
 		session,
+		emitSessionEvent: (event) => listener?.(event),
 		newSession: vi.fn(async () => undefined),
 		fork: vi.fn(async () => ({ selectedText: "" })),
 		switchSession: vi.fn(async () => undefined),
@@ -176,6 +224,25 @@ describe("runPrintMode", () => {
 			images: undefined,
 			allowLossy: true,
 		});
+	});
+
+	it("reports the files omitted by a lossy text-mode run", async () => {
+		const runtimeHost = createRuntimeHost(createAssistantMessage({ text: "done" }));
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		runtimeHost.session.prompt.mockImplementation(async () => {
+			runtimeHost.emitSessionEvent({ type: "portability_run_summary", projection: createPortabilityRunSummary() });
+		});
+
+		const exitCode = await runPrintMode(runtimeHost as unknown as Parameters<typeof runPrintMode>[0], {
+			mode: "text",
+			initialMessage: "run tool",
+			allowLossy: true,
+		});
+
+		expect(exitCode).toBe(0);
+		expect(errorSpy).toHaveBeenCalledWith(
+			"1 incompatible item was omitted from this run: generated.mp4 (video/mp4).",
+		);
 	});
 
 	it("prints an actionable allow-lossy recovery for projectable mid-run failures", async () => {

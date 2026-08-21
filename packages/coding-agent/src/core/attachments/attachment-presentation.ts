@@ -1,5 +1,9 @@
 import { existsSync } from "node:fs";
-import { getNativeAttachmentCapability, getNativeInputCapabilityManifest } from "@earendil-works/pi-ai";
+import {
+	getNativeAttachmentCapability,
+	getNativeInputCapabilityManifest,
+	type PortabilityReport,
+} from "@earendil-works/pi-ai";
 import type { Api, AttachmentRecord, AttachmentReference, Model } from "@earendil-works/pi-ai/compat";
 import {
 	type ResolvedAttachment,
@@ -20,6 +24,11 @@ export interface AttachmentResolutionEnvironment {
 
 export interface AttachmentProjectionPresentation {
 	suspendedAttachmentIds?: ReadonlySet<string>;
+}
+
+export interface PortabilityRunSummaryPresentation {
+	report: PortabilityReport;
+	suspendedItemIds: readonly string[];
 }
 
 export interface ResolvedAttachmentReferences {
@@ -91,6 +100,20 @@ export function formatAttachmentStatus(attachment: ResolvedAttachment, suspended
 	if (attachment.state.source.status === "missing") return "source missing";
 	if (attachment.state.source.status === "redacted") return "source redacted";
 	return attachment.state.transport.status;
+}
+
+export function formatPortabilityRunSummary(projection: PortabilityRunSummaryPresentation): string | undefined {
+	const suspendedItemIds = new Set(projection.suspendedItemIds);
+	const suspendedItems = projection.report.items.filter((item) => suspendedItemIds.has(item.stableId));
+	if (suspendedItems.length === 0) return undefined;
+	const labels = suspendedItems.map((item) => {
+		if (item.kind === "attachment") {
+			const filename = item.filename ?? item.attachmentId ?? "attachment";
+			return item.mediaType ? `${filename} (${item.mediaType})` : filename;
+		}
+		return item.kind;
+	});
+	return `${suspendedItems.length} incompatible item${suspendedItems.length === 1 ? " was" : "s were"} omitted from this run: ${labels.join(", ")}.`;
 }
 
 export function formatAttachmentList(

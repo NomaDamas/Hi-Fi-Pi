@@ -291,6 +291,12 @@ describe("provider-native conversation IR and portability", () => {
 				source: { type: "path", path: "/secret/project/private-demo.mp4" },
 			},
 			{
+				id: "att_video_copy",
+				filename: "private-demo-copy.mp4",
+				mediaType: "video/mp4",
+				source: { type: "path", path: "/secret/project/private-demo-copy.mp4" },
+			},
+			{
 				id: "att_audio",
 				filename: "private-meeting.wav",
 				mediaType: "audio/wav",
@@ -320,7 +326,7 @@ describe("provider-native conversation IR and portability", () => {
 			],
 			attachments,
 			target,
-			sourceAvailable: (item) => item.id !== "att_video",
+			sourceAvailable: (item) => item.id !== "att_video" && item.id !== "att_video_copy",
 			approvedItemIds: attachments.map((item) => `attachment:${item.id}`),
 		});
 		const message = projected.messages[0];
@@ -332,6 +338,7 @@ describe("provider-native conversation IR and portability", () => {
 		expect(disclosure?.type).toBe("text");
 		if (disclosure?.type !== "text") throw new Error("omission disclosure missing");
 		expect(disclosure.text.match(/attachment omitted/g)).toHaveLength(3);
+		expect(disclosure.text.match(/video\/mp4/g)).toHaveLength(1);
 		expect(disclosure.text).toContain("video/mp4");
 		expect(disclosure.text).toContain("audio/wav");
 		expect(disclosure.text).toContain("application/pdf");
