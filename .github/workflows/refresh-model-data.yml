@@ -36,17 +36,43 @@ jobs:
         id: existing-pr
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # A refresh pull request left open blocks every later refresh. Fail the
+          # run once it has blocked for this long so the stall is visible instead
+          # of being reported as a successful no-op.
+          STALE_AFTER_DAYS: "3"
         run: |
-          count="$(gh pr list \
+          set -euo pipefail
+
+          blocking="$(gh pr list \
             --repo "$GITHUB_REPOSITORY" \
             --state open \
-            --json headRefName \
-            --jq '[.[] | select(.headRefName | startswith("automation/model-catalog-refresh-"))] | length')"
-          if [[ "$count" == "0" ]]; then
+            --json number,createdAt,headRefName \
+            --jq '[.[] | select(.headRefName | startswith("automation/model-catalog-refresh-"))] | sort_by(.createdAt) | first // empty')"
+
+          if [[ -z "$blocking" ]]; then
             echo "skip=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "An open model catalog refresh pull request already exists."
+            exit 0
+          fi
+
+          number="$(jq -r '.number' <<<"$blocking")"
+          created="$(jq -r '.createdAt' <<<"$blocking")"
+          age_days=$(( ( $(date -u +%s) - $(date -u -d "$created" +%s) ) / 86400 ))
+
+          echo "skip=true" >> "$GITHUB_OUTPUT"
+
+          summary="Model catalog refresh skipped: blocked by PR #${number}, open for ${age_days} day(s). No catalog drift is hydrated, detected or proposed while a refresh pull request is open."
+          echo "$summary"
+          {
+            echo "### Model catalog refresh skipped"
+            echo
+            echo "Blocked by [#${number}](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/pull/${number}), open for ${age_days} day(s)."
+            echo
+            echo "Review, merge or close it to resume catalog updates."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if (( age_days >= STALE_AFTER_DAYS )); then
+            echo "::error::Catalog refreshes have been blocked for ${age_days} day(s) by PR #${number}. Review, merge or close it to resume catalog updates."
+            exit 1
           fi
 
       - name: Hydrate live model data
