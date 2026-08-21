@@ -14,6 +14,7 @@ import type {
 	ProviderOptionDefinition,
 } from "@earendil-works/pi-ai";
 import type { SessionStats } from "../../core/agent-session.ts";
+import type { AppliedPortabilityProjection } from "../../core/attachments/portability-projection.ts";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { CompactionResult } from "../../core/compaction/index.ts";
 import type { SessionEntry, SessionTreeNode } from "../../core/session-manager.ts";
@@ -32,9 +33,24 @@ export type RpcCommand =
 			images?: ImageContent[];
 			attachments?: AttachmentRecord[];
 			streamingBehavior?: "steer" | "followUp";
+			allowLossy?: boolean;
 	  }
-	| { id?: string; type: "steer"; message: string; images?: ImageContent[]; attachments?: AttachmentRecord[] }
-	| { id?: string; type: "follow_up"; message: string; images?: ImageContent[]; attachments?: AttachmentRecord[] }
+	| {
+			id?: string;
+			type: "steer";
+			message: string;
+			images?: ImageContent[];
+			attachments?: AttachmentRecord[];
+			allowLossy?: boolean;
+	  }
+	| {
+			id?: string;
+			type: "follow_up";
+			message: string;
+			images?: ImageContent[];
+			attachments?: AttachmentRecord[];
+			allowLossy?: boolean;
+	  }
 	| { id?: string; type: "abort" }
 	| { id?: string; type: "new_session"; parentSession?: string }
 
@@ -45,6 +61,7 @@ export type RpcCommand =
 	| { id?: string; type: "set_model"; provider: string; modelId: string; allowLossy?: boolean }
 	| { id?: string; type: "cycle_model"; allowLossy?: boolean }
 	| { id?: string; type: "get_portability_report"; provider: string; modelId: string }
+	| { id?: string; type: "get_portability_projection"; provider?: string; modelId?: string }
 	| { id?: string; type: "get_available_models" }
 	| { id?: string; type: "get_provider_options" }
 	| { id?: string; type: "set_provider_option"; key: string; value: unknown }
@@ -165,6 +182,13 @@ export type RpcResponse =
 	| {
 			id?: string;
 			type: "response";
+			command: "get_portability_projection";
+			success: true;
+			data: Omit<AppliedPortabilityProjection, "messages">;
+	  }
+	| {
+			id?: string;
+			type: "response";
 			command: "get_available_models";
 			success: true;
 			data: { models: Model<any>[] };
@@ -270,7 +294,19 @@ export type RpcResponse =
 	  }
 
 	// Error response (any command can fail)
-	| { id?: string; type: "response"; command: string; success: false; error: string };
+	| {
+			id?: string;
+			type: "response";
+			command: string;
+			success: false;
+			error: string;
+			details?: RpcErrorDetails;
+	  };
+
+export interface RpcErrorDetails {
+	kind: "portability_confirmation_required" | "portability_projection_unavailable";
+	report: PortabilityReport;
+}
 
 // ============================================================================
 // Extension UI Events (stdout)

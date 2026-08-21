@@ -197,7 +197,6 @@ describe("transport attachment fail-closed contract", () => {
 			expect(diagnostic).toContain(transport.api);
 			expect(diagnostic).toContain(MEDIA_TYPE);
 			expect(diagnostic).not.toContain(SECRET_BYTES);
-			expect(diagnostic).not.toContain(SECRET_BYTES);
 		});
 
 		it(`${transport.api} rejects tool-result attachments before network execution`, async () => {

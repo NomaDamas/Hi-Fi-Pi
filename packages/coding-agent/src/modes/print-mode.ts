@@ -6,8 +6,15 @@
  * - `pi --mode json "prompt"` - JSON event stream
  */
 
-import type { AssistantMessage, AttachmentRecord, ImageContent } from "@earendil-works/pi-ai";
+import {
+	type AssistantMessage,
+	type AttachmentRecord,
+	type ImageContent,
+	PortabilityConfirmationRequiredError,
+} from "@earendil-works/pi-ai";
 import type { AgentSessionRuntime } from "../core/agent-session-runtime.ts";
+import { formatPortabilityRunSummary } from "../core/attachments/attachment-presentation.ts";
+import { PortabilityProjectionUnavailableError } from "../core/attachments/portability-projection.ts";
 import { flushRawStdout, waitForRawStdoutBackpressure, writeRawStdout } from "../core/output-guard.ts";
 import { killTrackedDetachedChildren } from "../utils/shell.ts";
 import { toJsonEvent } from "./json-event.ts";
@@ -26,6 +33,8 @@ export interface PrintModeOptions {
 	initialImages?: ImageContent[];
 	/** Native attachments prepared for Issue 4 prompt propagation */
 	initialAttachments?: AttachmentRecord[];
+	/** Exclude incompatible native context for this run without persisting newly approved IDs. */
+	allowLossy?: boolean;
 }
 
 /**
@@ -33,7 +42,7 @@ export interface PrintModeOptions {
  * Sends prompts to the agent and outputs the result.
  */
 export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: PrintModeOptions): Promise<number> {
-	const { mode, messages = [], initialMessage, initialImages, initialAttachments } = options;
+	const { mode, messages = [], initialMessage, initialImages, initialAttachments, allowLossy } = options;
 	let exitCode = 0;
 	let session = runtimeHost.session;
 	let unsubscribe: (() => void) | undefined;
@@ -110,6 +119,9 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 		unsubscribe = session.subscribe((event) => {
 			if (mode === "json") {
 				writeRawStdout(`${JSON.stringify(toJsonEvent(event))}\n`);
+			} else if (event.type === "portability_run_summary") {
+				const notice = formatPortabilityRunSummary(event.projection);
+				if (notice) console.error(notice);
 			}
 		});
 		unsubscribeBackpressure =
@@ -134,11 +146,13 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 			await session.prompt(initialMessage, {
 				images: initialImages,
 				...(initialAttachments?.length ? { attachments: initialAttachments } : {}),
+				...(allowLossy !== undefined ? { allowLossy } : {}),
 			});
 		}
 
 		for (const message of messages) {
-			await session.prompt(message);
+			if (allowLossy === undefined) await session.prompt(message);
+			else await session.prompt(message, { allowLossy });
 		}
 
 		if (mode === "text") {
@@ -162,7 +176,16 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 
 		return exitCode;
 	} catch (error: unknown) {
-		console.error(error instanceof Error ? error.message : String(error));
+		let message = error instanceof Error ? error.message : String(error);
+		if (
+			!allowLossy &&
+			(error instanceof PortabilityConfirmationRequiredError ||
+				(error instanceof PortabilityProjectionUnavailableError &&
+					error.report.items.some((item) => item.projectable)))
+		) {
+			message += " Re-run with --allow-lossy to exclude incompatible native context for this run.";
+		}
+		console.error(message);
 		return 1;
 	} finally {
 		for (const cleanup of signalCleanupHandlers) {

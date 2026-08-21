@@ -40,6 +40,7 @@ export interface Args {
 	extensions?: string[];
 	noExtensions?: boolean;
 	print?: boolean;
+	allowLossy?: boolean;
 	export?: string;
 	noSkills?: boolean;
 	skills?: string[];
@@ -165,6 +166,8 @@ export function parseArgs(args: string[]): Args {
 				result.messages.push(next);
 				i++;
 			}
+		} else if (arg === "--allow-lossy") {
+			result.allowLossy = true;
 		} else if (arg === "--export" && i + 1 < args.length) {
 			result.export = args[++i];
 		} else if ((arg === "--extension" || arg === "-e") && i + 1 < args.length) {
@@ -311,6 +314,7 @@ ${chalk.bold("Options:")}
   --append-system-prompt <text>  Append text or file contents to the system prompt (can be used multiple times)
   --mode <mode>                  Output mode: text (default), json, or rpc
   --print, -p                    Non-interactive mode: process prompt and exit
+  --allow-lossy                 Omit incompatible native context for this run without saving new approvals
   --continue, -c                 Continue previous session
   --resume, -r                   Select a session to resume
   --session <path|id>            Use specific session file or partial UUID

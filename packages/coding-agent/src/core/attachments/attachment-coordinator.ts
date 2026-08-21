@@ -93,6 +93,15 @@ export class AttachmentCoordinator {
 		}
 	}
 
+	discardUnpersistedReferences(attachments: readonly AttachmentReference[] | undefined): void {
+		if (!attachments?.length) return;
+		const persistedIds = new Set(this.store.getAttachments().map((attachment) => attachment.id));
+		for (const reference of attachments) {
+			if (!persistedIds.has(reference.attachmentId)) this.records.delete(reference.attachmentId);
+		}
+		this.bindRegistry(this.records.size > 0 ? this.registry : undefined);
+	}
+
 	listRecords(): readonly AttachmentRecord[] {
 		return Array.from(this.records.values());
 	}

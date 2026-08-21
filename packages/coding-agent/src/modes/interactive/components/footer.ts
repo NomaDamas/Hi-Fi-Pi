@@ -143,6 +143,10 @@ export class FooterComponent implements Component {
 			const costStr = `$${usageTotals.cost.toFixed(3)}${usingSubscription ? " (sub)" : ""}`;
 			statsParts.push(costStr);
 		}
+		const portabilityCounts = this.session.getPortabilityStatusCounts();
+		if (portabilityCounts.suspended > 0) {
+			statsParts.push(`Files:${portabilityCounts.active} active·${portabilityCounts.suspended} suspended`);
+		}
 
 		// Colorize context percentage based on usage
 		let contextPercentStr: string;

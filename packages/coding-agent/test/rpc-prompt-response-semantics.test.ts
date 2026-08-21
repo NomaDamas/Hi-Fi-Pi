@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Agent } from "@earendil-works/pi-agent-core";
+import { Agent, type AgentTool } from "@earendil-works/pi-agent-core";
 import {
 	type AssistantMessage,
 	type AssistantMessageEvent,
@@ -11,6 +11,7 @@ import {
 	getModel,
 	type Model,
 } from "@earendil-works/pi-ai/compat";
+import { Type } from "typebox";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentSession } from "../src/core/agent-session.ts";
 import type { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
@@ -97,7 +98,13 @@ function sleep(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function createRuntimeHost(options: { withAuth: boolean; responseDelayMs: number; model?: Model<any> }): Promise<{
+async function createRuntimeHost(options: {
+	withAuth: boolean;
+	responseDelayMs: number;
+	model?: Model<any>;
+	tools?: AgentTool[];
+	responses?: AssistantMessage[];
+}): Promise<{
 	runtimeHost: AgentSessionRuntime;
 	cleanup: () => Promise<void>;
 }> {
@@ -109,12 +116,13 @@ async function createRuntimeHost(options: { withAuth: boolean; responseDelayMs: 
 		throw new Error("Test model not found");
 	}
 
+	const responses = [...(options.responses ?? [])];
 	const agent = new Agent({
 		getApiKey: () => "test-key",
 		initialState: {
 			model,
 			systemPrompt: "Test",
-			tools: [],
+			tools: options.tools ?? [],
 		},
 		streamFn: (_model, context, _options) => {
 			testContextCapture.current?.(context);
@@ -122,7 +130,16 @@ async function createRuntimeHost(options: { withAuth: boolean; responseDelayMs: 
 			queueMicrotask(() => {
 				stream.push({ type: "start", partial: createAssistantMessage("") });
 				setTimeout(() => {
-					stream.push({ type: "done", reason: "stop", message: createAssistantMessage("done") });
+					const message = responses.shift() ?? createAssistantMessage("done");
+					if (message.stopReason === "error" || message.stopReason === "aborted") {
+						stream.push({ type: "error", reason: message.stopReason, error: message });
+					} else {
+						stream.push({
+							type: "done",
+							reason: message.stopReason === "pending" ? "stop" : message.stopReason,
+							message,
+						});
+					}
 				}, options.responseDelayMs);
 			});
 			return stream;
@@ -144,6 +161,12 @@ async function createRuntimeHost(options: { withAuth: boolean; responseDelayMs: 
 		cwd: tempDir,
 		modelRuntime: getModelRuntime(modelRegistry),
 		resourceLoader: createTestResourceLoader(),
+		...(options.tools?.length
+			? {
+					baseToolsOverride: Object.fromEntries(options.tools.map((tool) => [tool.name, tool])),
+					initialActiveToolNames: options.tools.map((tool) => tool.name),
+				}
+			: {}),
 	});
 
 	const runtimeHost = {
@@ -175,7 +198,13 @@ async function createRuntimeHost(options: { withAuth: boolean; responseDelayMs: 
 
 const testContextCapture: { current?: (context: Context) => void } = {};
 
-async function startRpcMode(options: { withAuth: boolean; responseDelayMs: number; model?: Model<any> }): Promise<{
+async function startRpcMode(options: {
+	withAuth: boolean;
+	responseDelayMs: number;
+	model?: Model<any>;
+	tools?: AgentTool[];
+	responses?: AssistantMessage[];
+}): Promise<{
 	lineHandler: (line: string) => void;
 	cleanup: () => Promise<void>;
 }> {
@@ -249,6 +278,94 @@ describe("RPC prompt response semantics", () => {
 					type: "response",
 					command: "prompt",
 					success: true,
+				});
+			});
+		} finally {
+			await cleanup();
+		}
+	});
+
+	it("returns structured portability details when prompt preflight requires confirmation", async () => {
+		const attachment: AttachmentRecord = {
+			id: "att_rpc_unsupported_video",
+			filename: "unsupported.mp4",
+			mediaType: "video/mp4",
+			source: { type: "base64", data: "AAAAIGZ0eXA=" },
+		};
+		const { lineHandler, cleanup } = await startRpcMode({ withAuth: true, responseDelayMs: 0 });
+
+		try {
+			lineHandler(
+				JSON.stringify({
+					id: "portability-preflight",
+					type: "prompt",
+					message: "analyze",
+					attachments: [attachment],
+				}),
+			);
+
+			await vi.waitFor(() => {
+				const responses = getPromptResponses(rpcIo.outputLines, "portability-preflight");
+				expect(responses).toHaveLength(1);
+				expect(responses[0]).toMatchObject({
+					success: false,
+					details: {
+						kind: "portability_confirmation_required",
+						report: {
+							items: [expect.objectContaining({ attachmentId: attachment.id })],
+						},
+					},
+				});
+			});
+		} finally {
+			await cleanup();
+		}
+	});
+
+	it("streams a structured portability error when an incompatible attachment appears mid-run", async () => {
+		const generatedVideo: AttachmentRecord = {
+			id: "att_rpc_tool_video",
+			filename: "generated.mp4",
+			mediaType: "video/mp4",
+			source: { type: "base64", data: "AAAAIGZ0eXA=" },
+		};
+		const tool: AgentTool = {
+			name: "make_video",
+			label: "Make video",
+			description: "Create a video attachment",
+			parameters: Type.Object({}),
+			execute: async () => ({
+				content: [{ type: "text", text: "created" }],
+				details: {},
+				attachments: [generatedVideo],
+			}),
+		};
+		const toolCallMessage = createAssistantMessage("");
+		toolCallMessage.content = [{ type: "toolCall", id: "call_make_video", name: tool.name, arguments: {} }];
+		toolCallMessage.stopReason = "toolUse";
+		const { lineHandler, cleanup } = await startRpcMode({
+			withAuth: true,
+			responseDelayMs: 0,
+			tools: [tool],
+			responses: [toolCallMessage],
+		});
+
+		try {
+			lineHandler(JSON.stringify({ id: "mid-run-portability", type: "prompt", message: "make a video" }));
+
+			await vi.waitFor(() => {
+				expect(getPromptResponses(rpcIo.outputLines, "mid-run-portability")).toMatchObject([{ success: true }]);
+				const portabilityErrors = parseOutputLines(rpcIo.outputLines).filter(
+					(record) => record.type === "portability_error",
+				);
+				expect(portabilityErrors).toHaveLength(1);
+				expect(portabilityErrors[0]).toMatchObject({
+					type: "portability_error",
+					kind: "portability_projection_unavailable",
+					message: expect.stringContaining("generated.mp4"),
+					report: expect.objectContaining({
+						items: [expect.objectContaining({ attachmentId: generatedVideo.id })],
+					}),
 				});
 			});
 		} finally {
