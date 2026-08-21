@@ -27,6 +27,7 @@ import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { headersToRecord, providerHeadersToRecord } from "../utils/headers.ts";
 import { parseStreamingJson } from "../utils/json-parse.ts";
 import { getProviderEnvValue } from "../utils/provider-env.ts";
+import { assertAttachmentsUnsupported } from "./attachment-lowering.ts";
 
 export interface PiMessagesOptions extends StreamOptions {
 	reasoning?: ThinkingLevel;
@@ -352,6 +353,10 @@ export const stream: StreamFunction<"pi-messages", PiMessagesOptions> = (
 
 	void (async () => {
 		try {
+			// No attachment wire contract exists for pi-messages gateways yet, so
+			// fail closed rather than assume the remote end understands sidecars.
+			assertAttachmentsUnsupported(model, context.messages, context.attachmentRegistry);
+
 			const apiKey = options?.apiKey;
 			if (!apiKey) {
 				throw new Error(`No API key provided for provider "${model.provider}"`);

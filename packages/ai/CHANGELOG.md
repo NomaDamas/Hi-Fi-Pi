@@ -6,6 +6,10 @@
 
 - Added stable, target-scoped conversation projection for explicitly suspended attachments and provider-native state without mutating canonical messages ([#76](https://github.com/NomaDamas/Hi-Fi-Pi/issues/76)).
 
+### Fixed
+
+- Fixed transports without native attachment lowering to reject attachment-bearing requests before network execution instead of shipping a text-only payload; `mistral-conversations`, `pi-messages`, and Chat Completions tool results now fail closed with a sanitized provider/transport/model/media-type diagnostic ([#78](https://github.com/NomaDamas/Hi-Fi-Pi/issues/78)).
+
 ## [0.84.1-hifi.1] - 2026-08-13
 
 ### Added

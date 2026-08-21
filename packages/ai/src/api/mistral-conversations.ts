@@ -18,6 +18,7 @@ import { shortHash } from "../utils/hash.ts";
 import { headersToRecord } from "../utils/headers.ts";
 import { parseStreamingJson } from "../utils/json-parse.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
+import { assertAttachmentsUnsupported } from "./attachment-lowering.ts";
 import { resolveJsonSchemaStrictSampling } from "./constrained-sampling.ts";
 import { buildBaseOptions } from "./simple-options.ts";
 import { transformMessages } from "./transform-messages.ts";
@@ -129,6 +130,10 @@ export const stream: StreamFunction<"mistral-conversations", MistralOptions> = (
 		const output = createOutput(model);
 
 		try {
+			// This transport has no native attachment lowering: reject before any
+			// network execution instead of shipping a text-only payload.
+			assertAttachmentsUnsupported(model, context.messages, context.attachmentRegistry);
+
 			const apiKey = options?.apiKey;
 			if (!apiKey) {
 				throw new Error(`No API key for provider: ${model.provider}`);

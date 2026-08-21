@@ -43,7 +43,7 @@ import { parseStreamingJson } from "../utils/json-parse.ts";
 import { getProviderEnvValue } from "../utils/provider-env.ts";
 import { retryProviderRequest } from "../utils/provider-retry.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
-import { resolveNativeAttachments } from "./attachment-lowering.ts";
+import { assertAttachmentsUnsupported, resolveNativeAttachments } from "./attachment-lowering.ts";
 import {
 	appendGrammarToolInputJsonDelta,
 	createGrammarToolInputProperties,
@@ -1275,6 +1275,9 @@ export function convertMessages(
 
 			for (; j < transformedMessages.length && transformedMessages[j].role === "toolResult"; j++) {
 				const toolMsg = transformedMessages[j] as ToolResultMessage;
+				// Chat Completions tool messages carry no native file content, so an
+				// attachment reference here could only be dropped on the way out.
+				assertAttachmentsUnsupported(model, [toolMsg], context.attachmentRegistry);
 
 				// Extract text and image content
 				const textResult = toolMsg.content
