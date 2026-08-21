@@ -129,6 +129,20 @@ jobs:
           echo "allowed=$allowed" >> "$GITHUB_OUTPUT"
           echo "R2 publication allowed: $allowed ($reason; local time: $local_time)"
 
+      - name: Check R2 credentials
+        if: steps.publication-window.outputs.allowed == 'true'
+        run: |
+          set -euo pipefail
+
+          missing=()
+          [[ -n "${AWS_ACCESS_KEY_ID:-}" ]] || missing+=("PI_ARTIFACTS_R2_ACCESS_KEY_ID")
+          [[ -n "${AWS_SECRET_ACCESS_KEY:-}" ]] || missing+=("PI_ARTIFACTS_R2_SECRET_ACCESS_KEY")
+
+          if (( ${#missing[@]} > 0 )); then
+            echo "::error::The pi-model-upload environment does not expose ${missing[*]}. The catalog was generated and validated but not published; configure the secrets, or run without publication."
+            exit 1
+          fi
+
       - name: Publish model catalog to R2
         if: steps.publication-window.outputs.allowed == 'true'
         run: |
