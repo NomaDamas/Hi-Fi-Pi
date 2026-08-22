@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **An attachment the active model cannot accept now blocks the next request until you consent.** Previously such a file was replayed until the provider rejected it. This also applies to an attachment whose local file has since been deleted or expired: it is classified as unavailable and requires fresh confirmation. Accept the loss and the file is excluded from requests to that model only — canonical history keeps it, and switching back to a model that supports it restores it ([#76](https://github.com/NomaDamas/Hi-Fi-Pi/issues/76)).
+- **`--allow-lossy` applies to one run.** It approves the incompatible items encountered during that run without recording a durable decision, so a later prompt asks again rather than inheriting consent for files you never saw. The items omitted from a run are reported when it ends ([#76](https://github.com/NomaDamas/Hi-Fi-Pi/issues/76)).
+- **A suspended attachment is now disclosed to the model**, as a factual placeholder naming the media type and the reason. No filename, path, bytes, or description of contents is sent, and nothing is converted or summarized in its place ([#76](https://github.com/NomaDamas/Hi-Fi-Pi/issues/76)).
+- **Transports without native attachment lowering now reject attachment-bearing requests before the network call** instead of sending a text-only payload. This affects `mistral-conversations`, `pi-messages`, and Chat Completions tool results; attachment-free requests are unchanged ([#78](https://github.com/NomaDamas/Hi-Fi-Pi/issues/78)).
+
 ### Fixed
 
 - Fixed lossy portability projection to recheck current history and incoming content at every ingress, suspend only explicitly approved item IDs, disclose omitted attachments factually to the target model and user, keep `--allow-lossy` approval scoped to one run, carry live steer and follow-up consent through the request it authorizes, require fresh confirmation when a local source disappears, preserve canonical history, fail closed on incompatible tool results, and expose structured diagnostics through TUI, SDK, and RPC ([#76](https://github.com/NomaDamas/Hi-Fi-Pi/issues/76)).

@@ -6,6 +6,10 @@
 
 - Added stable, target-scoped conversation projection for explicitly suspended attachments and provider-native state without mutating canonical messages ([#76](https://github.com/NomaDamas/Hi-Fi-Pi/issues/76)).
 
+### Changed
+
+- Refreshed the pinned provider catalog. Cloudflare AI Gateway's Anthropic listing drops from 19 models to 10, retiring the `claude-3*` and `claude-3.5*` entries and renaming the rest to dotted form (`claude-sonnet-4-5` is now `claude-sonnet-4.5`), and its Moonshot listing replaces `kimi-k2.5` with `kimi-k2.6`. Configurations pinned to a retired gateway model id will no longer resolve.
+
 ### Fixed
 
 - Fixed transports without native attachment lowering to reject attachment-bearing requests before network execution instead of shipping a text-only payload; `mistral-conversations`, `pi-messages`, and Chat Completions tool results now fail closed with a sanitized provider/transport/model/media-type diagnostic ([#78](https://github.com/NomaDamas/Hi-Fi-Pi/issues/78)).
