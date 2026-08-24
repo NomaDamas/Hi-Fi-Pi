@@ -550,6 +550,32 @@ describe("Issue 6 attachment TUI contracts", () => {
 		expect(notice).not.toMatch(/\/secret|base64|bytes/);
 	});
 
+	it("names the owning transport for omitted provider-native state", () => {
+		const projection = createPortabilityRunSummaryProjection();
+		projection.report.items = [
+			{
+				id: "message:1:provider-native:0",
+				stableId: "provider-native:resp_1",
+				projectable: true,
+				kind: "provider-native",
+				classification: "provider-locked",
+				reason: "response-state belongs to another backend",
+				messageIndex: 1,
+				provider: "anthropic",
+				api: "anthropic-messages",
+			},
+		];
+		projection.suspendedAttachmentIds = [];
+		projection.suspendedItemIds = ["provider-native:resp_1"];
+
+		const notice = formatPortabilityRunSummary(projection);
+
+		// A bare "provider-native" tells the user nothing about what was left out.
+		expect(notice).toBe(
+			"1 incompatible item was omitted from this run: provider-native from anthropic/anthropic-messages.",
+		);
+	});
+
 	it("shows the completed lossy run summary when the session emits it", async () => {
 		const context: EventContext = {
 			isInitialized: true,

@@ -383,6 +383,8 @@ export class AgentSession {
 	private _activeRunAllowLossy = false;
 	private _activeRunUsesEphemeralLossyConsent = false;
 	private readonly _activeRunApprovedItemIds = new Set<string>();
+	/** Run-scoped approvals supplied to steer/follow-up while idle, applied when the next run delivers them. */
+	private readonly _pendingRunScopedApprovedItemIds = new Set<string>();
 	/** Messages queued to be included with the next user prompt as context ("asides"). */
 	private _pendingNextTurnMessages: CustomMessage[] = [];
 
@@ -638,13 +640,21 @@ export class AgentSession {
 		return projection;
 	}
 
+	/**
+	 * Run-scoped consent has to reach the request that carries the message it was
+	 * given for. Steering and follow-up messages sent while a run is active join
+	 * that run; sent while idle they queue, so the approval is held until the next
+	 * run starts and delivers them. Either way the approval covers only the item
+	 * ids the preflight actually suspended, and is never persisted.
+	 */
 	private _captureRunScopedPortabilityApproval(
 		projection: AppliedPortabilityProjection | undefined,
 		allowLossy: boolean | undefined,
 	): void {
-		if (!this._isAgentRunActive || allowLossy !== true || !projection) return;
-		this._activeRunUsesEphemeralLossyConsent = true;
-		for (const itemId of projection.suspendedItemIds) this._activeRunApprovedItemIds.add(itemId);
+		if (allowLossy !== true || !projection) return;
+		const target = this._isAgentRunActive ? this._activeRunApprovedItemIds : this._pendingRunScopedApprovedItemIds;
+		if (this._isAgentRunActive) this._activeRunUsesEphemeralLossyConsent = true;
+		for (const itemId of projection.suspendedItemIds) target.add(itemId);
 	}
 
 	private async _confirmPromptPortability(
@@ -1476,8 +1486,12 @@ export class AgentSession {
 	): Promise<void> {
 		this._isAgentRunActive = true;
 		this._activeRunAllowLossy = options.allowLossy === true;
-		this._activeRunUsesEphemeralLossyConsent = this._activeRunAllowLossy;
 		this._activeRunApprovedItemIds.clear();
+		// Approvals given to steer/follow-up while idle belong to this run, which is
+		// the one that delivers those queued messages.
+		for (const itemId of this._pendingRunScopedApprovedItemIds) this._activeRunApprovedItemIds.add(itemId);
+		this._pendingRunScopedApprovedItemIds.clear();
+		this._activeRunUsesEphemeralLossyConsent = this._activeRunAllowLossy || this._activeRunApprovedItemIds.size > 0;
 		this._currentRunAppliedPortabilityProjection = undefined;
 		try {
 			await this.agent.prompt(messages);
@@ -1498,6 +1512,14 @@ export class AgentSession {
 			throw error;
 		} finally {
 			const runSummary = this._takePortabilityRunSummary();
+			// Ephemeral consent persists nothing, so the cached projection must not
+			// keep reporting a suspension that no longer exists once the run ends.
+			// `/files` re-inspects and correctly reports none; the footer reads this
+			// cache, and the per-run fact is carried by the run summary instead.
+			if (this._activeRunUsesEphemeralLossyConsent) {
+				this._lastPortabilityProjectionSignature = undefined;
+				this._lastPortabilityProjectionState = undefined;
+			}
 			this._portabilityRunFailure = undefined;
 			this._activeRunAllowLossy = false;
 			this._activeRunUsesEphemeralLossyConsent = false;

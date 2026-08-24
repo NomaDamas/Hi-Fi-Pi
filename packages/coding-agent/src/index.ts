@@ -50,6 +50,10 @@ export {
 	parseSkillBlock,
 	type SessionStats,
 } from "./core/agent-session.ts";
+export {
+	formatPortabilityRunSummary,
+	type PortabilityRunSummaryPresentation,
+} from "./core/attachments/attachment-presentation.ts";
 export { readStoredCredential } from "./core/auth-storage.ts";
 // Compaction
 export {
