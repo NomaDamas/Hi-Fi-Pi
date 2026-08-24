@@ -1057,4 +1057,51 @@ describe("issue #76 portability projection", () => {
 		expect(confirmations).toBe(1);
 		expect(observedContexts).toEqual([["att_xlsx"]]);
 	});
+
+	it("applies run-scoped consent given to steer while the session is idle", async () => {
+		const video = attachment("att_idle_steer", "idle-steer.mp4", MP4);
+		const harness = await createHarness();
+		harnesses.push(harness);
+		allowInline(harness.session.model!, [XLSX]);
+		const observed: string[][] = [];
+		harness.setResponses([
+			(context) => {
+				observed.push(attachmentIds(context.messages));
+				return fauxAssistantMessage("delivered");
+			},
+		]);
+
+		// No run is active: the message queues and its consent must survive until
+		// the run that finally carries it.
+		await harness.session.steer("look at this", undefined, [video], { allowLossy: true });
+		await harness.session.prompt("go");
+
+		expect(harness.eventsOfType("portability_error")).toHaveLength(0);
+		expect(harness.session.getLastAssistantText()).toBe("delivered");
+		expect(observed[0]).not.toContain(video.id);
+		expect(attachmentIds(harness.session.messages)).toContain(video.id);
+		expect(
+			harness.sessionManager
+				.getEntries()
+				.filter((entry) => entry.type === "custom" && entry.customType === "hifi.portability-decision"),
+		).toHaveLength(0);
+	});
+
+	it("stops reporting a suspension once an ephemeral lossy run has ended", async () => {
+		const video = attachment("att_ephemeral", "ephemeral.mp4", MP4);
+		const harness = await createHarness();
+		harnesses.push(harness);
+		allowInline(harness.session.model!, [XLSX]);
+		harness.setResponses([fauxAssistantMessage("done")]);
+
+		await harness.session.prompt({ text: "watch", attachments: [video] }, { allowLossy: true });
+
+		// The run summary carries the per-run fact; nothing durable was approved, so
+		// the footer counts must agree with what /files reports.
+		expect(harness.eventsOfType("portability_run_summary").at(-1)?.projection.suspendedAttachmentIds).toEqual([
+			video.id,
+		]);
+		expect(harness.session.getPortabilityProjection().suspendedAttachmentIds).toEqual([]);
+		expect(harness.session.getPortabilityStatusCounts().suspended).toBe(0);
+	});
 });

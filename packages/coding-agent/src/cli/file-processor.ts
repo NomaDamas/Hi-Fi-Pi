@@ -14,6 +14,7 @@ import {
 	detectNativeAttachmentMimeTypeFromFile,
 	detectSupportedImageMimeTypeFromFile,
 } from "../utils/mime.ts";
+import { stripBom } from "../utils/text.ts";
 
 export interface ProcessedFiles {
 	text: string;
@@ -250,7 +251,7 @@ export async function processFileArguments(fileArgs: string[], options?: Process
 			} else {
 				// Preserve the existing inline behavior for UTF-8 text files.
 				try {
-					const content = await readFile(absolutePath, "utf-8");
+					const content = stripBom(await readFile(absolutePath, "utf-8"));
 					text += `<file name="${absolutePath}">\n${content}\n</file>\n`;
 				} catch (error: unknown) {
 					const message = error instanceof Error ? error.message : String(error);

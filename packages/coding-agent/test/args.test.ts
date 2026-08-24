@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { extractAgentDirOverride, parseArgs } from "../src/cli/args.ts";
+import { extractAgentDirOverride, normalizeSessionName, parseArgs } from "../src/cli/args.ts";
 
 describe("parseArgs", () => {
 	describe("--version flag", () => {
@@ -220,6 +220,11 @@ describe("parseArgs", () => {
 			expect(result.name).toBe("");
 		});
 
+		test("normalizes display names and rejects whitespace-only values", () => {
+			expect(normalizeSessionName("  named session  ")).toBe("named session");
+			expect(normalizeSessionName("   ")).toBeUndefined();
+		});
+
 		test("reports missing value", () => {
 			const result = parseArgs(["--name"]);
 			expect(result.diagnostics).toEqual([{ type: "error", message: "--name requires a value" }]);
@@ -238,6 +243,21 @@ describe("parseArgs", () => {
 		test("parses --no-session flag", () => {
 			const result = parseArgs(["--no-session"]);
 			expect(result.noSession).toBe(true);
+		});
+
+		test("preserves custom session IDs for non-persisting commands", () => {
+			expect(parseArgs(["--session-id", "ephemeral-id", "--help"])).toMatchObject({
+				sessionId: "ephemeral-id",
+				help: true,
+			});
+			expect(parseArgs(["--session-id", "ephemeral-id", "--list-models"])).toMatchObject({
+				sessionId: "ephemeral-id",
+				listModels: true,
+			});
+			expect(parseArgs(["--session-id", "ephemeral-id", "--no-session"])).toMatchObject({
+				sessionId: "ephemeral-id",
+				noSession: true,
+			});
 		});
 	});
 
@@ -304,6 +324,20 @@ describe("parseArgs", () => {
 		test("parses multiple --theme flags", () => {
 			const result = parseArgs(["--theme", "./dark.json", "--theme", "./light.json"]);
 			expect(result.themes).toEqual(["./dark.json", "./light.json"]);
+		});
+	});
+
+	describe("--use-theme flag", () => {
+		test("parses --use-theme", () => {
+			const result = parseArgs(["--use-theme", "light"]);
+			expect(result.useTheme).toBe("light");
+		});
+
+		test("reports when the theme name value is missing", () => {
+			const result = parseArgs(["--use-theme", "--print"]);
+			expect(result.useTheme).toBeUndefined();
+			expect(result.print).toBe(true);
+			expect(result.diagnostics).toEqual([{ type: "error", message: "--use-theme requires a theme name" }]);
 		});
 	});
 

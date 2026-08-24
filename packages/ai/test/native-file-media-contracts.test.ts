@@ -5,8 +5,9 @@ import { convertMessages as convertOpenAIChatMessages } from "../src/api/openai-
 import { convertResponsesMessages } from "../src/api/openai-responses-shared.ts";
 import type { Api, AttachmentRecord, Context, Model, OpenAICompletionsCompat } from "../src/types.ts";
 
-const compat: Omit<Required<OpenAICompletionsCompat>, "deferredToolsMode"> & {
+const compat: Omit<Required<OpenAICompletionsCompat>, "deferredToolsMode" | "thinkingTokenBudgetField"> & {
 	deferredToolsMode?: OpenAICompletionsCompat["deferredToolsMode"];
+	thinkingTokenBudgetField?: OpenAICompletionsCompat["thinkingTokenBudgetField"];
 } = {
 	supportsStore: true,
 	supportsDeveloperRole: true,
