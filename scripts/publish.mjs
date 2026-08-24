@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
-import { join } from "node:path";
-import { getPublicWorkspacePackages } from "./release-packages.mjs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { HIFI_PACKAGES, prepareHifiPackageStage } from "./hifi-package-identity.mjs";
 
-const packages = getPublicWorkspacePackages();
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 const dryRun = process.argv.includes("--dry-run");
 const unknownArgs = process.argv.slice(2).filter((arg) => arg !== "--dry-run");
@@ -29,10 +31,19 @@ function run(command, args, options = {}) {
 
 	if (result.status !== 0) {
 		const output = [result.stdout, result.stderr].filter(Boolean).join("\n");
-		throw new Error(output ? `Command failed: ${command} ${args.join(" ")}\n${output}` : `Command failed: ${command} ${args.join(" ")}`);
+		throw new Error(
+			output ? `Command failed: ${command} ${args.join(" ")}\n${output}` : `Command failed: ${command} ${args.join(" ")}`,
+		);
 	}
 
 	return result;
+}
+
+function resolveRevision() {
+	const configured = process.env.HIFI_PI_SOURCE_REVISION || process.env.GITHUB_SHA;
+	if (configured) return configured;
+	const result = spawnSync("git", ["rev-parse", "--verify", "HEAD"], { cwd: repoRoot, encoding: "utf8" });
+	return result.status === 0 ? result.stdout.trim() : "unknown";
 }
 
 function assertBuildOutputExists(directory) {
@@ -44,7 +55,9 @@ function assertBuildOutputExists(directory) {
 function validatePack(directory) {
 	const result = run("npm", ["pack", "--dry-run", "--ignore-scripts", "--json"], { capture: true, cwd: directory });
 	const packed = JSON.parse(result.stdout)[0];
-	console.log(`  ${packed.filename}: ${packed.files.length} files, ${packed.size} bytes packed, ${packed.unpackedSize} bytes unpacked`);
+	console.log(
+		`  ${packed.filename}: ${packed.files.length} files, ${packed.size} bytes packed, ${packed.unpackedSize} bytes unpacked`,
+	);
 }
 
 function isPublished(name, version) {
@@ -65,46 +78,55 @@ function isPublished(name, version) {
 	throw new Error(output ? `Failed to query ${name}@${version}\n${output}` : `Failed to query ${name}@${version}`);
 }
 
-const packageVersions = new Map(packages.map((pkg) => [pkg.name, pkg.version]));
+const revision = resolveRevision();
+const stageRoot = mkdtempSync(join(tmpdir(), "hifi-pi-publish-stage-"));
 
-const versions = [...new Set(packageVersions.values())];
-if (versions.length !== 1) {
-	throw new Error(`Publish packages are not lockstep versioned: ${versions.join(", ")}`);
-}
+try {
+	// Publish the fork's own artifacts, never the upstream `@earendil-works/*`
+	// names the workspace manifests carry. Staging applies the same identity
+	// rewrite as `pack-hifi-sdk.mjs`, so what is published matches the tarballs
+	// attached to a release.
+	const staged = HIFI_PACKAGES.map(({ id, directory }) => {
+		const packageDir = resolve(repoRoot, directory);
+		assertBuildOutputExists(packageDir);
+		const stageDir = join(stageRoot, id);
+		const { manifest } = prepareHifiPackageStage({ packageDir, stageDir, repoRoot, revision });
+		return { id, stageDir, name: manifest.name, version: manifest.version };
+	});
 
-console.log(`Publishing pi packages at ${versions[0]}${dryRun ? " (dry run)" : ""}\n`);
-
-const packageStates = packages.map((pkg) => ({
-	...pkg,
-	published: false,
-	version: packageVersions.get(pkg.name),
-}));
-
-for (const pkg of packageStates) {
-	assertBuildOutputExists(pkg.directory);
-	pkg.published = isPublished(pkg.name, pkg.version);
-
-	if (pkg.published) {
-		console.log(`${pkg.name}@${pkg.version} is already published; validating package contents only.`);
-	} else {
-		console.log(`${pkg.name}@${pkg.version} is not published; validating package contents before publish.`);
-	}
-	validatePack(pkg.directory);
-	console.log();
-}
-
-if (dryRun) {
-	process.exit(0);
-}
-
-console.log("All packages validated; starting publication.\n");
-
-for (const pkg of packageStates) {
-	if (pkg.published) {
-		console.log(`Skipping ${pkg.name}@${pkg.version}: already published\n`);
-		continue;
+	const versions = [...new Set(staged.map((pkg) => pkg.version))];
+	if (versions.length !== 1) {
+		throw new Error(`Publish packages are not lockstep versioned: ${versions.join(", ")}`);
 	}
 
-	run("npm", ["publish", "--access", "public", "--provenance", "--ignore-scripts"], { cwd: pkg.directory });
-	console.log();
+	console.log(`Publishing Hi-Fi Pi packages at ${versions[0]}${dryRun ? " (dry run)" : ""}\n`);
+
+	for (const pkg of staged) {
+		pkg.published = isPublished(pkg.name, pkg.version);
+		console.log(
+			pkg.published
+				? `${pkg.name}@${pkg.version} is already published; validating package contents only.`
+				: `${pkg.name}@${pkg.version} is not published; validating package contents before publish.`,
+		);
+		validatePack(pkg.stageDir);
+		console.log();
+	}
+
+	if (dryRun) {
+		process.exit(0);
+	}
+
+	console.log("All packages validated; starting publication.\n");
+
+	for (const pkg of staged) {
+		if (pkg.published) {
+			console.log(`Skipping ${pkg.name}@${pkg.version}: already published\n`);
+			continue;
+		}
+
+		run("npm", ["publish", "--access", "public", "--provenance", "--ignore-scripts"], { cwd: pkg.stageDir });
+		console.log();
+	}
+} finally {
+	rmSync(stageRoot, { recursive: true, force: true });
 }

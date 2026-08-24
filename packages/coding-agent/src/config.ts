@@ -4,6 +4,7 @@ import { basename, dirname, join, posix, resolve, sep, win32 } from "path";
 import { fileURLToPath } from "url";
 import { spawnProcessSync } from "./utils/child-process.ts";
 import { normalizePath } from "./utils/paths.ts";
+import { stripBom } from "./utils/text.ts";
 
 // =============================================================================
 // Package Detection
@@ -485,7 +486,7 @@ declare const HIFI_PI_BUILD_REVISION: string | undefined;
 
 let pkg: PackageJson = {};
 try {
-	pkg = JSON.parse(readFileSync(getPackageJsonPath(), "utf-8")) as PackageJson;
+	pkg = JSON.parse(stripBom(readFileSync(getPackageJsonPath(), "utf-8"))) as PackageJson;
 } catch (e: unknown) {
 	const err = e as NodeJS.ErrnoException;
 	if (err.code !== "ENOENT") throw e;
@@ -551,7 +552,7 @@ export function getShareViewerBaseUrl(env: NodeJS.ProcessEnv = process.env): str
 	return env.HIFI_PI_SHARE_VIEWER_URL?.trim() || env.PI_SHARE_VIEWER_URL?.trim() || undefined;
 }
 
-/** Get the share viewer URL for a gist ID */
+/** Get the share viewer URL for a gist ID. */
 export function getShareViewerUrl(gistId: string, env: NodeJS.ProcessEnv = process.env): string {
 	const baseUrl = getShareViewerBaseUrl(env);
 	if (!baseUrl) {

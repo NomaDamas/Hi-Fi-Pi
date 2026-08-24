@@ -111,7 +111,10 @@ export function formatPortabilityRunSummary(projection: PortabilityRunSummaryPre
 			const filename = item.filename ?? item.attachmentId ?? "attachment";
 			return item.mediaType ? `${filename} (${item.mediaType})` : filename;
 		}
-		return item.kind;
+		// Native, reasoning and provider state have no filename, so name the owning
+		// provider and the kind of state instead of printing a bare category.
+		const owner = [item.provider, item.api].filter(Boolean).join("/");
+		return owner ? `${item.kind} from ${owner}` : item.kind;
 	});
 	return `${suspendedItems.length} incompatible item${suspendedItems.length === 1 ? " was" : "s were"} omitted from this run: ${labels.join(", ")}.`;
 }

@@ -8,7 +8,28 @@ Hi-Fi Pi is an unofficial fork of [pi](https://github.com/earendil-works/pi) by 
 
 Hi-Fi Pi is under active development. The executable is `hifi-pi`, user-owned state is stored under `~/.hifipi`, and project-local `.pi` resources remain compatible with the Pi ecosystem.
 
-Native attachment support currently includes provider-aware PDF transport for OpenAI Responses, Anthropic Messages, and Gemini, with typed attachment propagation through sessions, SDK/RPC inputs, exports, and the TUI.
+## What Hi-Fi Pi adds
+
+Pi carries text and images to every provider. Hi-Fi Pi carries whatever a provider natively accepts, and says so plainly when it cannot.
+
+**Native file inputs, per provider.** Attachments are sent to the vendor as files rather than being converted locally first. What each provider accepts differs, because the capability tables follow the vendors:
+
+| Transport | Native inputs |
+|---|---|
+| OpenAI Responses, Azure OpenAI | PDF, Word, RTF, ODT, and ~30 text and code types (JSON, YAML, CSV, Markdown, HTML, Python, Go, Rust, …) |
+| Gemini (Developer API, Vertex AI) | PDF and text documents, audio (wav, mp3, flac, aac, ogg, …), video (mp4, mov, webm, avi, mpeg, …) |
+| Amazon Bedrock | PDF, Word, CSV, HTML, Markdown, audio, video |
+| xAI | PDF, text, Markdown, CSV, JSON, JavaScript, and related types |
+| Anthropic Messages | PDF and plain text |
+| OpenAI audio chat | mp3, wav |
+
+Custom and OpenAI-compatible endpoints stay off until explicitly opted in, since a gateway's real capabilities cannot be inferred.
+
+**No silent conversion.** Hi-Fi Pi does not OCR, transcribe, extract frames, or convert Office documents behind your back. A file the target model cannot accept is reported, never quietly replaced with a local approximation — so what the model saw is always knowable.
+
+**Portability across model switches.** Attachments live in the session, not in one provider's context. Switching to a model that cannot accept a file asks before proceeding, excludes only what that model rejects, and restores the file when you switch back. Canonical history is never rewritten. The model is told what was withheld, and so are you — `/files` and the run summary name every omission.
+
+**Provider-native state.** Reasoning state, citations, cache control, server tools, and continuation state are preserved per vendor instead of being flattened, and sanitized traces show exactly what each request carried.
 
 ## Repository packages
 
@@ -24,7 +45,7 @@ Canonical `@earendil-works/pi-*` module aliases remain supported for existing Pi
 
 ## Install from source
 
-Until a verified release is available, build and install from a checkout:
+npm packages are not published yet; install from a GitHub release below, or build from a checkout:
 
 ```bash
 git clone git@github.com:NomaDamas/Hi-Fi-Pi.git
