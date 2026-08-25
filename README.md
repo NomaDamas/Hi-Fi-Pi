@@ -54,6 +54,8 @@ hifi-pi --version
 
 The SDK packages take the same tag, for example `npm install @nomadamas/hifi-pi-ai@hifi`.
 
+To update, run the install command again. `hifi-pi update --self` is deliberately disabled until a Hi-Fi release channel is configured, so that it can never pull a build from an upstream channel over your fork; see [#95](https://github.com/NomaDamas/Hi-Fi-Pi/issues/95).
+
 ## Install from source
 
 To build from a checkout instead:
