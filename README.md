@@ -43,9 +43,22 @@ Custom and OpenAI-compatible endpoints stay off until explicitly opted in, since
 
 Canonical `@earendil-works/pi-*` module aliases remain supported for existing Pi extensions. Hi-Fi Pi's own published artifact names are tracked separately from that compatibility contract.
 
+## Install from npm
+
+Hi-Fi Pi publishes as `@nomadamas/hifi-pi-*`, and the executable is `hifi-pi`. Releases are prereleases, published under the `hifi` dist-tag rather than `latest`, so **the tag is required** — without it npm looks for a `latest` that does not exist and fails:
+
+```bash
+npm install -g @nomadamas/hifi-pi-coding-agent@hifi
+hifi-pi --version
+```
+
+The SDK packages take the same tag, for example `npm install @nomadamas/hifi-pi-ai@hifi`.
+
+To update, run the install command again. `hifi-pi update --self` is deliberately disabled until a Hi-Fi release channel is configured, so that it can never pull a build from an upstream channel over your fork; see [#95](https://github.com/NomaDamas/Hi-Fi-Pi/issues/95).
+
 ## Install from source
 
-npm packages are not published yet; install from a GitHub release below, or build from a checkout:
+To build from a checkout instead:
 
 ```bash
 git clone git@github.com:NomaDamas/Hi-Fi-Pi.git
