@@ -42,5 +42,27 @@ test("scheduled model refreshes create reviewable snapshot pull requests", () =>
 test("provider model values are versioned and opencode-go uses a pinned dialect contract", () => {
 	assert.doesNotMatch(gitignore, /^packages\/ai\/src\/providers\/data\/$/m);
 	assert.match(thinkingContracts, /expect\(model!\.api\)\.toBe\("openai-completions"\)/);
-	assert.match(thinkingContracts, /expect\(getSupportedThinkingLevels\(model!\)\)\.toEqual\(\["off", "high", "max"\]\)/);
+	assert.match(thinkingContracts, /expect\(getSupportedThinkingLevels\(model!\)\)\.toEqual\(\["off", "low", "high", "max"\]\)/);
+});
+
+test("cloudflare ai gateway snapshot keeps all three api groups", () => {
+	// models.dev intermittently drops workers-ai/* passthroughs from its gateway
+	// listing (2026-08-25). The generator re-derives them from the Workers AI
+	// catalog; if that safeguard regresses, the openai-completions group empties
+	// and the failure used to surface as an unrelated TS2353 in the provider
+	// file. Fail here instead, naming what is missing.
+	const gateway = JSON.parse(
+		readFileSync(new URL("../packages/ai/src/providers/data/cloudflare-ai-gateway.json", import.meta.url), "utf8"),
+	);
+	assert.deepStrictEqual(Object.keys(gateway).sort(), [
+		"anthropic-messages",
+		"openai-completions",
+		"openai-responses",
+	]);
+	const completionIds = Object.keys(gateway["openai-completions"]);
+	assert.ok(completionIds.length > 0, "gateway openai-completions group is empty");
+	assert.ok(
+		completionIds.some((id) => id.startsWith("workers-ai/")),
+		"gateway openai-completions carries no workers-ai/* passthroughs",
+	);
 });
