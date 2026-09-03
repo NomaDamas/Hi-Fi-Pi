@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Refreshed the Cloudflare AI Gateway catalog. models.dev intermittently drops `workers-ai/*` passthroughs from its gateway listing; the generator now re-derives them from the Workers AI catalog (ported from upstream `e8c632ef6`), so the gateway keeps its `openai-completions` models. Separately, thirteen gateway `openai-responses` ids were genuinely delisted and no longer resolve: `gpt-4`, `gpt-4-turbo`, `gpt-5-pro`, `gpt-5.2`, `gpt-5.2-chat-latest`, `gpt-5.2-pro`, `gpt-5.3-chat-latest`, `gpt-5.3-codex`, `gpt-5.3-codex-spark`, `gpt-5.6`, `o1`, `o1-pro`, `o3-pro`.
+
 ### Breaking Changes
 
 - Renamed `GoogleThinkingLevel` to `GoogleApiThinkingLevel` and added `ResolvedGoogleThinkingLevel` for normalized adapter levels.
