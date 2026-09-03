@@ -59,7 +59,7 @@ function runChild(script: string, env: Record<string, string>): Promise<ChildRes
 
 function ensureToolScript(tool: string): string {
 	return `import(${JSON.stringify(TOOLS_MANAGER_PATH)}).then(async (m) => {
-		const path = await m.ensureTool(${JSON.stringify(tool)}, true);
+		const path = await m.ensureTool(${JSON.stringify(tool)});
 		if (!path) {
 			console.log("RESULT:failed");
 			process.exit(1);
